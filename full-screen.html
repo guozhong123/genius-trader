@@ -25,7 +25,10 @@
       <div class="page-shell mx-auto min-h-screen px-3 pb-10 pt-3 sm:px-4">
         <!-- 顶栏 -->
         <div class="mb-2 flex flex-wrap items-center gap-2">
-          <button id="news-open-btn" class="news-open-btn glass hidden shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-accent" title="打开重大消息">消息</button>
+          <button id="news-open-btn" class="news-open-btn glass relative hidden shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-accent" title="打开重大消息">
+            消息
+            <span id="news-badge" class="news-badge hidden">0</span>
+          </button>
           <section id="search-wrap" class="relative min-w-0 flex-1">
             <div class="pointer-events-none absolute inset-y-0 left-2.5 flex items-center" style="color: var(--muted)">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3-3"/></svg>
@@ -89,10 +92,7 @@
             <button id="calendar-btn" class="rounded-md px-2 py-1 text-[11px] font-semibold ring-soft" style="color: var(--muted)">事件日历</button>
             <p id="status-text" class="ml-auto text-[10px]" style="color: var(--muted)">准备就绪</p>
           </div>
-          <div id="group-tabs" class="mb-1 flex flex-wrap gap-1"></div>
-          <div class="mb-2">
-            <button id="add-group-btn" class="inline-flex h-7 w-7 items-center justify-center rounded-md text-sm font-semibold ring-soft text-accent" title="新建分组">+</button>
-          </div>
+          <div id="group-tabs" class="mb-2 flex flex-wrap items-center gap-1"></div>
           <div id="insight-panel" class="mb-2 hidden rounded-xl p-3 ring-soft" style="background: var(--panel)"></div>
           <div id="list" class="list-panel mx-auto"></div>
           <div id="empty" class="glass mx-auto mt-2 hidden max-w-xl rounded-xl px-4 py-10 text-center">

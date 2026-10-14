@@ -42,6 +42,7 @@ export const DEFAULT_SETTINGS = {
   indices: DEFAULT_INDICES,
   newsSidebarOpen: true,
   dismissedNewsIds: [],
+  readNewsIds: [],
   lastNewsFetchAt: 0,
   cachedNews: [],
   eventBannerDismissDate: '',

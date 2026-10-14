@@ -391,12 +391,15 @@ const TECH_RE =
 function scoreMajorNews(title) {
   const t = String(title || '');
   let score = 0;
-  if (MACRO_RE.test(t)) score += 5;
+  if (/美国?\s*CPI|核心CPI|非农|美联储|FOMC|PCE/.test(t)) score += 6;
+  else if (MACRO_RE.test(t)) score += 5;
   if (TECH_RE.test(t)) score += 4;
-  if (/高于预期|低于预期|暴涨|暴跌|跳水|直线|重磅|突发|利好|利空/.test(t)) score += 2;
+  if (/高于预期|低于预期|暴涨|暴跌|大跌|跳水|直线|重磅|突发|利好|利空|翻倍|概率/.test(t))
+    score += 2;
+  if (/费城半导体|纳指|存储/.test(t)) score += 2;
   if (/盘前|盘后|开盘/.test(t) && TECH_RE.test(t)) score += 1;
   // 过滤日常噪音
-  if (/会见|调研|座谈会|一财社论|国考|医改/.test(t)) score -= 6;
+  if (/会见|调研|座谈会|一财社论|国考|医改|拟发行|拟定增|股份：/.test(t)) score -= 6;
   return score;
 }
 
@@ -414,11 +417,11 @@ function parseKuaixun(text) {
  * 重大消息：只保留宏观（CPI/非农/美联储）与科技龙头相关，少而精
  * @param {number} limit 默认 5
  */
-export async function fetchMarketNews(limit = 5) {
+export async function fetchMarketNews(limit = 6) {
   const feeds = [
-    'https://newsapi.eastmoney.com/kuaixun/v1/getlist_100_ajaxResult_40_1_.html',
-    'https://newsapi.eastmoney.com/kuaixun/v1/getlist_101_ajaxResult_40_1_.html',
-    'https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_40_1_.html',
+    'https://newsapi.eastmoney.com/kuaixun/v1/getlist_100_ajaxResult_50_1_.html',
+    'https://newsapi.eastmoney.com/kuaixun/v1/getlist_101_ajaxResult_50_1_.html',
+    'https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_50_1_.html',
   ];
   const items = [];
   await Promise.all(
@@ -429,7 +432,7 @@ export async function fetchMarketNews(limit = 5) {
           const title = String(row.title || row.digest || '').trim();
           if (!title) continue;
           const score = scoreMajorNews(title);
-          if (score < 5) continue; // 只留真正重要的
+          if (score < 4) continue;
           const id = String(row.newsid || row.id || row.sort || title.slice(0, 40));
           items.push({
             id,
@@ -437,6 +440,7 @@ export async function fetchMarketNews(limit = 5) {
             time: row.showtime || row.time || '',
             url: row.url_w || row.url_unique || row.url_m || '',
             score,
+            source: 'flash',
             tone: /利空|跌|跳水|低于|加息|制裁|关税|失望/.test(title)
               ? 'down'
               : /利好|涨|高于|降息|突破|强劲/.test(title)
@@ -460,6 +464,65 @@ export async function fetchMarketNews(limit = 5) {
       return true;
     })
     .slice(0, limit);
+}
+
+/** 把科技龙头大涨跌 / 当日宏观日历合成补充重大消息 */
+export function mergeMajorAlerts(news, { techLeaders = [], todayEvents = [] } = {}) {
+  const extra = [];
+  const nowLabel = new Date().toLocaleString('zh-CN', { hour12: false });
+
+  for (const e of todayEvents) {
+    if (e.type !== 'cpi' && e.type !== 'nfp' && e.type !== 'fomc') continue;
+    extra.push({
+      id: `cal-${e.id}`,
+      title: `【今日关注】${e.title}：${e.tip}`,
+      time: nowLabel,
+      url: '',
+      score: 8,
+      source: 'calendar',
+      tone: 'neutral',
+      impact: e.impact || '',
+    });
+  }
+
+  for (const t of techLeaders) {
+    const pct = Number(t.changePct);
+    if (!Number.isFinite(pct)) continue;
+    if (pct <= -2.5) {
+      extra.push({
+        id: `tech-down-${t.code}`,
+        title: `科技龙头大跌：${t.name} ${pct.toFixed(2)}%`,
+        time: nowLabel,
+        url: '',
+        score: 7,
+        source: 'tech',
+        tone: 'down',
+        impact: '龙头承压时，相关主题基金/ETF 与 A 股映射标的易跟跌，注意仓位与止损。',
+      });
+    } else if (pct >= 3) {
+      extra.push({
+        id: `tech-up-${t.code}`,
+        title: `科技龙头大涨：${t.name} +${pct.toFixed(2)}%`,
+        time: nowLabel,
+        url: '',
+        score: 6,
+        source: 'tech',
+        tone: 'up',
+        impact: '情绪偏热，追高需谨慎；可观察是否放量延续。',
+      });
+    }
+  }
+
+  const seen = new Set();
+  return [...extra, ...(news || [])]
+    .sort((a, b) => b.score - a.score)
+    .filter((x) => {
+      const k = x.id || x.title.slice(0, 20);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    })
+    .slice(0, 8);
 }
 
 /** 科技龙头行情（美股/港股/韩股等） */

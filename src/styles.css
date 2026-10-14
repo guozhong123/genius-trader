@@ -303,11 +303,11 @@
     white-space: nowrap;
   }
 
-  /* 名称+涨跌幅靠在一起，现价与操作在右侧 */
+  /* 名称紧挨涨跌幅；现价 / 操作在右侧 */
   .list-head,
   .list-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 96px 118px;
+    grid-template-columns: minmax(0, 1fr) 88px 100px;
     gap: 8px;
     align-items: center;
     padding: 6px 10px;
@@ -320,6 +320,9 @@
   }
 
   .list-head .col-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     text-align: left;
   }
 
@@ -330,9 +333,9 @@
   }
 
   .list-head .col-sort {
-    display: flex;
-    justify-content: flex-end;
-    gap: 4px;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
   }
 
   .list-head .col-sort button {
@@ -356,18 +359,54 @@
     display: flex;
     min-width: 0;
     align-items: center;
-    gap: 8px;
+    justify-content: flex-start;
+    gap: 6px;
   }
 
   .list-row .col-name-block .meta {
     min-width: 0;
-    flex: 1;
+    max-width: min(52vw, 280px);
+    flex: 0 1 auto;
+  }
+
+  .list-row .col-name-block .pct-chip {
+    flex-shrink: 0;
   }
 
   .list-row .col-actions {
     display: flex;
     justify-content: flex-end;
     gap: 4px;
+  }
+
+  .group-add-btn {
+    display: inline-flex;
+    height: 22px;
+    width: 22px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--accent);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--line) 90%, transparent);
+  }
+
+  .news-badge {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: var(--up);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 16px;
+    text-align: center;
   }
 
   .insight-head {
@@ -381,11 +420,13 @@
   @media (max-width: 720px) {
     .list-head,
     .list-row {
-      grid-template-columns: minmax(0, 1fr) 80px;
+      grid-template-columns: minmax(0, 1fr) 72px;
     }
-    .list-head .col-sort,
     .list-row .col-actions {
       display: none;
+    }
+    .list-row .col-name-block .meta {
+      max-width: 46vw;
     }
   }
 }

@@ -24,18 +24,23 @@ function firstFriday(year, month0) {
   return d;
 }
 
-/**
- * 美国 CPI：常见为每月中旬（约 10–15 日）工作日发布。
- * 这里用「该月 11–13 日中第一个工作日」作近似提示日（非官方精确日）。
- */
-function approxCpiDay(year, month0) {
-  for (let day = 11; day <= 15; day += 1) {
-    const d = new Date(year, month0, day);
-    const wd = d.getDay();
-    if (wd !== 0 && wd !== 6) return d;
-  }
-  return new Date(year, month0, 13);
-}
+const IMPACT = {
+  nfp: {
+    tip: '非农就业数据公布窗口',
+    impact:
+      '影响美元、美债利率与全球风险偏好；若大幅好于预期，美元/利率易上行，成长股与纳指承压；差于预期则相反。A 股科技/赛道股隔夜情绪联动。',
+  },
+  cpi: {
+    tip: '美国 CPI 通胀数据窗口',
+    impact:
+      '核心关注点：通胀是否降温。高于预期 → 加息/延迟降息预期升温，科技龙头、成长股易大跌；低于预期 → 宽松预期升温，纳指/半导体偏利好。黄金对利率预期敏感。',
+  },
+  fomc: {
+    tip: '美联储利率决议 / 点阵图',
+    impact:
+      '直接定调美元流动性。偏鹰（更紧）利空估值高的科技与成长；偏鸽（更松）利好纳指、半导体、AI 主题。决议后 1–2 个交易日波动常放大。',
+  },
+};
 
 /** 近年/当年已知 FOMC 决议日（可随年扩展） */
 const FOMC_DATES = [
@@ -58,36 +63,55 @@ const FOMC_DATES = [
 ];
 
 /**
- * 生成从 today 起未来 days 天内的事件
+ * CPI：每月 10–15 日工作日都标为关注窗（实际发布日常在此区间）
  */
-export function getMacroEvents(fromDate = new Date(), days = 60) {
-  const start = new Date(fromDate.getFullYear(), fromDate.getMonth(), fromDate.getDate());
-  const end = addDays(start, days);
+function cpiWindowDays(year, month0) {
+  const days = [];
+  for (let day = 10; day <= 15; day += 1) {
+    const d = new Date(year, month0, day);
+    const wd = d.getDay();
+    if (wd !== 0 && wd !== 6) days.push(d);
+  }
+  return days;
+}
+
+/**
+ * 生成 [fromDate-lookback, fromDate+days] 区间事件
+ */
+export function getMacroEvents(fromDate = new Date(), days = 60, lookback = 3) {
+  const start = addDays(
+    new Date(fromDate.getFullYear(), fromDate.getMonth(), fromDate.getDate()),
+    -lookback,
+  );
+  const end = addDays(new Date(fromDate.getFullYear(), fromDate.getMonth(), fromDate.getDate()), days);
   const events = [];
 
   for (let y = start.getFullYear(); y <= end.getFullYear(); y += 1) {
     for (let m = 0; m < 12; m += 1) {
       const nfp = firstFriday(y, m);
-      const cpi = approxCpiDay(y, m);
       if (nfp >= start && nfp <= end) {
         events.push({
           id: `nfp-${ymd(nfp)}`,
           date: ymd(nfp),
           type: 'nfp',
           title: '美国非农就业',
-          tip: '就业数据窗口，波动大，宜减仓或观望',
+          tip: IMPACT.nfp.tip,
+          impact: IMPACT.nfp.impact,
           level: 'high',
         });
       }
-      if (cpi >= start && cpi <= end) {
-        events.push({
-          id: `cpi-${ymd(cpi)}`,
-          date: ymd(cpi),
-          type: 'cpi',
-          title: '美国 CPI（约）',
-          tip: '通胀数据窗口（近似日期，请以官网为准），科技/利率敏感',
-          level: 'high',
-        });
+      for (const cpi of cpiWindowDays(y, m)) {
+        if (cpi >= start && cpi <= end) {
+          events.push({
+            id: `cpi-${ymd(cpi)}`,
+            date: ymd(cpi),
+            type: 'cpi',
+            title: '美国 CPI 关注日',
+            tip: IMPACT.cpi.tip,
+            impact: IMPACT.cpi.impact,
+            level: 'high',
+          });
+        }
       }
     }
   }
@@ -100,7 +124,8 @@ export function getMacroEvents(fromDate = new Date(), days = 60) {
         date,
         type: 'fomc',
         title: '美联储 FOMC',
-        tip: '利率决议日，隔夜波动剧烈',
+        tip: IMPACT.fomc.tip,
+        impact: IMPACT.fomc.impact,
         level: 'high',
       });
     }
@@ -118,11 +143,11 @@ export function getMacroEvents(fromDate = new Date(), days = 60) {
 
 export function getTodayEvents(now = new Date()) {
   const today = ymd(now);
-  return getMacroEvents(now, 1).filter((e) => e.date === today);
+  return getMacroEvents(now, 1, 0).filter((e) => e.date === today);
 }
 
 export function getUpcomingEvents(now = new Date(), withinDays = 14) {
-  return getMacroEvents(now, withinDays);
+  return getMacroEvents(now, withinDays, 2);
 }
 
 export function isEventDay(now = new Date()) {

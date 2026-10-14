@@ -20,6 +20,7 @@ import {
   fetchMarketMoneyFlow,
   fetchMarketNews,
   fetchMarketOverview,
+  mergeMajorAlerts,
   fetchNorthbound,
   fetchQuotes,
   fetchStockMoneyFlow,
@@ -135,12 +136,12 @@ const els = {
   stockChartWrap: $('stock-chart-wrap'),
   insightPanel: $('insight-panel'),
   insightBtn: $('insight-btn'),
-  addGroupBtn: $('add-group-btn'),
   newsSidebar: $('news-sidebar'),
   newsList: $('news-list'),
   newsEmpty: $('news-empty'),
   newsCloseBtn: $('news-close-btn'),
   newsOpenBtn: $('news-open-btn'),
+  newsBadge: $('news-badge'),
   eventBanner: $('event-banner'),
   eventBannerText: $('event-banner-text'),
   eventPanel: $('event-panel'),
@@ -309,33 +310,24 @@ function renderGroupTabs() {
     `<button data-group="all" class="rounded-md px-2 py-0.5 text-[11px] font-semibold ${active === 'all' ? 'bg-accent text-white' : 'ring-soft'}" style="${active === 'all' ? '' : 'color:var(--muted)'}">全部</button>`,
     ...secs.map(
       (g) =>
-        `<span draggable="true" data-group-drag="${escAttr(g.id)}" class="group-chip rounded-md px-2 py-0.5 text-[11px] font-semibold ${active === g.id ? 'bg-accent text-white' : 'ring-soft'}" style="${active === g.id ? '' : 'color:var(--muted)'}">
-          <button type="button" data-group="${escAttr(g.id)}" title="双击改名" class="inline">${esc(g.displayName)} <span style="opacity:.7">${g.count}</span></button>
-          <button type="button" data-del-group="${escAttr(g.id)}" class="del" title="删除分组" style="color:${active === g.id ? '#fff' : 'var(--up)'}">×</button>
-        </span>`,
+        `<button type="button" draggable="true" data-group="${escAttr(g.id)}" data-group-drag="${escAttr(g.id)}" title="单击切换 · 双击改名/删除 · 拖拽排序" class="group-chip rounded-md px-2 py-0.5 text-[11px] font-semibold ${active === g.id ? 'bg-accent text-white' : 'ring-soft'}" style="${active === g.id ? '' : 'color:var(--muted)'}">${esc(g.displayName)} <span style="opacity:.7">${g.count}</span></button>`,
     ),
+    `<button type="button" id="add-group-btn" class="group-add-btn" title="新建分组">+</button>`,
   ].join('');
 
+  $('add-group-btn')?.addEventListener('click', () => addGroupDialog());
+
   els.groupTabs.querySelectorAll('[data-group]').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
+    btn.addEventListener('click', () => {
       state.secondaryGroup = btn.dataset.group;
       renderGroupTabs();
       renderList();
     });
     btn.addEventListener('dblclick', async (e) => {
       e.preventDefault();
-      e.stopPropagation();
       const gid = btn.dataset.group;
       if (gid === 'all') return;
       await renameGroup(gid);
-    });
-  });
-
-  els.groupTabs.querySelectorAll('[data-del-group]').forEach((btn) => {
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      await deleteGroup(btn.getAttribute('data-del-group'));
     });
   });
 
@@ -453,7 +445,7 @@ function rowHtml(item) {
         </div>
           <p class="mt-0.5 truncate text-[10px] leading-none" style="color:var(--muted)">${esc(item.code)}${isFund && q.asOf ? ` · ${esc(q.asOf)}` : ''}</p>
         </div>
-        <span class="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular-nums" style="${chip(pct)}">${fmtPct(pct)}</span>
+        <span class="pct-chip shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular-nums" style="${chip(pct)}">${fmtPct(pct)}</span>
       </div>
       <div class="col-num text-[13px] font-semibold leading-none">${priceLabel}</div>
       <div class="col-actions">
@@ -469,13 +461,16 @@ function listHeaderHtml() {
   const on = (key) => (sortBy === key ? 'active' : '');
   return `
     <div class="list-head mb-0.5">
-      <div class="col-name">名称 / 涨跌幅</div>
-      <div class="col-num">${state.primaryKind === 'fund' ? '净值/估值' : '现价'}</div>
-      <div class="col-sort">
-        <button type="button" data-sort-col="pct" class="${on('pct')}" title="涨幅从高到低">涨</button>
-        <button type="button" data-sort-col="pctAsc" class="${on('pctAsc')}" title="跌幅优先">跌</button>
-        <button type="button" data-sort-col="manual" class="${on('manual')}" title="不排序，可拖拽">不排</button>
+      <div class="col-name">
+        <span>名称</span>
+        <span class="col-sort">
+          <button type="button" data-sort-col="pct" class="${on('pct')}" title="涨幅从高到低">涨↓</button>
+          <button type="button" data-sort-col="pctAsc" class="${on('pctAsc')}" title="跌幅优先">跌↑</button>
+          <button type="button" data-sort-col="manual" class="${on('manual')}" title="不排序，可拖拽">不排</button>
+        </span>
       </div>
+      <div class="col-num">${state.primaryKind === 'fund' ? '净值/估值' : '现价'}</div>
+      <div class="text-right text-[11px]" style="color:var(--muted)">操作</div>
     </div>`;
 }
 
@@ -1026,7 +1021,10 @@ function renderEventBanner() {
     if (todays.length) {
       els.eventBanner.classList.remove('hidden');
       els.eventBannerText.innerHTML = todays
-        .map((e) => `<strong>${esc(e.title)}</strong> — ${esc(e.tip)}`)
+        .map(
+          (e) =>
+            `<strong>${esc(e.title)}</strong> — ${esc(e.tip)}${e.impact ? `；影响：${esc(e.impact.slice(0, 48))}…` : ''}`,
+        )
         .join(' · ');
     } else {
       const next = getUpcomingEvents(new Date(), 7)[0];
@@ -1075,6 +1073,7 @@ function renderEventPanel() {
                   <div class="min-w-0 flex-1">
                     <div class="text-[12px] font-semibold">${esc(e.date)} ${esc(e.title)}${isToday ? ' · 今日' : ''}</div>
                     <div class="text-[11px]" style="color:var(--muted)">${esc(e.tip)}</div>
+                    ${e.impact ? `<div class="mt-0.5 text-[11px] leading-snug"><span class="font-semibold text-accent">影响：</span>${esc(e.impact)}</div>` : ''}
                   </div>
                 </div>`;
               })
@@ -1163,10 +1162,18 @@ async function renameGroup(gid) {
   const g = (state.settings.groups || []).find((x) => x.id === gid);
   if (!g) return;
   const ok = await openDialog({
-    title: '修改分组名',
-    bodyHtml: `<input id="dlg-group-name" class="glass w-full rounded-lg px-3 py-2 text-sm outline-none" value="${escAttr(g.name)}" />`,
+    title: '修改分组',
+    bodyHtml: `<input id="dlg-group-name" class="glass w-full rounded-lg px-3 py-2 text-sm outline-none" value="${escAttr(g.name)}" />
+      <label class="mt-3 flex items-center gap-2 text-[12px]" style="color:var(--up)">
+        <input id="dlg-group-del" type="checkbox" /> 删除此分组
+      </label>
+      <p class="mt-1 text-[10px]" style="color:var(--muted)">删除后持仓将移到「未分组」。</p>`,
   });
   if (!ok) return;
+  if ($('dlg-group-del')?.checked) {
+    await deleteGroup(gid);
+    return;
+  }
   const name = ($('dlg-group-name')?.value || '').trim();
   if (!name) return;
   const groups = (state.settings.groups || []).map((x) => (x.id === gid ? { ...x, name } : x));
@@ -1179,7 +1186,7 @@ async function addGroupDialog() {
   const ok = await openDialog({
     title: '新建分组',
     bodyHtml: `<input id="dlg-new-group" class="glass w-full rounded-lg px-3 py-2 text-sm outline-none" placeholder="分组名称" />
-      <p class="mt-2 text-[10px]" style="color:var(--muted)">创建后可拖拽排序；双击标签改名；悬停点 × 删除。</p>`,
+      <p class="mt-2 text-[10px]" style="color:var(--muted)">创建后可拖拽排序；双击标签可改名或删除。</p>`,
   });
   if (!ok) return;
   const name = ($('dlg-new-group')?.value || '').trim();
@@ -1428,15 +1435,40 @@ async function runInsight() {
   renderInsightPanel();
 }
 
+function visibleNews() {
+  const dismissed = new Set(state.settings?.dismissedNewsIds || []);
+  return (state.insightNews || []).filter((n) => !dismissed.has(n.id));
+}
+
+function unreadNewsCount() {
+  const read = new Set(state.settings?.readNewsIds || []);
+  return visibleNews().filter((n) => !read.has(n.id)).length;
+}
+
 function syncNewsSidebarUi() {
   const open = state.settings?.newsSidebarOpen !== false;
   els.newsSidebar?.classList.toggle('collapsed', !open);
   els.newsOpenBtn?.classList.toggle('hidden', open);
+  const n = unreadNewsCount();
+  if (els.newsBadge) {
+    if (!open && n > 0) {
+      els.newsBadge.classList.remove('hidden');
+      els.newsBadge.textContent = String(n > 9 ? '9+' : n);
+    } else {
+      els.newsBadge.classList.add('hidden');
+    }
+  }
+}
+
+async function markNewsRead() {
+  const ids = visibleNews().map((n) => n.id);
+  const readNewsIds = [...new Set([...(state.settings?.readNewsIds || []), ...ids])].slice(-80);
+  state.settings = await saveSettings({ readNewsIds });
+  syncNewsSidebarUi();
 }
 
 function renderNewsSidebar() {
-  const dismissed = new Set(state.settings?.dismissedNewsIds || []);
-  const news = (state.insightNews || []).filter((n) => !dismissed.has(n.id));
+  const news = visibleNews();
   syncNewsSidebarUi();
   if (!els.newsList) return;
   if (!news.length) {
@@ -1461,6 +1493,7 @@ function renderNewsSidebar() {
           <div class="min-w-0 flex-1">${tag}${body}</div>
           <button type="button" data-dismiss-news="${escAttr(n.id)}" class="shrink-0 rounded px-1 text-[11px]" style="color:var(--muted)" title="不再显示">×</button>
         </div>
+        ${n.impact ? `<div class="mb-1 text-[11px] leading-snug" style="color:var(--muted)"><span class="text-accent font-semibold">影响：</span>${esc(n.impact)}</div>` : ''}
         ${n.time ? `<div class="text-[10px]" style="color:var(--muted)">${esc(n.time)}</div>` : ''}
       </div>`;
     })
@@ -1478,6 +1511,11 @@ function renderNewsSidebar() {
       renderNewsSidebar();
     });
   });
+
+  // 侧栏打开时视为已读，关掉后若有新消息才显示角标
+  if (state.settings?.newsSidebarOpen !== false) {
+    markNewsRead();
+  }
 }
 
 async function refreshMajorNews(force = false) {
@@ -1489,7 +1527,12 @@ async function refreshMajorNews(force = false) {
     return state.insightNews;
   }
   try {
-    const news = await fetchMarketNews(5);
+    const [raw, tech] = await Promise.all([fetchMarketNews(6), fetchTechLeaders()]);
+    state.techLeaders = tech || [];
+    const news = mergeMajorAlerts(raw, {
+      techLeaders: tech || [],
+      todayEvents: getTodayEvents(),
+    });
     state.insightNews = news;
     state.settings = await saveSettings({
       cachedNews: news,
@@ -1520,7 +1563,6 @@ document.querySelectorAll('.primary-tab').forEach((tab) => {
   });
 });
 
-els.addGroupBtn?.addEventListener('click', () => addGroupDialog());
 els.insightBtn?.addEventListener('click', () => {
   if (state.insightOpen) {
     state.insightOpen = false;
@@ -1535,6 +1577,7 @@ els.newsCloseBtn?.addEventListener('click', async () => {
 });
 els.newsOpenBtn?.addEventListener('click', async () => {
   state.settings = await saveSettings({ newsSidebarOpen: true });
+  await markNewsRead();
   syncNewsSidebarUi();
   refreshMajorNews(false);
 });
