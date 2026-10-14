@@ -47,6 +47,8 @@ export const DEFAULT_SETTINGS = {
   cachedNews: [],
   eventBannerDismissDate: '',
   stopBannerDismissed: false,
+  /** 移动端分组条是否展开；默认折叠 */
+  mobileGroupsExpanded: false,
 };
 
 export async function getWatchlist() {
