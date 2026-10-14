@@ -1,3 +1,4 @@
+import './lib/chrome-polyfill.js';
 import './styles.css';
 import {
   addItem,
@@ -137,6 +138,7 @@ const els = {
   insightPanel: $('insight-panel'),
   insightBtn: $('insight-btn'),
   newsSidebar: $('news-sidebar'),
+  newsBackdrop: $('news-backdrop'),
   newsList: $('news-list'),
   newsEmpty: $('news-empty'),
   newsCloseBtn: $('news-close-btn'),
@@ -1135,7 +1137,8 @@ async function refreshAll() {
 async function importShenqiData(force = false) {
   if (!force && state.settings?.importedShenqi) return 0;
   try {
-    const res = await fetch(chrome.runtime.getURL('import-shenqi.json'));
+    const importUrl = chrome.runtime.getURL('import-shenqi.json');
+    const res = await fetch(importUrl);
     if (!res.ok) return 0;
     const bundle = await res.json();
     // fix display names in groups
@@ -1445,10 +1448,16 @@ function unreadNewsCount() {
   return visibleNews().filter((n) => !read.has(n.id)).length;
 }
 
+function isMobileLayout() {
+  return window.matchMedia('(max-width: 900px)').matches;
+}
+
 function syncNewsSidebarUi() {
   const open = state.settings?.newsSidebarOpen !== false;
   els.newsSidebar?.classList.toggle('collapsed', !open);
   els.newsOpenBtn?.classList.toggle('hidden', open);
+  els.newsBackdrop?.classList.toggle('hidden', !open || !isMobileLayout());
+  document.body.style.overflow = open && isMobileLayout() ? 'hidden' : '';
   const n = unreadNewsCount();
   if (els.newsBadge) {
     if (!open && n > 0) {
@@ -1571,10 +1580,12 @@ els.insightBtn?.addEventListener('click', () => {
     runInsight();
   }
 });
-els.newsCloseBtn?.addEventListener('click', async () => {
+async function closeNewsSidebar() {
   state.settings = await saveSettings({ newsSidebarOpen: false });
   syncNewsSidebarUi();
-});
+}
+els.newsCloseBtn?.addEventListener('click', () => closeNewsSidebar());
+els.newsBackdrop?.addEventListener('click', () => closeNewsSidebar());
 els.newsOpenBtn?.addEventListener('click', async () => {
   state.settings = await saveSettings({ newsSidebarOpen: true });
   await markNewsRead();
@@ -1689,11 +1700,15 @@ $('import-btn')?.addEventListener('click', async () => {
   els.statusText.textContent = added > 0 ? `新导入 ${added} 只` : '没有新增（可能已全部导入）';
 });
 
-window.addEventListener('resize', () => resizeAllCharts());
+window.addEventListener('resize', () => {
+  resizeAllCharts();
+  syncNewsSidebarUi();
+});
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (!els.dialogRoot.classList.contains('hidden')) closeDialog(false);
     else if (!els.detailRoot.classList.contains('hidden')) closeDetail();
+    else if (state.settings?.newsSidebarOpen !== false && isMobileLayout()) closeNewsSidebar();
   }
 });
 
@@ -1701,6 +1716,10 @@ async function boot() {
   state.settings = await getSettings();
   if (state.settings.theme !== 'light' && state.settings.theme !== 'dark') {
     state.settings = await saveSettings({ theme: 'light' });
+  }
+  // 窄屏默认收起消息侧栏，避免占满首屏
+  if (isMobileLayout() && state.settings.newsSidebarOpen !== false) {
+    state.settings = await saveSettings({ newsSidebarOpen: false });
   }
   state.list = await getWatchlist();
   // 规范化基金字段，避免行情 key 对不上
