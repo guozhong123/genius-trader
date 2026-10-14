@@ -305,19 +305,48 @@ function renderPrimaryTabs() {
   });
 }
 
+function activeGroupLabel(secs, active) {
+  if (active === 'all') return '全部';
+  return secs.find((g) => g.id === active)?.displayName || '分组';
+}
+
 function renderGroupTabs() {
   const secs = groupsForPrimary();
   const active = state.secondaryGroup;
-  els.groupTabs.innerHTML = [
-    `<button data-group="all" class="rounded-md px-2 py-0.5 text-[11px] font-semibold ${active === 'all' ? 'bg-accent text-white' : 'ring-soft'}" style="${active === 'all' ? '' : 'color:var(--muted)'}">全部</button>`,
-    ...secs.map(
-      (g) =>
-        `<button type="button" draggable="true" data-group="${escAttr(g.id)}" data-group-drag="${escAttr(g.id)}" title="单击切换 · 双击改名/删除 · 拖拽排序" class="group-chip rounded-md px-2 py-0.5 text-[11px] font-semibold ${active === g.id ? 'bg-accent text-white' : 'ring-soft'}" style="${active === g.id ? '' : 'color:var(--muted)'}">${esc(g.displayName)} <span style="opacity:.7">${g.count}</span></button>`,
-    ),
-    `<button type="button" id="add-group-btn" class="group-add-btn" title="新建分组">+</button>`,
-  ].join('');
+  const mobile = isMobileLayout();
+  const expanded = !mobile || state.settings?.mobileGroupsExpanded === true;
+
+  const allBtn = `<button data-group="all" class="rounded-md px-2 py-0.5 text-[11px] font-semibold ${active === 'all' ? 'bg-accent text-white' : 'ring-soft'}" style="${active === 'all' ? '' : 'color:var(--muted)'}">全部</button>`;
+  const groupBtns = secs.map(
+    (g) =>
+      `<button type="button" draggable="${expanded ? 'true' : 'false'}" data-group="${escAttr(g.id)}" data-group-drag="${escAttr(g.id)}" title="单击切换 · 双击改名/删除 · 拖拽排序" class="group-chip rounded-md px-2 py-0.5 text-[11px] font-semibold ${active === g.id ? 'bg-accent text-white' : 'ring-soft'}" style="${active === g.id ? '' : 'color:var(--muted)'}">${esc(g.displayName)} <span style="opacity:.7">${g.count}</span></button>`,
+  );
+  const addBtn = `<button type="button" id="add-group-btn" class="group-add-btn" title="新建分组">+</button>`;
+
+  if (mobile) {
+    const foldLabel = expanded
+      ? '收起分组'
+      : `分组 · ${esc(activeGroupLabel(secs, active))}`;
+    const foldBtn = `<button type="button" id="groups-fold-btn" class="groups-fold-btn" aria-expanded="${expanded}">${expanded ? '▾' : '▸'} ${foldLabel}</button>`;
+    if (expanded) {
+      els.groupTabs.innerHTML = [foldBtn, allBtn, ...groupBtns, addBtn].join('');
+    } else {
+      const current =
+        active === 'all'
+          ? allBtn
+          : groupBtns[secs.findIndex((g) => g.id === active)] || allBtn;
+      els.groupTabs.innerHTML = [foldBtn, current, addBtn].join('');
+    }
+  } else {
+    els.groupTabs.innerHTML = [allBtn, ...groupBtns, addBtn].join('');
+  }
 
   $('add-group-btn')?.addEventListener('click', () => addGroupDialog());
+  $('groups-fold-btn')?.addEventListener('click', async () => {
+    const next = !(state.settings?.mobileGroupsExpanded === true);
+    state.settings = await saveSettings({ mobileGroupsExpanded: next });
+    renderGroupTabs();
+  });
 
   els.groupTabs.querySelectorAll('[data-group]').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -1703,6 +1732,7 @@ $('import-btn')?.addEventListener('click', async () => {
 window.addEventListener('resize', () => {
   resizeAllCharts();
   syncNewsSidebarUi();
+  renderGroupTabs();
 });
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
