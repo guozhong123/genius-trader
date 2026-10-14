@@ -234,12 +234,107 @@
   }
 
   @media (max-width: 900px) {
+    .app-frame {
+      flex-direction: column;
+    }
+
+    .news-backdrop:not(.hidden) {
+      display: block;
+      position: fixed;
+      inset: 0;
+      z-index: 35;
+      background: rgba(15, 23, 42, 0.42);
+    }
+
     .news-sidebar {
       position: fixed;
       left: 0;
       top: 0;
-      width: min(86vw, 300px);
-      box-shadow: 8px 0 24px rgba(0, 0, 0, 0.12);
+      z-index: 40;
+      width: min(88vw, 320px);
+      max-width: none;
+      min-width: 0;
+      height: 100dvh;
+      box-shadow: 8px 0 28px rgba(0, 0, 0, 0.18);
+      transform: translateX(0);
+      transition: transform 0.2s ease;
+    }
+
+    .news-sidebar.collapsed {
+      display: flex;
+      transform: translateX(-105%);
+      pointer-events: none;
+    }
+
+    .page-shell {
+      max-width: 100%;
+      padding-left: max(12px, env(safe-area-inset-left));
+      padding-right: max(12px, env(safe-area-inset-right));
+      padding-bottom: max(24px, env(safe-area-inset-bottom));
+    }
+
+    #indices-bar {
+      flex-wrap: wrap;
+    }
+
+    .indices-row {
+      flex-wrap: wrap;
+      overflow: visible;
+      gap: 6px;
+      width: 100%;
+      flex: 1 1 100%;
+    }
+
+    .index-chip {
+      flex: 1 1 calc(50% - 6px);
+      min-width: calc(50% - 6px);
+      min-height: 48px;
+    }
+
+    .list-row .col-actions button {
+      min-height: 28px;
+      min-width: 28px;
+    }
+
+    #detail-panel {
+      width: 100% !important;
+      max-height: 96dvh !important;
+      border-radius: 16px 16px 0 0;
+    }
+
+    .modal-wrap {
+      align-items: flex-end !important;
+      padding: 0 !important;
+    }
+
+    .modal-panel {
+      width: 100% !important;
+      max-width: none !important;
+      border-radius: 16px 16px 0 0 !important;
+    }
+  }
+
+  @media (max-width: 480px) {
+    .view-tab {
+      padding-left: 0.4rem !important;
+      padding-right: 0.4rem !important;
+      font-size: 11px;
+    }
+
+    .index-chip {
+      flex: 1 1 100%;
+      min-width: 100%;
+    }
+
+    .list-head .col-sort button {
+      padding: 4px 8px;
+    }
+
+    .list-head,
+    .list-row {
+      grid-template-columns: minmax(0, 1fr) 68px;
+      gap: 6px;
+      padding: 8px 8px;
     }
   }
 
@@ -407,6 +502,10 @@
     font-weight: 700;
     line-height: 16px;
     text-align: center;
+  }
+
+  .news-backdrop {
+    display: none;
   }
 
   .insight-head {
