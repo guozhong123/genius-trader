@@ -27,12 +27,8 @@
 
       <div class="page-shell mx-auto min-h-screen px-3 pb-10 pt-3 sm:px-4">
         <!-- 顶栏 -->
-        <div class="mb-2 flex flex-wrap items-center gap-2">
-          <button id="news-open-btn" class="news-open-btn glass relative hidden shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-accent" title="打开重大消息">
-            消息
-            <span id="news-badge" class="news-badge hidden">0</span>
-          </button>
-          <section id="search-wrap" class="relative min-w-0 flex-1">
+        <div class="top-toolbar mb-2">
+          <section id="search-wrap" class="top-search relative min-w-0 flex-1">
             <div class="pointer-events-none absolute inset-y-0 left-2.5 flex items-center" style="color: var(--muted)">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3-3"/></svg>
             </div>
@@ -42,7 +38,7 @@
               style="background: var(--panel-solid); border: 1px solid var(--line)"></div>
           </section>
 
-          <div class="glass flex shrink-0 rounded-lg p-0.5 text-xs font-semibold">
+          <div class="top-nav glass flex shrink-0 rounded-lg p-0.5 text-xs font-semibold">
             <button data-view="watch" class="view-tab rounded-md bg-accent px-2 py-1.5 text-white">自选</button>
             <button data-view="data" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">资金</button>
             <button data-view="boards" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">板块</button>
@@ -50,11 +46,17 @@
             <button data-view="etf" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">热力图</button>
           </div>
 
-          <div id="theme-picker" class="glass flex shrink-0 items-center gap-0.5 rounded-lg p-0.5"></div>
-          <button id="import-btn" class="glass shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold" style="color: var(--muted)">导入</button>
-          <button id="refresh-btn" class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-white bg-accent" title="刷新">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 12a9 9 0 1 1-2.6-6.2"/><path d="M21 3v7h-7"/></svg>
-          </button>
+          <div class="top-actions flex shrink-0 items-center gap-1.5">
+            <button id="news-open-btn" class="news-open-btn glass relative hidden shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-accent" title="打开重大消息">
+              消息
+              <span id="news-badge" class="news-badge hidden">0</span>
+            </button>
+            <div id="theme-picker" class="glass flex items-center gap-0.5 rounded-lg p-0.5"></div>
+            <button id="import-btn" class="glass shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold" style="color: var(--muted)">导入</button>
+            <button id="refresh-btn" class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-white bg-accent" title="刷新">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 12a9 9 0 1 1-2.6-6.2"/><path d="M21 3v7h-7"/></svg>
+            </button>
+          </div>
         </div>
 
         <!-- 事件日历提示条 -->
@@ -77,8 +79,8 @@
         </div>
 
         <!-- 大盘：仅自选显示 -->
-        <div id="indices-bar" class="mb-2 flex items-stretch gap-1.5">
-          <div class="flex shrink-0 items-center text-[10px] font-semibold" style="color: var(--muted)">大盘</div>
+        <div id="indices-bar" class="indices-bar mb-2">
+          <div class="indices-label flex shrink-0 items-center text-[10px] font-semibold" style="color: var(--muted)">大盘</div>
           <section id="indices" class="indices-row flex min-w-0 flex-1 items-stretch gap-1"></section>
           <button id="add-index-btn" class="glass shrink-0 self-center rounded-md px-2 py-1.5 text-[10px] font-semibold text-accent" title="勾选指数">+指数</button>
         </div>
