@@ -963,6 +963,66 @@
   font-weight: 700;
 }
 
+.trend-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.trend-metrics div {
+  border-radius: 10px;
+  padding: 6px 8px;
+  background: color-mix(in oklab, var(--accent) 6%, transparent);
+}
+
+.trend-metrics span {
+  display: block;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.trend-metrics b {
+  font-size: 13px;
+}
+
+.trend-block {
+  margin-top: 8px;
+}
+
+.trend-label {
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.trend-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-bottom: 4px;
+  line-height: 1.45;
+}
+
+.trend-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.trend-chip {
+  border-radius: 8px;
+  padding: 2px 6px;
+  background: color-mix(in oklab, var(--accent) 6%, transparent);
+}
+
+@media (max-width: 720px) {
+  .trend-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .report-backdrop {
   position: fixed;
   inset: 0;

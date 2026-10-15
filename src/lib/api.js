@@ -1350,4 +1350,174 @@ export async function fetchBoards(type = 'industry') {
   }));
 }
 
+function shTradeDates(count = 4) {
+  const out = [];
+  for (let i = 0; i < 12 && out.length < count; i += 1) {
+    const dt = new Date(Date.now() - i * 86400000);
+    const wd = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', weekday: 'short' }).format(dt);
+    if (wd === 'Sat' || wd === 'Sun') continue;
+    const ymd = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(dt);
+    out.push(ymd);
+  }
+  return out;
+}
+
+async function fetchTopicPool(kind, date, pagesize) {
+  const path =
+    kind === 'zb' ? 'getTopicZBPool' : kind === 'yzt' ? 'getYesterdayZTPool' : 'getTopicZTPool';
+  const sort = kind === 'zt' ? 'lbc:desc' : kind === 'zb' ? 'fbt:asc' : 'zs:desc';
+  const compact = String(date).replace(/-/g, '');
+  const url =
+    `https://push2ex.eastmoney.com/${path}?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt` +
+    `&Pageindex=0&pagesize=${pagesize}&sort=${sort}&date=${compact}`;
+  const res = await fetch(url);
+  if (!res.ok) return { tc: 0, pool: [] };
+  const json = await res.json();
+  return { tc: Number(json?.data?.tc || 0), pool: json?.data?.pool || [] };
+}
+
+function limitUpPct(code) {
+  const c = String(code || '');
+  if (c.startsWith('300') || c.startsWith('301') || c.startsWith('688')) return 19.5;
+  if (c.startsWith('8') || c.startsWith('4') || c.startsWith('92')) return 29;
+  return 9.5;
+}
+
+/** 连板高度、炸板率、昨日涨停溢价、首板晋级。取最近一个有涨停池的交易日。 */
+export async function fetchLimitSentiment() {
+  for (const date of shTradeDates(4)) {
+    const [zt, zb, yzt] = await Promise.all([
+      fetchTopicPool('zt', date, 100),
+      fetchTopicPool('zb', date, 20),
+      fetchTopicPool('yzt', date, 200),
+    ]);
+    if (!zt.tc && !yzt.tc) continue;
+    const height = zt.pool.reduce((m, row) => Math.max(m, Number(row.lbc) || 0), 0);
+    const zbRate = zt.tc + zb.tc > 0 ? zb.tc / (zt.tc + zb.tc) : null;
+    const premium = yzt.pool.length
+      ? yzt.pool.reduce((s, row) => s + (Number(row.zdp) || 0), 0) / yzt.pool.length
+      : null;
+    const first = yzt.pool.filter((row) => Number(row.ylbc) === 1);
+    const promo = first.filter((row) => Number(row.zdp) >= limitUpPct(row.c));
+    return {
+      date,
+      height,
+      ztCount: zt.tc,
+      zbCount: zb.tc,
+      zbRate,
+      premium,
+      firstCount: first.length,
+      promoCount: promo.length,
+      promoRate: first.length ? promo.length / first.length : null,
+    };
+  }
+  return null;
+}
+
+/** 已跟踪主题的主力净额。用行情列表，不走经常被断开的板块排行接口。 */
+export async function fetchTrackedFlows(boards) {
+  const list = (boards || []).filter((b) => b.secid || b.code);
+  if (!list.length) return [];
+  const secids = list.map((b) => b.secid || `90.${b.code}`).join(',');
+  const url =
+    `https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&fields=f12,f14,f3,f62&secids=${encodeURIComponent(secids)}`;
+  const res = await fetch(url);
+  if (!res.ok) return [];
+  const json = await res.json();
+  return (json?.data?.diff || [])
+    .map((row) => ({
+      code: String(row.f12),
+      name: row.f14,
+      changePct: Number(row.f3),
+      mainFlow: Number(row.f62 || 0) / 1e8,
+      secid: `90.${row.f12}`,
+    }))
+    .filter((row) => Number.isFinite(row.mainFlow))
+    .sort((a, b) => b.mainFlow - a.mainFlow);
+}
+
+/** 行业或概念按主力净额排序。正数是流入。 */
+export async function fetchBoardFlowRank(type = 'industry', limit = 8) {
+  const fs = type === 'concept' ? 'm:90+t:3' : 'm:90+t:2';
+  const url =
+    `https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=${limit}&po=1&np=1` +
+    `&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f62&fs=${fs}` +
+    `&fields=f12,f14,f3,f62`;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('board flow');
+      const json = await res.json();
+      const rows = (json?.data?.diff || []).map((row) => ({
+        code: String(row.f12),
+        name: row.f14,
+        changePct: Number(row.f3),
+        mainFlow: Number(row.f62 || 0) / 1e8,
+        secid: `90.${row.f12}`,
+      }));
+      if (rows.length || attempt === 1) return rows;
+    } catch {
+      if (attempt === 1) return [];
+    }
+    await new Promise((resolve) => setTimeout(resolve, 700));
+  }
+  return [];
+}
+
+/** 板块里成交额最大的几只，当作中军而不是最小盘的领涨。 */
+export async function fetchBoardLeaders(code, limit = 1) {
+  const url =
+    `https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=${limit}&po=1&np=1` +
+    `&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f6&fs=${encodeURIComponent(`b:${code}`)}` +
+    `&fields=f12,f14,f3,f6`;
+  const res = await fetch(url);
+  if (!res.ok) return [];
+  const json = await res.json();
+  return (json?.data?.diff || []).map((row) => ({
+    code: String(row.f12),
+    name: row.f14,
+    changePct: Number(row.f3),
+  }));
+}
+
+function seatTag(name) {
+  const s = String(name || '');
+  if (s.includes('机构专用')) return '机构';
+  if (s.includes('沪股通') || s.includes('深股通')) return '北向';
+  if (/拉萨|江苏路|宛平南路|绍兴解放|源深路/.test(s)) return '游资';
+  return '';
+}
+
+/** 当日龙虎榜净买入靠前的席位。机构、北向、常见游资席位优先。 */
+export async function fetchSeatHighlights(limit = 6) {
+  for (const date of shTradeDates(4)) {
+    const url =
+      'https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_OPERATEDEPT_TRADE_DETAILSNEW' +
+      '&columns=OPERATEDEPT_NAME,SECURITY_NAME_ABBR,SECURITY_CODE,NET_AMT,TRADE_DATE' +
+      `&pageSize=80&pageNumber=1&sortColumns=NET_AMT&sortTypes=-1&filter=(TRADE_DATE='${date}')`;
+    const res = await fetch(url);
+    if (!res.ok) continue;
+    const json = await res.json();
+    const rows = json?.result?.data || [];
+    if (!rows.length) continue;
+    const seen = new Set();
+    const mapped = [];
+    for (const row of rows) {
+      const key = `${row.OPERATEDEPT_NAME}|${row.SECURITY_CODE}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      mapped.push({
+        name: row.OPERATEDEPT_NAME,
+        stock: row.SECURITY_NAME_ABBR,
+        netYi: Number(row.NET_AMT || 0) / 1e8,
+        tag: seatTag(row.OPERATEDEPT_NAME),
+      });
+    }
+    const tagged = mapped.filter((row) => row.tag);
+    const picked = (tagged.length >= 3 ? tagged : mapped).slice(0, limit);
+    return { date, rows: picked };
+  }
+  return { date: '', rows: [] };
+}
+
 export { marketLabel };

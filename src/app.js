@@ -32,6 +32,10 @@ import {
   fetchTencentStockQuote,
   fetchIndustryMove,
   fetchDragonTiger,
+  fetchLimitSentiment,
+  fetchTrackedFlows,
+  fetchBoardLeaders,
+  fetchSeatHighlights,
   fetchTechLeaders,
   fetchMembersQuotes,
   fetchTopMovers,
@@ -63,6 +67,7 @@ import { normalizeGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
 import { calcValuationBias } from './lib/valuation.js';
 import { askDeepseekReport, askMarketReport, buildMarketFacts, buildStockFacts, disciplineStop } from './lib/deepseek.js';
+import { OVERNIGHT_LINKS, buildOvernight, moodLabel, planText, reviewCalls, scoreMainLines, shYmd, sheetBrief } from './lib/trend.js';
 import { isLoggedIn, login, logout, currentUser } from './lib/auth.js';
 
 const REFRESH_MS = 15000;
@@ -119,6 +124,9 @@ const state = {
   aiAdviceKey: null,
   reportDrawer: { open: false, focusId: null, filter: null },
   marketAiRunning: false,
+  trend: null,
+  trendAt: 0,
+  trendLoading: false,
   aiRunning: {},
   timersStarted: false,
   briefOpen: false,
@@ -140,6 +148,8 @@ const els = {
   indicesMobile: $('indices-mobile'),
   pulseBar: $('pulse-bar'),
   pulseBoardsEl: $('pulse-boards'),
+  trendSheet: $('trend-sheet'),
+  trendStrip: $('trend-strip'),
   pulseSession: $('pulse-session'),
   pulseHint: $('pulse-hint'),
   searchInput: $('search-input'),
@@ -375,7 +385,10 @@ function setView(view) {
     loadBoards();
     loadRank();
   }
-  if (view === 'pulse') refreshPulse();
+  if (view === 'pulse') {
+    refreshPulse();
+    loadTrendSheet();
+  }
   requestAnimationFrame(() => resizeAllCharts());
   rememberPlace();
 }
@@ -1529,6 +1542,7 @@ async function runMarketAi() {
   openReportDrawer({ filter: 'market' });
   try {
     if (!state.center?.overview) await loadDataCenter().catch(() => {});
+    if (!state.trend?.brief) await loadTrendSheet();
     const ready = (state.pulseBoards?.CN || []).filter((b) => Number.isFinite(Number(b.changePct)));
     if (ready.length < 3) await refreshPulse();
     const boards = (state.pulseBoards?.CN || []).filter((b) => Number.isFinite(Number(b.changePct)));
@@ -1540,6 +1554,7 @@ async function runMarketAi() {
         boards,
         tape: judgeTape(state.center)?.label || '',
         prior: priorContext((r) => r.kind === 'market'),
+        sheet: state.trend?.brief || '',
       }),
       state.settings?.aiModel,
     );
@@ -1900,6 +1915,211 @@ async function refreshPulse() {
   renderPulseBoards();
 }
 
+function pctText(n) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return '—';
+  return fmtPct(x);
+}
+
+function trendChanges() {
+  const out = {};
+  for (const item of state.list) {
+    if (item.kind === 'fund') continue;
+    const pct = Number(state.quotes[quoteKey(item)]?.changePct);
+    if (Number.isFinite(pct)) out[itemKey(item)] = pct;
+  }
+  return out;
+}
+
+function renderTrend() {
+  const sheet = state.trend;
+  const loading = state.trendLoading && !sheet;
+  if (els.trendStrip) {
+    if (!sheet && !loading) els.trendStrip.classList.add('hidden');
+    else {
+      els.trendStrip.classList.remove('hidden');
+      els.trendStrip.textContent = loading ? '顺势加载中…' : sheet.plan || '顺势';
+    }
+  }
+  if (!els.trendSheet) return;
+  if (loading) {
+    els.trendSheet.innerHTML = '<div class="text-[12px]" style="color:var(--muted)">正在对隔夜方向、主线、情绪和龙虎榜…</div>';
+    return;
+  }
+  if (!sheet) {
+    els.trendSheet.innerHTML = '<div class="text-[12px]" style="color:var(--muted)">顺势数据还没取到，点右上角刷新再试。</div>';
+    return;
+  }
+  const mood = sheet.mood || '—';
+  const s = sheet.sentiment;
+  const moodCls = mood === '主升' ? 'text-up' : mood === '退潮' ? 'text-down' : '';
+  const tagCls = (tag) =>
+    tag === '不宜再追' || tag === '一日游' || tag === '回落' || tag === '大涨了' || tag === '资金在撤' || tag === '价已走弱'
+      ? 'text-down'
+      : tag === '还在进' || tag === '跟上了' || tag === '避开了'
+        ? 'text-up'
+        : '';
+  const overnight = (sheet.overnight || [])
+    .map((row) => {
+      const targets = row.targets
+        .map(
+          (t) =>
+            `${esc(t.name)} 今${pctText(t.changePct)} 昨${pctText(t.prev)} <span class="${tagCls(t.tag)}">${esc(t.tag)}</span>`,
+        )
+        .join('；');
+      return `<div class="trend-row"><span class="font-semibold">${esc(row.from)} ${pctText(row.overseas)}</span><span>${targets}</span></div>`;
+    })
+    .join('');
+  const mains = (sheet.mains || [])
+    .map((row) => {
+      const leader = row.leader ? ` 中军 ${esc(row.leader)} ${pctText(row.leaderPct)}` : '';
+      const hist = row.known ? `近5日${row.upDays}天上涨、合计${pctText(row.sum5)}` : '近几日K线未取到';
+      return `<div class="trend-row"><span class="font-semibold">${esc(row.name)}</span><span>${hist}，主力${Number(row.mainFlow).toFixed(1)}亿${leader} <span class="${tagCls(row.tag)}">${esc(row.tag)}</span></span></div>`;
+    })
+    .join('');
+  const flowLine = (rows) =>
+    (rows || [])
+      .map((row) => `<span class="trend-chip">${esc(row.name)} <b class="${tone(row.mainFlow)}">${Number(row.mainFlow).toFixed(1)}亿</b> ${pctText(row.changePct)}</span>`)
+      .join('');
+  const themes = sheet.flows?.themes || [];
+  const inflow = themes.filter((row) => row.mainFlow > 0).slice(0, 5);
+  const outflow = [...themes].filter((row) => row.mainFlow < 0).sort((a, b) => a.mainFlow - b.mainFlow).slice(0, 3);
+  const seats = (sheet.seats || [])
+    .map(
+      (row) =>
+        `<div class="trend-row"><span>${row.tag ? `<b>${esc(row.tag)}</b> ` : ''}${esc(row.stock)}</span><span class="truncate">${esc(row.name)} <b class="${tone(row.netYi)}">${row.netYi.toFixed(2)}亿</b></span></div>`,
+    )
+    .join('');
+  const reviewRows = (sheet.review?.rows || [])
+    .map(
+      (row) =>
+        `<span class="trend-chip">${esc(row.name)} ${esc(row.action)} ${pctText(row.changePct)} <b class="${tagCls(row.verdict)}">${esc(row.verdict)}</b></span>`,
+    )
+    .join('');
+  els.trendSheet.innerHTML = `
+    <div class="mb-1 flex flex-wrap items-baseline gap-2">
+      <div class="text-sm font-semibold">顺势</div>
+      <span class="text-[11px] font-semibold ${moodCls}">${esc(mood)}</span>
+      ${sheet.tapeWeak ? '<span class="text-[11px]" style="color:var(--down)">跌家占优，外盘降权</span>' : ''}
+    </div>
+    <p class="mb-2 text-[12px] leading-relaxed">${esc(sheet.plan || '')}</p>
+    <div class="trend-metrics">
+      <div><span>高度</span><b>${s?.height ?? '—'}板</b></div>
+      <div><span>炸板率</span><b>${s?.zbRate == null ? '—' : `${Math.round(s.zbRate * 100)}%`}</b></div>
+      <div><span>昨涨停溢价</span><b class="${tone(s?.premium)}">${s?.premium == null ? '—' : pctText(s.premium)}</b></div>
+      <div><span>首板晋级</span><b>${s?.promoRate == null ? '—' : `${Math.round(s.promoRate * 100)}%`}</b></div>
+    </div>
+    <div class="trend-block"><div class="trend-label">隔夜映射</div>${overnight || '<div style="color:var(--muted)">外盘没有明显强于 1% 的方向。</div>'}</div>
+    <div class="trend-block"><div class="trend-label">主线</div>${mains || '<div style="color:var(--muted)">没有还在进的主题。资金和价格都没有形成可以跟的主线。</div>'}</div>
+    <div class="trend-block"><div class="trend-label">主题资金</div><div class="mb-1 text-[11px]" style="color:var(--muted)">净流入</div><div class="trend-chips">${flowLine(inflow) || '—'}</div><div class="mb-1 mt-1 text-[11px]" style="color:var(--muted)">净流出</div><div class="trend-chips">${flowLine(outflow) || '—'}</div></div>
+    <div class="trend-block"><div class="trend-label">龙虎榜席位${sheet.seatDate ? ` · ${esc(sheet.seatDate)}` : ''}</div>${seats || '<div style="color:var(--muted)">这天的席位还没出来。</div>'}</div>
+    <div class="trend-block"><div class="trend-label">昨天的报告，今天对一下</div><p class="mb-1">${esc(sheet.review?.summary || '')}</p><div class="trend-chips">${reviewRows}</div></div>
+    <p class="text-[10px] leading-snug" style="color:var(--muted)">外盘、连板和席位是公开数据的粗判，不是机构底仓。已经大涨的方向写成不宜再追。不构成买卖承诺。</p>`;
+}
+
+async function mapPool(items, limit, fn) {
+  const out = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const i = cursor;
+      cursor += 1;
+      out[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+  return out;
+}
+
+async function loadTrendSheet(force = false) {
+  if (state.trendTask) return state.trendTask;
+  if (!force && state.trend && Date.now() - state.trendAt < 90000) {
+    renderTrend();
+    return;
+  }
+  state.trendLoading = true;
+  if (!state.trend) renderTrend();
+  state.trendTask = (async () => {
+  try {
+    const alive = (list) => (list || []).some((b) => Math.abs(Number(b.changePct)) >= 0.05);
+    if (!alive(state.pulseBoards?.CN) || !alive(state.pulseBoards?.US)) await refreshPulse();
+    const [sentiment, themes, seats] = await Promise.all([
+      fetchLimitSentiment().catch(() => null),
+      fetchTrackedFlows(CN_PULSE_BOARDS).catch(() => []),
+      fetchSeatHighlights(6).catch(() => ({ date: '', rows: [] })),
+    ]);
+    const cnByName = new Map((state.pulseBoards?.CN || []).filter((b) => b.code).map((b) => [b.name, b]));
+    const today = shYmd();
+    const abroadNames = new Set(
+      [...(state.pulseBoards?.US || []), ...(state.pulseBoards?.KR || [])]
+        .filter((b) => Number(b.changePct) >= 1)
+        .map((b) => b.name),
+    );
+    const codes = new Map();
+    const flowWatch = [...themes].sort((a, b) => Math.abs(b.mainFlow) - Math.abs(a.mainFlow)).slice(0, 8);
+    const changeWatch = [...themes].sort((a, b) => Number(b.changePct) - Number(a.changePct)).slice(0, 4);
+    for (const row of [...flowWatch, ...changeWatch]) {
+      if (row.code) codes.set(row.code, row.name);
+    }
+    for (const [name, board] of cnByName) {
+      const linked = OVERNIGHT_LINKS.some((item) => abroadNames.has(item.from) && item.to.includes(name));
+      if (!linked || !board.code) continue;
+      codes.set(board.code, name);
+    }
+    const codeList = [...codes.keys()].slice(0, 16);
+    const klines = new Map();
+    const bars = await mapPool(codeList, 2, async (code) => {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const data = await fetchKline(`90.${code}`, 101, 6).catch(() => null);
+        if (data?.points?.length) return [code, data.points];
+        await new Promise((resolve) => setTimeout(resolve, 350));
+      }
+      return [code, []];
+    });
+    for (const pair of bars) {
+      if (pair) klines.set(pair[0], pair[1]);
+    }
+    const overnight = buildOvernight(state.pulseBoards?.US, state.pulseBoards?.KR, cnByName, klines, today);
+    const mains = scoreMainLines({ industry: themes, concept: [] }, klines, new Map(), today);
+    await Promise.all(
+      mains.map(async (row) => {
+        const list = await fetchBoardLeaders(row.code, 1).catch(() => []);
+        if (!list[0]) return;
+        row.leader = list[0].name;
+        row.leaderPct = list[0].changePct;
+      }),
+    );
+    const tape = judgeTape(state.center);
+    const tapeWeak = tape?.label === '宜等';
+    const mood = moodLabel(sentiment);
+    const review = reviewCalls(reportHistory(), trendChanges());
+    const flows = { themes };
+    const plan = planText({ tapeWeak, mood, overnight, mains });
+    state.trend = {
+      sentiment,
+      mood,
+      tapeWeak,
+      overnight,
+      mains,
+      flows,
+      seats: seats.rows,
+      seatDate: seats.date,
+      review,
+      plan,
+      brief: sheetBrief({ tapeWeak, mood, overnight, mains, sentiment, flows }),
+    };
+    state.trendAt = Date.now();
+  } catch (e) {
+    console.error(e);
+  } finally {
+    state.trendLoading = false;
+    state.trendTask = null;
+    renderTrend();
+  }
+  })();
+  return state.trendTask;
+}
+
 async function refreshQuotes() {
   if (!state.list.length) {
     state.quotes = {};
@@ -2041,7 +2261,7 @@ async function refreshAll() {
   renderStatus();
   els.refreshBtn.classList.add('animate-spin');
   try {
-    const tasks = [refreshIndices(), refreshQuotes()];
+    const tasks = [refreshIndices(), refreshQuotes(), loadTrendSheet()];
     if (state.view === 'pulse') tasks.push(refreshPulse());
     await Promise.all(tasks);
     if (state.view === 'data') {
@@ -2590,6 +2810,7 @@ async function refreshMajorNews(force = false) {
 document.querySelectorAll('.view-tab').forEach((tab) => {
   tab.addEventListener('click', () => setView(tab.dataset.view));
 });
+els.trendStrip?.addEventListener('click', () => setView('pulse'));
 
 document.querySelectorAll('.primary-tab').forEach((tab) => {
   tab.addEventListener('click', () => {
@@ -2747,7 +2968,10 @@ document.addEventListener('click', (e) => {
   renderSearchResults();
 });
 
-els.refreshBtn.addEventListener('click', () => refreshAll());
+els.refreshBtn.addEventListener('click', () => {
+  state.trendAt = 0;
+  refreshAll();
+});
 $('detail-close').addEventListener('click', closeDetail);
 els.detailMask.addEventListener('click', closeDetail);
 els.dialogCancel.addEventListener('click', () => closeDialog(false));

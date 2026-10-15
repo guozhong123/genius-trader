@@ -369,7 +369,7 @@ const MARKET_SYSTEM = [
   '"consistency":"和前几天的大盘结论比"}',
 ].join('');
 
-export function buildMarketFacts({ indices, center, boards, tape, prior }) {
+export function buildMarketFacts({ indices, center, boards, tape, prior, sheet }) {
   const idx = (indices || [])
     .slice(0, 8)
     .map((x) => `${x.name || x.code} ${signed(x.changePct)}%`)
@@ -389,6 +389,7 @@ export function buildMarketFacts({ indices, center, boards, tape, prior }) {
     top ? `大A板块涨幅靠前：${top}` : '大A板块：未取到',
     bottom ? `大A板块涨幅靠后：${bottom}` : '',
     prior ? `近5日大盘报告（对照，以今天板块涨跌为准）：\n${prior}` : '近5日没有大盘报告。',
+    sheet ? `顺势纸（外盘只是线索，跌家占优时降权；已经大涨的写不宜再追）：\n${sheet}` : '',
   ]
     .filter(Boolean)
     .join('\n');
