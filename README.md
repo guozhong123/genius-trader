@@ -2,7 +2,9 @@
 
 自选股票 / 基金盯盘 Chrome 扩展（A股 · 港股 · 美股 · 日韩指数 · 场外基金）。
 
-在线体验：[GitHub Pages](https://guozhong123.github.io/genius-trader/)
+在线体验：[GitHub Pages](https://z1994838315g.github.io/genius-trader/)
+
+> 说明：本机对 `guozhong123/genius-trader` 无写权限，代码与 Pages 发布在可写账号 [z1994838315g/genius-trader](https://github.com/z1994838315g/genius-trader)。若需同步到原仓库，请用 `guozhong123` 账号授权后 push。
 
 ## 本地安装（扩展）
 
