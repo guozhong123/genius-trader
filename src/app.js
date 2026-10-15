@@ -1082,12 +1082,37 @@ async function refreshQuotes() {
     renderList();
     return;
   }
-  state.quotes = await fetchQuotes(state.list);
-  state.lastUpdated = Date.now();
-  renderList();
-  renderStatus();
-  renderStopBanner();
-  if (state.briefOpen && state.briefTab === 'insight') renderBriefBody();
+  const stocks = state.list.filter((x) => x.kind === 'stock');
+  const funds = state.list.filter((x) => x.kind === 'fund');
+
+  // 股票先出结果，不被基金备用源拖慢
+  if (stocks.length) {
+    try {
+      const stockMap = await fetchQuotes(stocks);
+      state.quotes = { ...state.quotes, ...stockMap };
+      state.lastUpdated = Date.now();
+      renderList();
+      renderStatus();
+      renderStopBanner();
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  if (funds.length) {
+    try {
+      const fundMap = await fetchQuotes(funds);
+      state.quotes = { ...state.quotes, ...fundMap };
+      state.lastUpdated = Date.now();
+      renderList();
+      renderStatus();
+      if (state.briefOpen && state.briefTab === 'insight') renderBriefBody();
+    } catch (e) {
+      console.error(e);
+    }
+  } else if (state.briefOpen && state.briefTab === 'insight') {
+    renderBriefBody();
+  }
 }
 
 function renderStopBanner() {

@@ -298,7 +298,11 @@ function putFundQuote(map, code, payload) {
   if (raw !== padded) map[`fund:FUND:${raw}`] = payload;
 }
 
-const isExtension = typeof chrome !== 'undefined' && chrome.runtime?.id;
+/** 真扩展才有随机 id；网页 polyfill 固定为 'web' */
+const isExtension =
+  typeof chrome !== 'undefined' &&
+  !!chrome.runtime?.id &&
+  chrome.runtime.id !== 'web';
 
 function parseFundEstimate(gszRaw) {
   if (gszRaw == null || gszRaw === '' || gszRaw === '--') return null;
@@ -324,7 +328,7 @@ function quoteFromMnfRow(row) {
   const nav = Number(row.NAV || row.DWJZ || 0);
   const estimate = parseFundEstimate(row.GSZ);
   const pctRaw =
-    row.GSZZL != null && row.GSZZL !== ''
+    row.GSZZL != null && row.GSZZL !== '' && row.GSZZL !== '--'
       ? row.GSZZL
       : row.NAVCHGRT != null && row.NAVCHGRT !== ''
         ? row.NAVCHGRT
@@ -367,8 +371,51 @@ function quoteFromGzData(data, fallback) {
   };
 }
 
-/** fundgz JSONP（浏览器无 CORS 限制） */
-let fundGzJsonpQueue = Promise.resolve();
+/** 腾讯基金行情：jj代码，字段含估算涨跌与净值 */
+async function fetchFundQuotesFromTencent(funds) {
+  if (!funds.length) return {};
+  const map = {};
+  const chunkSize = 40;
+  for (let i = 0; i < funds.length; i += chunkSize) {
+    const chunk = funds.slice(i, i + chunkSize);
+    const codes = chunk.map((f) => `jj${String(f.code).padStart(6, '0')}`).join(',');
+    try {
+      const url = `https://qt.gtimg.cn/q=${codes}&_=${Date.now()}`;
+      const text = await (await fetch(url)).text();
+      for (const line of text.split(';')) {
+        const m = line.match(/v_jj(\d{6})="([^"]*)"/);
+        if (!m) continue;
+        const code = m[1];
+        const parts = m[2].split('~');
+        // 0代码 1名称 2估算净值 3估算涨跌幅 5单位净值 6累计? 7净值涨跌幅 8净值日期
+        const name = parts[1] || '';
+        const estimate = parseFundEstimate(parts[2]);
+        const estPct = parseFundChangePct(parts[3]);
+        const nav = Number(parts[5] || parts[6] || 0);
+        const navPct = parseFundChangePct(parts[7]);
+        const changePct = estimate != null ? estPct : navPct;
+        const price = resolveFundPrice(estimate, nav);
+        if (price == null) continue;
+        putFundQuote(map, code, {
+          name,
+          price,
+          nav: nav > 0 ? nav : null,
+          estimate,
+          changePct,
+          updatedAt: Date.now(),
+          asOf: parts[8] || '',
+          source: estimate != null ? '估' : '净',
+        });
+      }
+    } catch {
+      /* try next chunk */
+    }
+  }
+  return map;
+}
+
+/** fundgz 固定回调名，只能串行；仅作最后兜底 */
+let fundGzJsonpChain = Promise.resolve();
 
 export function fetchFundGzJsonp(code) {
   const padded = String(code).padStart(6, '0');
@@ -379,31 +426,30 @@ export function fetchFundGzJsonp(code) {
         return;
       }
       const script = document.createElement('script');
-      const prevJsonpgz = window.jsonpgz;
+      const prev = window.jsonpgz;
       const timer = setTimeout(() => {
-        window.jsonpgz = prevJsonpgz;
+        window.jsonpgz = prev;
         script.remove();
         reject(new Error('fundgz timeout'));
-      }, 12000);
+      }, 3500);
       script.onerror = () => {
         clearTimeout(timer);
-        window.jsonpgz = prevJsonpgz;
+        window.jsonpgz = prev;
         script.remove();
         reject(new Error('fundgz load error'));
       };
       window.jsonpgz = (data) => {
         clearTimeout(timer);
-        if (typeof prevJsonpgz === 'function') prevJsonpgz(data);
-        window.jsonpgz = prevJsonpgz;
+        window.jsonpgz = prev;
         script.remove();
         resolve(data);
       };
       script.src = `https://fundgz.1234567.com.cn/js/${padded}.js?rt=${Date.now()}`;
       document.head.appendChild(script);
     });
-
-  fundGzJsonpQueue = fundGzJsonpQueue.then(run, run);
-  return fundGzJsonpQueue;
+  const p = fundGzJsonpChain.then(run, run);
+  fundGzJsonpChain = p.catch(() => {});
+  return p;
 }
 
 async function fetchFundQuotes(funds) {
@@ -411,8 +457,8 @@ async function fetchFundQuotes(funds) {
   const map = {};
   const chunkSize = 40;
   const codes = funds.map((f) => String(f.code).padStart(6, '0'));
-  let mnfHadFailure = false;
 
+  // 1) 东财批量估值（扩展无 CORS；网页可能失败）
   for (let i = 0; i < codes.length; i += chunkSize) {
     const chunk = codes.slice(i, i + chunkSize);
     try {
@@ -426,24 +472,28 @@ async function fetchFundQuotes(funds) {
       const rows = json?.Datas || json?.Data || [];
       for (const row of rows) {
         const { code, payload } = quoteFromMnfRow(row);
-        putFundQuote(map, code, payload);
+        if (payload.price != null) putFundQuote(map, code, payload);
       }
     } catch {
-      mnfHadFailure = true;
+      /* 网页 CORS / 网络失败时走备用源 */
     }
   }
 
-  const missing = funds.filter((f) => !map[fundQuoteKey(f.code)]);
-  const jsonpAllOnWeb = !isExtension && (mnfHadFailure || missing.length > 0);
-  const jsonpTargets = jsonpAllOnWeb ? funds : missing;
+  // 2) 腾讯批量（网页可用，含盘中估算）
+  let missing = funds.filter((f) => !map[fundQuoteKey(f.code)]?.price);
+  if (missing.length) {
+    Object.assign(map, await fetchFundQuotesFromTencent(missing));
+  }
 
-  for (const f of jsonpTargets) {
+  // 3) 天天基金 JSONP 仅补仍缺的少量（串行、短超时）
+  missing = funds.filter((f) => !map[fundQuoteKey(f.code)]?.price);
+  for (const f of missing.slice(0, 12)) {
     try {
       const data = await fetchFundGzJsonp(f.code);
       const { code, payload } = quoteFromGzData(data, f);
-      putFundQuote(map, code, payload);
+      if (payload.price != null) putFundQuote(map, code, payload);
     } catch {
-      /* ignore single fund */
+      /* ignore */
     }
   }
 
