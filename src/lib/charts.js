@@ -88,59 +88,139 @@ export function padSeriesToSession(times, ...seriesArrays) {
 
 export function renderIntradayChart(
   el,
-  { times, prices, avgs, preClose, markLine },
+  { times, prices, avgs, volumes, preClose, markLine },
   { axisMode = 'full' } = {},
 ) {
   if (!el) return;
-  let chartTimes = times;
-  let chartPrices = prices;
-  let chartAvgs = avgs;
-  if (axisMode === 'full' && times?.length) {
-    const padded = padSeriesToSession(times, prices, avgs);
+  let chartTimes = times || [];
+  let chartPrices = prices || [];
+  let chartAvgs = avgs || [];
+  let chartVolumes = volumes || [];
+  if (axisMode === 'full' && chartTimes.length) {
+    const padded = padSeriesToSession(chartTimes, chartPrices, chartAvgs, chartVolumes);
     chartTimes = padded.times;
-    [chartPrices, chartAvgs] = padded.series;
+    [chartPrices, chartAvgs, chartVolumes] = padded.series;
   }
   const chart = getChart(el);
   const up = '#e11d48';
   const down = '#059669';
+  const base = Number(preClose) || 0;
   const last =
     [...chartPrices].reverse().find((v) => v != null) ?? chartPrices[chartPrices.length - 1];
-  const color = last >= preClose ? up : down;
+  const color = last >= base ? up : down;
   const mute = axisMute();
-  const defaultMark = preClose
+
+  // 右轴涨跌幅（相对昨收）
+  const pcts = chartPrices.map((p) =>
+    p == null || !base ? null : +(((p - base) / base) * 100).toFixed(2),
+  );
+  const pctVals = pcts.filter((v) => v != null);
+  const maxAbsPct = Math.max(2, ...(pctVals.map((v) => Math.abs(v)) || [2]));
+
+  // 量柱：相对上一分钟涨红跌绿（买强/卖强视觉）
+  const volBars = chartVolumes.map((v, i) => {
+    if (v == null) return { value: null };
+    const cur = chartPrices[i];
+    const prev = i > 0 ? chartPrices[i - 1] : base;
+    const barColor =
+      cur == null || prev == null ? mute : cur >= prev ? up : down;
+    return { value: v, itemStyle: { color: barColor } };
+  });
+
+  const defaultMark = base
     ? {
         symbol: 'none',
         label: { formatter: '昨收', color: mute, fontSize: 10 },
         lineStyle: { type: 'dashed', color: mute, width: 1 },
-        data: [{ yAxis: preClose }],
+        data: [{ yAxis: base }],
       }
     : undefined;
 
+  const interval = Math.max(1, Math.ceil(chartTimes.length / 5));
+
   chart.setOption({
     animationDuration: 280,
-    grid: { left: 48, right: 16, top: 24, bottom: 28 },
+    axisPointer: { link: [{ xAxisIndex: 'all' }] },
     tooltip: {
       trigger: 'axis',
-      valueFormatter: (v) => (v == null ? '—' : Number(v).toFixed(2)),
+      axisPointer: { type: 'cross' },
+      formatter(params) {
+        if (!params?.length) return '';
+        const t = params[0].axisValueLabel || params[0].name;
+        const lines = [`${t}`];
+        for (const p of params) {
+          if (p.seriesName === '涨跌幅') {
+            const v = p.value;
+            lines.push(`${p.marker}${p.seriesName} ${v == null ? '—' : `${v > 0 ? '+' : ''}${v}%`}`);
+          } else if (p.seriesName === '成交量') {
+            const v = p.value;
+            lines.push(`${p.marker}${p.seriesName} ${v == null ? '—' : Number(v).toLocaleString('zh-CN')}`);
+          } else {
+            const v = p.value;
+            lines.push(`${p.marker}${p.seriesName} ${v == null ? '—' : Number(v).toFixed(2)}`);
+          }
+        }
+        return lines.join('<br/>');
+      },
     },
-    xAxis: {
-      type: 'category',
-      data: chartTimes,
-      boundaryGap: false,
-      axisLabel: { color: mute, fontSize: 10, interval: Math.ceil(chartTimes.length / 5) },
-      axisLine: { lineStyle: { color: splitLine() } },
-    },
-    yAxis: {
-      type: 'value',
-      scale: true,
-      splitLine: { lineStyle: { color: splitLine() } },
-      axisLabel: { color: mute, fontSize: 10 },
-    },
+    grid: [
+      { left: 48, right: 48, top: 20, bottom: '32%' },
+      { left: 48, right: 48, top: '74%', bottom: 28 },
+    ],
+    xAxis: [
+      {
+        type: 'category',
+        data: chartTimes,
+        boundaryGap: false,
+        axisLabel: { show: false },
+        axisLine: { lineStyle: { color: splitLine() } },
+        axisTick: { show: false },
+        gridIndex: 0,
+      },
+      {
+        type: 'category',
+        data: chartTimes,
+        boundaryGap: true,
+        axisLabel: { color: mute, fontSize: 10, interval },
+        axisLine: { lineStyle: { color: splitLine() } },
+        gridIndex: 1,
+      },
+    ],
+    yAxis: [
+      {
+        type: 'value',
+        scale: true,
+        gridIndex: 0,
+        splitLine: { lineStyle: { color: splitLine() } },
+        axisLabel: { color: mute, fontSize: 10 },
+      },
+      {
+        type: 'value',
+        gridIndex: 0,
+        min: -maxAbsPct,
+        max: maxAbsPct,
+        splitLine: { show: false },
+        axisLabel: {
+          color: mute,
+          fontSize: 10,
+          formatter: (v) => `${v > 0 ? '+' : ''}${v}%`,
+        },
+      },
+      {
+        type: 'value',
+        gridIndex: 1,
+        splitNumber: 2,
+        splitLine: { show: false },
+        axisLabel: { show: false },
+      },
+    ],
     series: [
       {
         name: '分时',
         type: 'line',
         data: chartPrices,
+        xAxisIndex: 0,
+        yAxisIndex: 0,
         showSymbol: false,
         smooth: 0.15,
         lineStyle: { width: 2, color },
@@ -156,9 +236,30 @@ export function renderIntradayChart(
         name: '均价',
         type: 'line',
         data: chartAvgs,
+        xAxisIndex: 0,
+        yAxisIndex: 0,
         showSymbol: false,
         smooth: 0.15,
         lineStyle: { width: 1.2, color: '#f59e0b', opacity: 0.85 },
+      },
+      {
+        name: '涨跌幅',
+        type: 'line',
+        data: pcts,
+        xAxisIndex: 0,
+        yAxisIndex: 1,
+        showSymbol: false,
+        lineStyle: { width: 0, opacity: 0 },
+        itemStyle: { color: 'transparent' },
+        tooltip: { show: true },
+      },
+      {
+        name: '成交量',
+        type: 'bar',
+        data: volBars,
+        xAxisIndex: 1,
+        yAxisIndex: 2,
+        barMaxWidth: 4,
       },
     ],
   });

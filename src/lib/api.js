@@ -801,7 +801,7 @@ export async function fetchNorthbound() {
   };
 }
 
-/** 日/周/月 K：klt 101/102/103 */
+/** 日/周/月/年 K：klt 101/102/103/106 */
 export async function fetchKline(secid, klt = 101, lmt = 80) {
   const url =
     `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${encodeURIComponent(secid)}` +

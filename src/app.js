@@ -451,14 +451,16 @@ function renderGroupTabs() {
 
 function indexCardHtml(idx) {
   const short = String(idx.name || '').replace(/指数|成指|板指|COMEX/g, '').slice(0, 5);
+  const pct = idx.changePct;
+  const priceTone = tone(pct);
   return `
     <div draggable="true" data-index-key="${escAttr(idx.secid)}" class="index-chip glass cursor-grab active:cursor-grabbing" title="${esc(idx.name)}">
       <div class="top">
         <span class="name">${esc(short || idx.name)}</span>
       </div>
       <div class="flex items-center justify-between gap-1">
-        <span class="text-[13px] font-semibold tabular-nums leading-none">${fmtPrice(idx.price, idx.market)}</span>
-        <span class="rounded px-1 py-px text-[10px] font-semibold tabular-nums" style="${chip(idx.changePct)}">${fmtPct(idx.changePct)}</span>
+        <span class="text-[13px] font-semibold tabular-nums leading-none ${priceTone}">${fmtPrice(idx.price, idx.market)}</span>
+        <span class="rounded px-1 py-px text-[10px] font-semibold tabular-nums ${priceTone}" style="${chip(pct)}">${fmtPct(pct)}</span>
       </div>
     </div>`;
 }
@@ -972,10 +974,11 @@ async function refreshDetailCharts() {
   try {
     // 并行拉取，减少首次等待；顺带日K用于自动支撑/压力
     const period = state.period;
+    const kltMap = { day: 101, week: 102, month: 103, year: 106 };
     const tasks = [
       period === 'intraday'
         ? fetchIntraday(secid)
-        : fetchKline(secid, period === 'week' ? 102 : period === 'month' ? 103 : 101, 90),
+        : fetchKline(secid, kltMap[period] || 101, period === 'year' ? 40 : 90),
       fetchStockMoneyFlow(secid),
       period === 'intraday' ? fetchKline(secid, 101, 40) : Promise.resolve(null),
     ];
@@ -1005,6 +1008,7 @@ async function refreshDetailCharts() {
             times: intra.points.map((p) => p.time),
             prices: intra.points.map((p) => p.price),
             avgs: intra.points.map((p) => p.avg),
+            volumes: intra.points.map((p) => p.volume),
             preClose: intra.preClose,
             markLine: currentMarkLine(item, auto, intra.preClose),
           },
