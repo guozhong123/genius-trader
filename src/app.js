@@ -211,6 +211,19 @@ function chip(n) {
   if (n < 0) return 'background:color-mix(in oklab, var(--down) 12%, transparent);color:var(--down)';
   return 'background:color-mix(in oklab, var(--muted) 12%, transparent);color:var(--muted)';
 }
+/** 行情名乱码时回退到自选里保存的名称 */
+function preferDisplayName(...candidates) {
+  for (const c of candidates) {
+    const t = String(c || '').trim();
+    if (!t) continue;
+    if (/\uFFFD/.test(t)) continue;
+    const hasCjk = /[\u4e00-\u9fff]/.test(t);
+    if (!hasCjk && /[\u00c0-\u024f\u0400-\u04ff]/.test(t)) continue;
+    return t;
+  }
+  return String(candidates.find((c) => String(c || '').trim()) || '').trim();
+}
+
 function esc(s) {
   return String(s ?? '')
     .replaceAll('&', '&amp;')
@@ -518,7 +531,7 @@ function syncValuationToggle() {
 
 function rowHtml(item) {
   const q = state.quotes[quoteKey(item)] || {};
-  const name = q.name || item.name;
+  const name = preferDisplayName(q.name, item.name);
   const pct = q.changePct;
   const price = q.price;
   const isFund = item.kind === 'fund';
@@ -899,7 +912,7 @@ async function openDetail(item) {
   state.period = 'intraday';
   syncPeriodTabs();
   const q = state.quotes[quoteKey(item)] || item;
-  $('detail-name').textContent = q.name || item.name;
+  $('detail-name').textContent = preferDisplayName(q.name, item.name);
   $('detail-sub').textContent =
     item.kind === 'fund'
       ? `${item.code} · 场外基金`
@@ -1101,6 +1114,22 @@ async function refreshQuotes() {
     try {
       const fundMap = await fetchQuotes(funds);
       state.quotes = { ...state.quotes, ...fundMap };
+      // 用正确编码的行情名修复本地已乱码的基金名
+      let nameFixed = false;
+      const nextList = state.list.map((item) => {
+        if (item.kind !== 'fund') return item;
+        const q = fundMap[`fund:FUND:${String(item.code).padStart(6, '0')}`];
+        const good = preferDisplayName(q?.name, item.name);
+        if (good && good !== item.name) {
+          nameFixed = true;
+          return { ...item, name: good };
+        }
+        return item;
+      });
+      if (nameFixed) {
+        state.list = nextList;
+        await setWatchlist(nextList);
+      }
       state.lastUpdated = Date.now();
       renderList();
       renderStatus();

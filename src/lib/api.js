@@ -19,6 +19,39 @@ const MARKET_BY_CODE = {
   177: 'KR',
 };
 
+/** 腾讯行情多为 GBK；按 UTF-8 读会乱码 */
+async function fetchTextGbk(url) {
+  const res = await fetch(url);
+  const buf = await res.arrayBuffer();
+  try {
+    return new TextDecoder('gbk').decode(buf);
+  } catch {
+    try {
+      return new TextDecoder('gb18030').decode(buf);
+    } catch {
+      return new TextDecoder('utf-8').decode(buf);
+    }
+  }
+}
+
+function looksGarbledName(s) {
+  const t = String(s || '').trim();
+  if (!t) return true;
+  if (/\uFFFD/.test(t)) return true;
+  // GBK 被当 UTF-8：几乎无汉字却有大量拉丁扩展/奇怪符号
+  const hasCjk = /[\u4e00-\u9fff]/.test(t);
+  if (!hasCjk && /[\u00c0-\u024f\u0400-\u04ff]/.test(t)) return true;
+  return false;
+}
+
+function preferReadableName(...candidates) {
+  for (const c of candidates) {
+    const t = String(c || '').trim();
+    if (t && !looksGarbledName(t)) return t;
+  }
+  return String(candidates.find((c) => String(c || '').trim()) || '').trim();
+}
+
 function marketLabel(market) {
   const map = {
     SH: '沪',
@@ -138,8 +171,8 @@ function normalizeEastMoneySearch(row) {
 
 async function searchStocksViaTencent(q) {
   const url = `https://smartbox.gtimg.cn/s3/?v=2&q=${encodeURIComponent(q)}`;
-  const res = await fetch(url);
-  const text = await res.text();
+  // 部分环境仍返回 GBK
+  const text = await fetchTextGbk(url);
   const m = text.match(/v_hint="([^"]*)"/);
   if (!m) return [];
   return m[1]
@@ -372,24 +405,28 @@ function quoteFromGzData(data, fallback) {
   };
 }
 
-/** 腾讯基金行情：jj代码，字段含估算涨跌与净值 */
+/** 腾讯基金行情：jj代码，字段含估算涨跌与净值（响应 charset=GBK） */
 async function fetchFundQuotesFromTencent(funds) {
   if (!funds.length) return {};
   const map = {};
+  const byCode = new Map(
+    funds.map((f) => [String(f.code).padStart(6, '0'), f]),
+  );
   const chunkSize = 40;
   for (let i = 0; i < funds.length; i += chunkSize) {
     const chunk = funds.slice(i, i + chunkSize);
     const codes = chunk.map((f) => `jj${String(f.code).padStart(6, '0')}`).join(',');
     try {
       const url = `https://qt.gtimg.cn/q=${codes}&_=${Date.now()}`;
-      const text = await (await fetch(url)).text();
+      const text = await fetchTextGbk(url);
       for (const line of text.split(';')) {
         const m = line.match(/v_jj(\d{6})="([^"]*)"/);
         if (!m) continue;
         const code = m[1];
         const parts = m[2].split('~');
         // 0代码 1名称 2估算净值 3估算涨跌幅 5单位净值 6累计? 7净值涨跌幅 8净值日期
-        const name = parts[1] || '';
+        const fallback = byCode.get(code);
+        const name = preferReadableName(parts[1], fallback?.name);
         const estimate = parseFundEstimate(parts[2]);
         const estPct = parseFundChangePct(parts[3]);
         const nav = Number(parts[5] || parts[6] || 0);

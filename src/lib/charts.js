@@ -50,7 +50,9 @@ function splitLine() {
 function padTimeLabel(t) {
   const s = String(t || '');
   const part = s.includes(' ') ? s.split(' ').pop() : s;
-  return part.slice(0, 5);
+  const m = part.match(/(\d{1,2}):(\d{2})/);
+  if (!m) return part.slice(0, 5);
+  return `${String(Number(m[1])).padStart(2, '0')}:${m[2]}`;
 }
 
 /** A 股交易日分时轴：09:30–11:30、13:00–15:00（含端点，逐分钟） */
@@ -71,7 +73,7 @@ export function buildAshareSessionTimes() {
   return times;
 }
 
-/** 将稀疏分时对齐到完整交易时段，缺失分钟填 null */
+/** 将稀疏分时对齐到完整交易时段，缺失分钟填 null（价格类可前向填充避免折线断开） */
 export function padSeriesToSession(times, ...seriesArrays) {
   const session = buildAshareSessionTimes();
   const index = new Map((times || []).map((t, i) => [padTimeLabel(t), i]));
@@ -80,10 +82,28 @@ export function padSeriesToSession(times, ...seriesArrays) {
       const i = index.get(t);
       if (i == null || arr == null) return null;
       const v = arr[i];
-      return v == null ? null : v;
+      return v == null || Number.isNaN(Number(v)) ? null : v;
     }),
   );
   return { times: session, series };
+}
+
+/** 前向填充 null，但不超过「尚未有数据」的尾部空白（全日轴未走完的时段保持空） */
+function forwardFillUntilLast(values) {
+  let last = null;
+  let lastIdx = -1;
+  for (let i = 0; i < values.length; i += 1) {
+    if (values[i] != null) lastIdx = i;
+  }
+  if (lastIdx < 0) return values;
+  return values.map((v, i) => {
+    if (i > lastIdx) return null;
+    if (v != null) {
+      last = v;
+      return v;
+    }
+    return last;
+  });
 }
 
 export function renderIntradayChart(
@@ -100,6 +120,9 @@ export function renderIntradayChart(
     const padded = padSeriesToSession(chartTimes, chartPrices, chartAvgs, chartVolumes);
     chartTimes = padded.times;
     [chartPrices, chartAvgs, chartVolumes] = padded.series;
+    // 稀疏分钟对齐后补齐，避免折线中间断裂；成交量保持空洞
+    chartPrices = forwardFillUntilLast(chartPrices);
+    chartAvgs = forwardFillUntilLast(chartAvgs);
   }
   const chart = getChart(el);
   const up = '#e11d48';
@@ -222,6 +245,7 @@ export function renderIntradayChart(
         xAxisIndex: 0,
         yAxisIndex: 0,
         showSymbol: false,
+        connectNulls: true,
         smooth: 0.15,
         lineStyle: { width: 2, color },
         areaStyle: {
@@ -239,6 +263,7 @@ export function renderIntradayChart(
         xAxisIndex: 0,
         yAxisIndex: 0,
         showSymbol: false,
+        connectNulls: true,
         smooth: 0.15,
         lineStyle: { width: 1.2, color: '#f59e0b', opacity: 0.85 },
       },
@@ -249,6 +274,7 @@ export function renderIntradayChart(
         xAxisIndex: 0,
         yAxisIndex: 1,
         showSymbol: false,
+        connectNulls: true,
         lineStyle: { width: 0, opacity: 0 },
         itemStyle: { color: 'transparent' },
         tooltip: { show: true },
@@ -346,7 +372,7 @@ export function renderFlowChart(el, flow, { axisMode = 'full', legendNames } = {
   if (axisMode === 'full') {
     const padded = padSeriesToSession(times, main, huge, large, mid, small);
     times = padded.times;
-    [main, huge, large, mid, small] = padded.series;
+    [main, huge, large, mid, small] = padded.series.map(forwardFillUntilLast);
   }
   const legends = legendNames?.length
     ? legendNames
@@ -383,6 +409,7 @@ export function renderFlowChart(el, flow, { axisMode = 'full', legendNames } = {
       name,
       type: 'line',
       showSymbol: false,
+      connectNulls: true,
       data: seriesData[i] ?? [],
       lineStyle: { width: widths[i] ?? 1.2, color: colors[i] ?? mute },
     })),
