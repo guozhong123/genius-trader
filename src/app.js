@@ -306,38 +306,45 @@ function syncAxisModeButtons() {
 }
 
 function applyTheme(theme) {
-  document.documentElement.setAttribute('data-theme', theme || 'light');
-  renderThemePicker();
+  const next = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.classList.add('theme-animating');
+  document.documentElement.setAttribute('data-theme', next);
+  renderThemeToggle();
+  window.setTimeout(() => document.documentElement.classList.remove('theme-animating'), 320);
 }
 
-function renderThemePicker() {
+function renderThemeToggle() {
   const cur = state.settings?.theme || 'light';
-  els.themePicker.innerHTML = THEMES.map(
-    (t) => `
-    <button data-theme-id="${t.id}" title="${esc(t.label)}"
-      class="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-semibold transition ${cur === t.id ? 'bg-accent text-white' : ''}"
-      style="${cur === t.id ? '' : 'color:var(--muted)'}">
-      <span class="theme-dot" style="background:linear-gradient(135deg,${t.colors[0]},${t.colors[1]})"></span>
-      <span class="hidden sm:inline">${esc(t.label)}</span>
-    </button>`,
-  ).join('');
-  els.themePicker.querySelectorAll('[data-theme-id]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      state.settings = await saveSettings({ theme: btn.dataset.themeId });
-      applyTheme(state.settings.theme);
-      resizeAllCharts();
-    });
-  });
+  const btn = $('theme-toggle');
+  if (!btn) return;
+  const dark = cur === 'dark';
+  btn.title = dark ? '切换到浅色' : '切换到深色';
+  btn.setAttribute('aria-label', btn.title);
+  btn.innerHTML = dark
+    ? `<svg class="theme-toggle-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>`
+    : `<svg class="theme-toggle-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 14.5A8.5 8.5 0 1 1 9.5 3a7 7 0 0 0 11.5 11.5z"/></svg>`;
+}
+
+/** @deprecated kept for boot compat */
+function renderThemePicker() {
+  renderThemeToggle();
 }
 
 function setView(view) {
   state.view = view;
-  ['watch', 'data', 'etf'].forEach((v) => {
+  ['watch', 'pulse', 'data', 'etf'].forEach((v) => {
     const el = $(`view-${v}`);
-    if (el) el.classList.toggle('hidden', v !== view);
+    if (!el) return;
+    const on = v === view;
+    el.classList.toggle('hidden', !on);
+    if (on) {
+      el.classList.remove('view-enter');
+      // restart enter animation
+      void el.offsetWidth;
+      el.classList.add('view-enter');
+    }
   });
   els.indicesBar?.classList.toggle('hidden', view !== 'watch');
-  els.pulseBar?.classList.toggle('hidden', view !== 'watch');
   els.watchSubnav?.classList.toggle('hidden', view !== 'watch');
   document.querySelectorAll('.view-tab').forEach((tab) => {
     const on = tab.dataset.view === view;
@@ -350,6 +357,7 @@ function setView(view) {
     loadBoards();
     loadRank();
   }
+  if (view === 'pulse') refreshPulse();
   requestAnimationFrame(() => resizeAllCharts());
 }
 
@@ -1487,7 +1495,7 @@ async function refreshAll() {
   els.refreshBtn.classList.add('animate-spin');
   try {
     const tasks = [refreshIndices(), refreshQuotes()];
-    if (state.view === 'watch') tasks.push(refreshPulse());
+    if (state.view === 'pulse') tasks.push(refreshPulse());
     await Promise.all(tasks);
     if (state.view === 'data') {
       await Promise.all([loadDataCenter(), loadBoards(), loadRank()]);
@@ -1643,18 +1651,37 @@ async function pickIndicesDialog() {
   const selected = new Set(
     (state.settings.indices || []).map((x) => x.secid || toSecid(x.market, x.code, x.marketNo)),
   );
+  const groups = [
+    { title: 'A股宽基', test: (p) => ['沪', '深', '京'].includes(p.label) },
+    { title: '港股', test: (p) => p.label === '港' },
+    { title: '美股', test: (p) => p.label === '美' },
+    { title: '亚太', test: (p) => p.label === '日' || p.label === '韩' },
+    { title: '商品', test: (p) => p.label === '期' || p.code === '518880' },
+  ];
+  const body = groups
+    .map((g) => {
+      const rows = INDEX_PRESETS.filter(g.test);
+      if (!rows.length) return '';
+      return `<div class="mb-2">
+        <div class="mb-1 text-[11px] font-semibold" style="color:var(--muted)">${esc(g.title)}</div>
+        <div class="grid grid-cols-2 gap-1.5">
+          ${rows
+            .map((p) => {
+              const sid = p.secid;
+              return `<label class="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm ring-soft">
+                <input type="checkbox" data-secid="${escAttr(sid)}" ${selected.has(sid) ? 'checked' : ''} />
+                <span class="truncate">${esc(p.name)}</span>
+              </label>`;
+            })
+            .join('')}
+        </div>
+      </div>`;
+    })
+    .join('');
   const ok = await openDialog({
     title: '勾选大盘指数',
-    bodyHtml: `<div class="grid max-h-72 grid-cols-2 gap-1.5 overflow-auto">
-      ${INDEX_PRESETS.map((p) => {
-        const sid = p.secid;
-        return `<label class="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm ring-soft">
-          <input type="checkbox" data-secid="${escAttr(sid)}" ${selected.has(sid) ? 'checked' : ''} />
-          <span class="truncate">${esc(p.name)}</span>
-        </label>`;
-      }).join('')}
-    </div>
-    <p class="mt-2 text-[10px]" style="color:var(--muted)">大盘仅在「自选」页显示</p>`,
+    bodyHtml: `<div class="max-h-[min(420px,60vh)] overflow-auto pr-0.5">${body}</div>
+    <p class="mt-2 text-[10px]" style="color:var(--muted)">仅可选宽基指数/商品，概念板块请到「盘况」查看</p>`,
   });
   if (!ok) return;
   const next = [];
@@ -2029,6 +2056,14 @@ document.querySelectorAll('[data-pulse-market]').forEach((btn) => {
   });
 });
 
+$('theme-toggle')?.addEventListener('click', async () => {
+  const cur = state.settings?.theme || 'light';
+  const next = cur === 'dark' ? 'light' : 'dark';
+  state.settings = await saveSettings({ theme: next });
+  applyTheme(next);
+  resizeAllCharts();
+});
+
 els.exportBtn?.addEventListener('click', () => exportWatchlistJson());
 
 els.predictToggle?.addEventListener('click', async () => {
@@ -2274,7 +2309,6 @@ async function bootApp() {
   else if (currentUser()) els.statusText.textContent = `你好，${currentUser()}`;
   state.pulseMarket = pickDefaultPulseMarket();
   state.pulseBoards = pulseSectorSkeleton(state.pulseMarket);
-  els.pulseBar?.classList.remove('hidden');
   renderPulseBoards();
   await Promise.all([refreshAll(), refreshMajorNews(false)]);
   if (!state.timersStarted) {

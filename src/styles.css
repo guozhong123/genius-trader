@@ -277,11 +277,60 @@
   }
 
   .brief-panel {
-    min-height: min(680px, 90vh);
+    min-height: min(820px, 92vh);
   }
 
   .brief-body {
     min-height: 0;
+  }
+
+  .brief-body .news-item {
+    margin-bottom: 8px;
+    padding: 10px 10px;
+    border-radius: 10px;
+  }
+
+  html.theme-animating,
+  html.theme-animating body,
+  html.theme-animating .glass,
+  html.theme-animating .modal-panel,
+  html.theme-animating .list-row,
+  html.theme-animating .pulse-chip {
+    transition:
+      background-color 0.28s ease,
+      color 0.28s ease,
+      border-color 0.28s ease,
+      box-shadow 0.28s ease;
+  }
+
+  .theme-toggle {
+    color: var(--muted);
+    transition: transform 0.2s ease, background-color 0.2s ease, color 0.2s ease;
+  }
+
+  .theme-toggle:hover {
+    color: var(--accent);
+    transform: rotate(-12deg) scale(1.05);
+  }
+
+  .theme-toggle-icon {
+    display: block;
+    transition: transform 0.28s ease, opacity 0.2s ease;
+  }
+
+  .view-pane.view-enter {
+    animation: view-fade-in 0.22s ease both;
+  }
+
+  @keyframes view-fade-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
   }
 
   .pulse-bar {
@@ -290,7 +339,7 @@
 
   .pulse-boards {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
     gap: 8px;
   }
 
@@ -467,34 +516,15 @@
       box-sizing: border-box;
     }
 
-    /* 涨幅固定右列，竖向对齐 */
-    .list-row .col-name-block {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) 4.75rem;
-      align-items: center;
-      gap: 8px;
-      width: 100%;
-    }
-
-    .list-row .col-name-block .meta {
-      max-width: none;
-      flex: none;
-      min-width: 0;
+    /* 涨幅固定右列，竖向对齐（略靠右） */
+    .list-row .col-name-block,
+    .list-head .col-name {
+      grid-template-columns: minmax(0, 1fr) 5.25rem;
+      gap: 10px;
     }
 
     .list-row .col-name-block .pct-chip {
-      justify-self: end;
-      min-width: 4.5rem;
-      text-align: center;
-      box-sizing: border-box;
-    }
-
-    .list-head .col-name {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) 4.75rem;
-      align-items: center;
-      gap: 8px;
-      width: 100%;
+      min-width: 5rem;
     }
 
     .list-head .col-sort {
@@ -642,7 +672,7 @@
     white-space: nowrap;
   }
 
-  /* 名称紧挨涨跌幅；现价 / 操作在右侧 */
+  /* 名称 | 涨跌(右对齐固定列) | 现价 | 操作 */
   .list-head,
   .list-row {
     display: grid;
@@ -659,10 +689,16 @@
   }
 
   .list-head .col-name {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 5.25rem;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
+    width: 100%;
     text-align: left;
+  }
+
+  .list-head .col-sort {
+    justify-self: end;
   }
 
   .list-head .col-num,
@@ -695,21 +731,25 @@
   }
 
   .list-row .col-name-block {
-    display: flex;
-    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 5.25rem;
     align-items: center;
-    justify-content: flex-start;
-    gap: 6px;
+    gap: 10px;
+    width: 100%;
+    min-width: 0;
   }
 
   .list-row .col-name-block .meta {
     min-width: 0;
-    max-width: min(52vw, 280px);
-    flex: 0 1 auto;
+    max-width: none;
+    flex: none;
   }
 
   .list-row .col-name-block .pct-chip {
-    flex-shrink: 0;
+    justify-self: end;
+    min-width: 5rem;
+    text-align: center;
+    box-sizing: border-box;
   }
 
   .list-row .col-actions {

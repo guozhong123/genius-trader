@@ -20,23 +20,33 @@ export const DEFAULT_INDICES = [
   { name: '韩国KOSPI', code: 'KS11', market: 'KR', marketNo: 100, secid: '100.KS11', kind: 'stock', label: '韩' },
 ];
 
-/** 固定可选指数池（勾选添加） */
+/** 可选大盘指数（仅指数/商品，不含概念板块） */
 export const INDEX_PRESETS = [
-  ...DEFAULT_INDICES,
+  // A股宽基
+  { name: '上证指数', code: '000001', market: 'SH', marketNo: 1, secid: '1.000001', kind: 'stock', label: '沪' },
+  { name: '深证成指', code: '399001', market: 'SZ', marketNo: 0, secid: '0.399001', kind: 'stock', label: '深' },
+  { name: '创业板指', code: '399006', market: 'SZ', marketNo: 0, secid: '0.399006', kind: 'stock', label: '深' },
+  { name: '科创50', code: '000688', market: 'SH', marketNo: 1, secid: '1.000688', kind: 'stock', label: '沪' },
+  { name: '沪深300', code: '000300', market: 'SH', marketNo: 1, secid: '1.000300', kind: 'stock', label: '沪' },
   { name: '上证50', code: '000016', market: 'SH', marketNo: 1, secid: '1.000016', kind: 'stock', label: '沪' },
   { name: '中证500', code: '000905', market: 'SH', marketNo: 1, secid: '1.000905', kind: 'stock', label: '沪' },
   { name: '中证1000', code: '000852', market: 'SH', marketNo: 1, secid: '1.000852', kind: 'stock', label: '沪' },
-  { name: '科创50', code: '000688', market: 'SH', marketNo: 1, secid: '1.000688', kind: 'stock', label: '沪' },
+  { name: '北证50', code: '899050', market: 'BJ', marketNo: 0, secid: '0.899050', kind: 'stock', label: '京' },
+  // 港股
+  { name: '恒生指数', code: 'HSI', market: 'HK', marketNo: 100, secid: '100.HSI', kind: 'stock', label: '港' },
   { name: '恒生科技', code: 'HSTECH', market: 'HK', marketNo: 100, secid: '100.HSTECH', kind: 'stock', label: '港' },
+  { name: '恒生中国企', code: 'HSCEI', market: 'HK', marketNo: 100, secid: '100.HSCEI', kind: 'stock', label: '港' },
+  // 美股
+  { name: '纳斯达克', code: 'NDX', market: 'US', marketNo: 100, secid: '100.NDX', kind: 'stock', label: '美' },
   { name: '道琼斯', code: 'DJIA', market: 'US', marketNo: 100, secid: '100.DJIA', kind: 'stock', label: '美' },
   { name: '标普500', code: 'SPX', market: 'US', marketNo: 100, secid: '100.SPX', kind: 'stock', label: '美' },
-  { name: '黄金', code: 'BK1617', market: 'BK', marketNo: 90, secid: '90.BK1617', kind: 'stock', label: '板' },
-  { name: '白酒', code: 'BK0896', market: 'BK', marketNo: 90, secid: '90.BK0896', kind: 'stock', label: '板' },
-  { name: '中证白酒', code: '399997', market: 'SZ', marketNo: 0, secid: '0.399997', kind: 'stock', label: '深' },
-  { name: 'COMEX黄金', code: 'GC00Y', market: 'US', marketNo: 101, secid: '101.GC00Y', kind: 'stock', label: '期' },
-  { name: '黄金ETF', code: '518880', market: 'SH', marketNo: 1, secid: '1.518880', kind: 'stock', label: '沪' },
+  { name: '费城半导体', code: 'SOX', market: 'US', marketNo: 100, secid: '100.SOX', kind: 'stock', label: '美' },
+  // 亚太
   { name: '日经225', code: 'N225', market: 'JP', marketNo: 100, secid: '100.N225', kind: 'stock', label: '日' },
   { name: '韩国KOSPI', code: 'KS11', market: 'KR', marketNo: 100, secid: '100.KS11', kind: 'stock', label: '韩' },
+  // 商品
+  { name: 'COMEX黄金', code: 'GC00Y', market: 'US', marketNo: 101, secid: '101.GC00Y', kind: 'stock', label: '期' },
+  { name: '黄金ETF', code: '518880', market: 'SH', marketNo: 1, secid: '1.518880', kind: 'stock', label: '沪' },
 ];
 
 export const DEFAULT_SETTINGS = {

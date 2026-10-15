@@ -127,5 +127,11 @@ if (mode === 'pages') {
   await pushTree(files, root, 'gh-pages', 'deploy: GitHub Pages web build', true);
 } else {
   const files = listMainFiles();
-  await pushTree(files, process.cwd(), 'main', 'Improve watch UI: full-day charts, brief modal, fund NAV, and money intent.', false);
+  let message = 'chore: sync main via API';
+  try {
+    message = execSync('git log -1 --pretty=%B', { encoding: 'utf8' }).trim() || message;
+  } catch {
+    /* keep default */
+  }
+  await pushTree(files, process.cwd(), 'main', message, false);
 }
