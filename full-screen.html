@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#0f766e" />
     <meta name="mobile-web-app-capable" content="yes" />
     <title>天才交易员</title>
-    <script type="module" crossorigin src="/genius-trader/assets/full-screen-DJXWmksC.js"></script>
-    <link rel="modulepreload" crossorigin href="/genius-trader/assets/styles-obigqonP.js">
-    <link rel="stylesheet" crossorigin href="/genius-trader/assets/styles-CQR2YSHj.css">
+    <script type="module" crossorigin src="/genius-trader/assets/full-screen-C86DQN5l.js"></script>
+    <link rel="modulepreload" crossorigin href="/genius-trader/assets/styles-fVmCTWTM.js">
+    <link rel="stylesheet" crossorigin href="/genius-trader/assets/styles-Bi29q1_z.css">
   </head>
   <body>
     <!-- 登录门禁 -->
@@ -67,6 +67,8 @@
                 <span class="theme-toggle-icon" aria-hidden="true"></span>
               </button>
               <div id="theme-picker" class="hidden" aria-hidden="true"></div>
+              <button id="report-open-btn" type="button" class="glass shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-accent" title="历史报告，新的在最上面">报告</button>
+              <button id="market-ai-btn" type="button" class="glass shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-accent" title="分析今天大盘和短线板块">AI盘</button>
               <button id="model-btn" class="glass shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-accent" title="填写密钥并选择模型">模型</button>
               <button id="export-btn" class="glass shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold" style="color: var(--muted)">导出</button>
               <button id="import-btn" class="glass shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold" style="color: var(--muted)">导入</button>
@@ -266,7 +268,10 @@
             <div id="ai-advice-card" class="mt-3 rounded-xl p-3 ring-soft" style="background: color-mix(in oklab, var(--accent) 6%, transparent)">
               <div class="mb-2 flex items-center justify-between gap-2">
                 <div class="text-sm font-semibold">个股报告</div>
-                <button type="button" id="ai-advice-refresh" class="rounded-md px-2 py-0.5 text-[10px] font-semibold ring-soft" style="color: var(--muted)">重新分析</button>
+                <div class="flex shrink-0 gap-1">
+                  <button type="button" id="ai-advice-history" class="rounded-md px-2 py-0.5 text-[10px] font-semibold ring-soft" style="color: var(--muted)">历史</button>
+                  <button type="button" id="ai-advice-refresh" class="rounded-md px-2 py-0.5 text-[10px] font-semibold ring-soft" style="color: var(--muted)">重新分析</button>
+                </div>
               </div>
               <div id="ai-advice-body" class="text-[12px] leading-relaxed" style="color: var(--muted)">打开个股后自动分析…</div>
             </div>
@@ -274,6 +279,16 @@
         </div>
       </div>
     </div>
+
+    <div id="report-backdrop" class="report-backdrop hidden"></div>
+    <aside id="report-drawer" class="report-drawer hidden" aria-hidden="true">
+      <div class="report-drawer-head">
+        <button type="button" id="report-back" class="hidden rounded-md px-2 py-1 text-[11px] font-semibold ring-soft" style="color: var(--muted)">返回</button>
+        <div id="report-drawer-title" class="min-w-0 flex-1 truncate text-sm font-semibold">历史报告</div>
+        <button type="button" id="report-drawer-close" class="rounded-md px-2 py-1 text-[11px] font-semibold ring-soft" style="color: var(--muted)">关闭</button>
+      </div>
+      <div id="report-drawer-body" class="report-drawer-body"></div>
+    </aside>
 
     <div id="dialog-root" class="modal-wrap fixed inset-0 z-[70] hidden items-center justify-center p-4">
       <div id="dialog-mask" class="absolute inset-0" style="background: var(--mask)"></div>
