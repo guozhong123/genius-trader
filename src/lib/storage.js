@@ -79,6 +79,10 @@ export const DEFAULT_SETTINGS = {
   aiHistoryMigrated: false,
   /** 移动端分组条是否展开；默认折叠 */
   mobileGroupsExpanded: false,
+  /** 刷新后回到上次的页面、股票/基金、分组 */
+  lastView: 'watch',
+  lastPrimary: 'stock',
+  lastGroup: 'all',
 };
 
 export async function getWatchlist() {

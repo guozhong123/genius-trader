@@ -377,6 +377,24 @@ function setView(view) {
   }
   if (view === 'pulse') refreshPulse();
   requestAnimationFrame(() => resizeAllCharts());
+  rememberPlace();
+}
+
+function rememberPlace() {
+  if (!state.settings) return;
+  const lastView = ['watch', 'pulse', 'data', 'etf'].includes(state.view) ? state.view : 'watch';
+  const lastPrimary = state.primaryKind === 'fund' ? 'fund' : 'stock';
+  const lastGroup = state.secondaryGroup || 'all';
+  if (
+    state.settings.lastView === lastView &&
+    state.settings.lastPrimary === lastPrimary &&
+    state.settings.lastGroup === lastGroup
+  ) {
+    return;
+  }
+  saveSettings({ lastView, lastPrimary, lastGroup }).then((saved) => {
+    state.settings = saved;
+  });
 }
 
 function groupsForPrimary() {
@@ -471,6 +489,7 @@ function renderGroupTabs() {
       state.secondaryGroup = btn.dataset.group;
       renderGroupTabs();
       renderList();
+      rememberPlace();
     });
     btn.addEventListener('dblclick', async (e) => {
       e.preventDefault();
@@ -2119,6 +2138,7 @@ async function addGroupDialog() {
   const groups = [...(state.settings.groups || []), { id, name }];
   state.settings = await saveSettings({ groups });
   state.secondaryGroup = id;
+  rememberPlace();
   renderGroupTabs();
   renderList();
   els.statusText.textContent = `已创建分组「${name}」`;
@@ -2149,6 +2169,7 @@ async function deleteGroup(gid, { skipConfirm = false } = {}) {
   state.list = nextList;
   state.settings = await saveSettings({ groups });
   if (state.secondaryGroup === gid) state.secondaryGroup = 'all';
+  rememberPlace();
   renderGroupTabs();
   renderList();
   els.statusText.textContent = `已删除分组「${displayGroupName(g.name)}」`;
@@ -2574,6 +2595,7 @@ document.querySelectorAll('.primary-tab').forEach((tab) => {
   tab.addEventListener('click', () => {
     state.primaryKind = tab.dataset.primary;
     state.secondaryGroup = 'all';
+    rememberPlace();
     renderPrimaryTabs();
     renderGroupTabs();
     renderList();
@@ -2864,9 +2886,17 @@ async function bootApp() {
   if (state.settings?.funFlowNames && els.funNamesBtn) {
     els.funNamesBtn.classList.add('bg-accent', 'text-white');
   }
-  state.primaryKind = 'stock';
+  const savedView = ['watch', 'pulse', 'data', 'etf'].includes(state.settings?.lastView)
+    ? state.settings.lastView
+    : 'watch';
+  state.primaryKind = state.settings?.lastPrimary === 'fund' ? 'fund' : 'stock';
+  const savedGroup = state.settings?.lastGroup || 'all';
+  state.secondaryGroup =
+    savedGroup === 'all' || (state.settings?.groups || []).some((g) => g.id === savedGroup)
+      ? savedGroup
+      : 'all';
   state.insightNews = state.settings.cachedNews || [];
-  setView('watch');
+  setView(savedView);
   renderPrimaryTabs();
   renderGroupTabs();
   renderList();

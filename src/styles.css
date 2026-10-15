@@ -976,7 +976,7 @@
   right: 0;
   z-index: 60;
   display: flex;
-  width: min(440px, 100vw);
+  width: min(640px, 100vw);
   height: 100vh;
   flex-direction: column;
   background: var(--panel-solid);
