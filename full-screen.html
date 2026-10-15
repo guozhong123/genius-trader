@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#0f766e" />
     <meta name="mobile-web-app-capable" content="yes" />
     <title>天才交易员</title>
-    <script type="module" crossorigin src="/genius-trader/assets/full-screen-Bm3b2cYM.js"></script>
-    <link rel="modulepreload" crossorigin href="/genius-trader/assets/styles-55gLOwHD.js">
-    <link rel="stylesheet" crossorigin href="/genius-trader/assets/styles-DZrmr2SP.css">
+    <script type="module" crossorigin src="/genius-trader/assets/full-screen-CglJRfnd.js"></script>
+    <link rel="modulepreload" crossorigin href="/genius-trader/assets/styles-CCGXe0Yt.js">
+    <link rel="stylesheet" crossorigin href="/genius-trader/assets/styles-Df4aBoDg.css">
   </head>
   <body>
     <!-- 登录门禁 -->
@@ -53,6 +53,7 @@
             <div class="top-nav flex shrink-0 rounded-lg p-0.5 text-xs font-semibold" style="background: var(--panel-solid); border: 1px solid var(--line)">
               <button data-view="watch" class="view-tab rounded-md bg-accent px-2 py-1.5 text-white">自选</button>
               <button data-view="data" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">资金</button>
+              <button data-view="sessions" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">盘况</button>
               <button data-view="etf" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">热力图</button>
             </div>
 
@@ -164,6 +165,14 @@
           </div>
         </section>
 
+        <section id="view-sessions" class="hidden">
+          <div class="mb-2">
+            <div class="text-sm font-semibold">盘前 / 盘中 / 暗盘</div>
+            <p class="text-[11px]" style="color: var(--muted)">当地时间对照，30 秒刷新。节假日未计入。</p>
+          </div>
+          <div id="sessions-grid" class="sessions-grid"></div>
+        </section>
+
         <section id="view-etf" class="hidden">
           <div class="glass mb-1.5 rounded-lg px-2.5 py-1.5 text-[10px]" style="color: var(--muted)">
             内嵌 <a href="https://52etf.site/" target="_blank" rel="noreferrer" class="text-accent underline">52etf.site</a>
@@ -178,12 +187,13 @@
     <!-- 简讯合一弹窗：简析 / 消息 / 日历 -->
     <div id="brief-root" class="modal-wrap fixed inset-0 z-[60] hidden items-center justify-center p-3 sm:p-6">
       <div id="brief-mask" class="absolute inset-0" style="background: var(--mask)"></div>
-      <div class="modal-panel relative z-10 flex max-h-[90vh] w-[min(520px,96vw)] flex-col overflow-hidden rounded-2xl shadow-2xl"
+      <div class="modal-panel brief-panel relative z-10 flex max-h-[90vh] w-[min(640px,96vw)] flex-col overflow-hidden rounded-2xl shadow-2xl"
         style="background: var(--panel-solid); border: 1px solid var(--line)">
         <div class="flex shrink-0 items-center gap-2 border-b px-3 py-2.5" style="border-color: var(--line)">
-          <div class="flex rounded-lg p-0.5 text-xs font-semibold" style="background: color-mix(in oklab, var(--line) 35%, transparent)">
+          <div class="flex flex-wrap rounded-lg p-0.5 text-xs font-semibold" style="background: color-mix(in oklab, var(--line) 35%, transparent)">
             <button type="button" data-brief-tab="insight" class="brief-tab rounded-md bg-accent px-2.5 py-1 text-white">实时简析</button>
             <button type="button" data-brief-tab="news" class="brief-tab rounded-md px-2.5 py-1" style="color: var(--muted)">消息</button>
+            <button type="button" data-brief-tab="sessions" class="brief-tab rounded-md px-2.5 py-1" style="color: var(--muted)">盘况</button>
             <button type="button" data-brief-tab="calendar" class="brief-tab rounded-md px-2.5 py-1" style="color: var(--muted)">事件日历</button>
           </div>
           <button id="brief-close" class="ml-auto rounded-lg p-1.5" style="color: var(--muted)">
@@ -274,6 +284,6 @@
         </div>
       </div>
     </div>
-
+
   </body>
 </html>
