@@ -69,7 +69,7 @@ const FOMC_DATES = [
 ];
 
 /**
- * CPI：每月 10–15 日工作日都标为关注窗（实际发布日常在此区间）
+ * CPI：每月 10–15 日工作日关注窗（实际发布日常在此区间；滚动近三周会自然进出）
  */
 function cpiWindowDays(year, month0) {
   const days = [];
@@ -157,6 +157,11 @@ export function getTodayEvents(now = new Date()) {
 
 export function getUpcomingEvents(now = new Date(), withinDays = 14) {
   return getMacroEvents(now, withinDays, 2);
+}
+
+/** 近 N 天重大宏观日历（非农 / CPI / FOMC） */
+export function getMajorUpcomingEvents(now = new Date(), withinDays = 21) {
+  return getUpcomingEvents(now, withinDays).filter((e) => e.level === 'high');
 }
 
 export function isEventDay(now = new Date()) {

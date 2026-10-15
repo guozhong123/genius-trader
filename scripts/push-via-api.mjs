@@ -8,7 +8,7 @@ import { execSync } from 'child_process';
 import { readFileSync, readdirSync, statSync, existsSync } from 'fs';
 import { join, relative } from 'path';
 
-const owner = process.env.GITHUB_OWNER || 'z1994838315g';
+const owner = process.env.GITHUB_OWNER || 'guozhong123';
 const repo = process.env.GITHUB_REPO || 'genius-trader';
 const mode = process.argv[2] || 'main';
 

@@ -26,12 +26,20 @@ import {
   fetchQuotes,
   fetchStockMoneyFlow,
   fetchTechLeaders,
+  fetchMembersQuotes,
   fetchTopMovers,
   fetchUpDownDistribution,
   marketLabel,
   searchSymbols,
   toSecid,
 } from './lib/api.js';
+import {
+  US_PULSE_SECTORS,
+  KR_PULSE_SECTORS,
+  CN_PULSE_BOARDS,
+  buildSectorFromMembers,
+  getMarketSession,
+} from './lib/market-pulse.js';
 import {
   disposeChart,
   renderBoardBarChart,
@@ -42,7 +50,7 @@ import {
   renderUpDownChart,
   resizeAllCharts,
 } from './lib/charts.js';
-import { getTodayEvents, getUpcomingEvents } from './lib/calendar.js';
+import { getTodayEvents, getUpcomingEvents, getMajorUpcomingEvents } from './lib/calendar.js';
 import { buildLevelMarkLines } from './lib/levels.js';
 import { normalizeGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
@@ -109,6 +117,9 @@ const state = {
   insightNews: [],
   techLeaders: [],
   eventPanelOpen: false,
+  pulseMarket: 'US',
+  pulseBoards: [],
+  pulseSession: { key: 'open', label: '—' },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -118,6 +129,10 @@ const els = {
   indices: $('indices'),
   indicesBar: $('indices-bar'),
   indicesMobile: $('indices-mobile'),
+  pulseBar: $('pulse-bar'),
+  pulseBoardsEl: $('pulse-boards'),
+  pulseSession: $('pulse-session'),
+  pulseHint: $('pulse-hint'),
   searchInput: $('search-input'),
   searchResults: $('search-results'),
   refreshBtn: $('refresh-btn'),
@@ -322,6 +337,7 @@ function setView(view) {
     if (el) el.classList.toggle('hidden', v !== view);
   });
   els.indicesBar?.classList.toggle('hidden', view !== 'watch');
+  els.pulseBar?.classList.toggle('hidden', view !== 'watch');
   els.watchSubnav?.classList.toggle('hidden', view !== 'watch');
   document.querySelectorAll('.view-tab').forEach((tab) => {
     const on = tab.dataset.view === view;
@@ -1220,6 +1236,105 @@ async function refreshIndices() {
   renderIndices();
 }
 
+function syncPulseMarketButtons() {
+  document.querySelectorAll('.pulse-market-btn').forEach((btn) => {
+    const on = btn.dataset.pulseMarket === state.pulseMarket;
+    btn.classList.toggle('bg-accent', on);
+    btn.classList.toggle('text-white', on);
+    btn.style.color = on ? '#fff' : 'var(--muted)';
+  });
+}
+
+function pulseSectorSkeleton(market) {
+  if (market === 'CN') return CN_PULSE_BOARDS.map((b) => ({ name: b.name, changePct: null }));
+  const sectors = market === 'KR' ? KR_PULSE_SECTORS : US_PULSE_SECTORS;
+  return sectors.map((s) => ({ name: s.name, changePct: null }));
+}
+
+function renderPulseBoards() {
+  syncPulseMarketButtons();
+  const session = getMarketSession(state.pulseMarket);
+  state.pulseSession = session;
+  if (els.pulseSession) {
+    els.pulseSession.textContent = session.label;
+  }
+  const hintMap = {
+    CN: '东财板块涨跌',
+    US: '成分等权 · 类市场魔方',
+    KR: '韩股主题成分等权',
+  };
+  if (els.pulseHint) els.pulseHint.textContent = hintMap[state.pulseMarket] || '';
+
+  const boards =
+    state.pulseBoards?.length > 0
+      ? state.pulseBoards
+      : pulseSectorSkeleton(state.pulseMarket || 'US');
+  if (!els.pulseBoardsEl) return;
+  els.pulseBoardsEl.innerHTML = boards
+    .map((b) => {
+      const pct = Number(b.changePct);
+      const ok = Number.isFinite(pct);
+      const bg = !ok
+        ? ''
+        : pct > 0
+          ? 'background:color-mix(in oklab,var(--up) 12%,transparent)'
+          : pct < 0
+            ? 'background:color-mix(in oklab,var(--down) 12%,transparent)'
+            : '';
+      return `<div class="pulse-chip" style="${bg}">
+        <div class="pulse-chip-name">${esc(b.name)}</div>
+        <div class="pulse-chip-pct tabular-nums ${ok ? tone(pct) : ''}">${ok ? fmtPct(pct) : '…'}</div>
+      </div>`;
+    })
+    .join('');
+}
+
+async function refreshPulse() {
+  const market = state.pulseMarket || 'US';
+  // 先画出板块名，避免空白
+  if (!state.pulseBoards?.length) {
+    state.pulseBoards = pulseSectorSkeleton(market);
+    renderPulseBoards();
+  }
+  try {
+    if (market === 'CN') {
+      const quotes = await fetchMembersQuotes(
+        CN_PULSE_BOARDS.map((b) => ({
+          code: b.code,
+          marketNo: b.marketNo,
+          secid: b.secid,
+          name: b.name,
+        })),
+      );
+      const byCode = new Map(quotes.map((q) => [String(q.code), q]));
+      state.pulseBoards = CN_PULSE_BOARDS.map((b) => {
+        const q = byCode.get(b.code);
+        return {
+          name: b.name,
+          changePct: Number.isFinite(Number(q?.changePct)) ? Number(q.changePct) : null,
+          code: b.code,
+        };
+      });
+    } else {
+      const sectors = market === 'KR' ? KR_PULSE_SECTORS : US_PULSE_SECTORS;
+      const members = sectors.flatMap((s) => s.members);
+      const quotes = await fetchMembersQuotes(members);
+      const bySecid = new Map(quotes.map((q) => [q.secid, q]));
+      state.pulseBoards = sectors.map((s) => {
+        const built = buildSectorFromMembers(s, bySecid);
+        return {
+          name: s.name,
+          changePct: built.changePct,
+          count: built.count,
+        };
+      });
+    }
+  } catch (e) {
+    console.error(e);
+  }
+  renderPulseBoards();
+}
+
 async function refreshQuotes() {
   if (!state.list.length) {
     state.quotes = {};
@@ -1314,12 +1429,12 @@ function renderEventPanel() {
     els.eventPanel.innerHTML = '';
     return;
   }
-  const events = getUpcomingEvents(new Date(), 21);
+  const events = getMajorUpcomingEvents(new Date(), 21);
   const today = todayStr();
   els.eventPanel.classList.remove('hidden');
   els.eventPanel.innerHTML = `
     <div class="mb-2 flex items-center justify-between gap-2">
-      <div class="text-sm font-semibold">近三周宏观事件</div>
+      <div class="text-sm font-semibold">近三周 · 重大日历</div>
       <button type="button" id="event-panel-close" class="rounded-md p-1" style="color:var(--muted)">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
@@ -1356,12 +1471,24 @@ function renderEventPanel() {
   });
 }
 
+function pickDefaultPulseMarket() {
+  const us = getMarketSession('US');
+  if (us.key === 'pre' || us.key === 'open' || us.key === 'post') return 'US';
+  const kr = getMarketSession('KR');
+  if (kr.key === 'pre' || kr.key === 'open' || kr.key === 'post') return 'KR';
+  const cn = getMarketSession('CN');
+  if (cn.key === 'pre' || cn.key === 'open' || cn.key === 'post') return 'CN';
+  return 'US';
+}
+
 async function refreshAll() {
   state.loading = true;
   renderStatus();
   els.refreshBtn.classList.add('animate-spin');
   try {
-    await Promise.all([refreshIndices(), refreshQuotes()]);
+    const tasks = [refreshIndices(), refreshQuotes()];
+    if (state.view === 'watch') tasks.push(refreshPulse());
+    await Promise.all(tasks);
     if (state.view === 'data') {
       await Promise.all([loadDataCenter(), loadBoards(), loadRank()]);
     }
@@ -1616,7 +1743,7 @@ function buildBriefInsightHtml() {
     <ul class="space-y-1 text-[12px] leading-relaxed">
       ${tips.map((t) => `<li class="pl-2" style="border-left:2px solid var(--accent)">${esc(t)}</li>`).join('')}
     </ul>
-    <p class="mt-2 text-[10px]" style="color:var(--muted)">消息与行情仅供参考，不构成投资建议。</p>`;
+    <p class="mt-2 text-[10px]" style="color:var(--muted)">消息与行情仅供参考，不构成投资建议。板块涨跌见顶部「盘况」。</p>`;
 }
 
 function formatNewsTime(t) {
@@ -1645,7 +1772,10 @@ function formatNewsTime(t) {
 function newsItemMajorClass(n) {
   if (n.major) return true;
   if (n.score != null && n.score >= 6) return true;
-  return n.tone === 'up' || n.tone === 'down';
+  const title = n.title || '';
+  if (MACRO_HINT.test(title)) return true;
+  if (/重磅|突发|紧急|暴跌|暴涨|熔断|制裁|关税/.test(title)) return true;
+  return false;
 }
 
 function renderBriefNewsHtml() {
@@ -1678,21 +1808,22 @@ function renderBriefNewsHtml() {
 }
 
 function renderBriefCalendarHtml() {
-  const events = getUpcomingEvents(new Date(), 21);
+  const events = getMajorUpcomingEvents(new Date(), 21);
   const today = todayStr();
   if (!events.length) {
-    return '<p class="text-sm" style="color:var(--muted)">近三周暂无预设事件</p>';
+    return '<p class="text-sm" style="color:var(--muted)">近三周暂无重大宏观事件</p>';
   }
-  return `<div class="space-y-1.5">
+  return `<div class="mb-1.5 text-[11px] font-semibold" style="color:var(--muted)">近三周 · 重大日历</div>
+  <div class="space-y-1.5">
     ${events
       .map((e) => {
         const isToday = e.date === today;
         const typeColor =
           e.type === 'cpi' ? 'var(--up)' : e.type === 'nfp' ? '#b45309' : 'var(--accent)';
-        return `<div class="flex items-start gap-2 rounded-lg px-2 py-1.5 ${isToday ? 'ring-soft' : ''}" style="${isToday ? 'background:color-mix(in oklab,var(--accent) 8%,transparent)' : ''}">
+        return `<div class="flex items-start gap-2 rounded-lg px-2.5 py-2 ${isToday ? 'ring-soft' : ''}" style="${isToday ? 'background:color-mix(in oklab,var(--accent) 8%,transparent)' : ''}">
           <span class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="color:${typeColor};background:color-mix(in oklab,${typeColor} 12%,transparent)">${e.type.toUpperCase()}</span>
           <div class="min-w-0 flex-1">
-            <div class="text-[12px] font-semibold">${esc(e.date)} ${esc(e.title)}${isToday ? ' · 今日' : ''}</div>
+            <div class="text-[13px] font-semibold">${esc(e.date)} ${esc(e.title)}${isToday ? ' · 今日' : ''}</div>
             <div class="text-[11px]" style="color:var(--muted)">${esc(e.tip)}</div>
             ${e.impact ? `<div class="mt-0.5 text-[11px] leading-snug"><span class="font-semibold text-accent">影响：</span>${esc(e.impact)}</div>` : ''}
             ${e.result ? `<div class="mt-0.5 text-[10px]" style="color:var(--muted)">状态：${esc(e.result)}</div>` : ''}
@@ -1701,7 +1832,7 @@ function renderBriefCalendarHtml() {
       })
       .join('')}
   </div>
-  <p class="mt-2 text-[10px]" style="color:var(--muted)">CPI 日期为常用区间近似，请以美国劳工部/美联储官网为准。仅供风控提示。</p>`;
+  <p class="mt-2 text-[10px]" style="color:var(--muted)">滚动近三周重大窗口（非农 / CPI / FOMC）；CPI 关注窗可多日出现，状态随日期更新。请以官网为准。</p>`;
 }
 
 function syncBriefTabButtons() {
@@ -1888,6 +2019,15 @@ els.newsOpenBtn?.addEventListener('click', () => openBrief('news'));
 els.newsCloseBtn?.addEventListener('click', () => closeBrief());
 els.calendarBtn?.addEventListener('click', () => openBrief('calendar'));
 els.eventCalendarBtn?.addEventListener('click', () => openBrief('calendar'));
+
+document.querySelectorAll('[data-pulse-market]').forEach((btn) => {
+  btn.addEventListener('click', async () => {
+    state.pulseMarket = btn.dataset.pulseMarket || 'US';
+    state.pulseBoards = pulseSectorSkeleton(state.pulseMarket);
+    renderPulseBoards();
+    await refreshPulse();
+  });
+});
 
 els.exportBtn?.addEventListener('click', () => exportWatchlistJson());
 
@@ -2132,6 +2272,10 @@ async function bootApp() {
   renderEventBanner();
   if (added > 0) els.statusText.textContent = `已导入神器自选 ${added} 只`;
   else if (currentUser()) els.statusText.textContent = `你好，${currentUser()}`;
+  state.pulseMarket = pickDefaultPulseMarket();
+  state.pulseBoards = pulseSectorSkeleton(state.pulseMarket);
+  els.pulseBar?.classList.remove('hidden');
+  renderPulseBoards();
   await Promise.all([refreshAll(), refreshMajorNews(false)]);
   if (!state.timersStarted) {
     state.timersStarted = true;

@@ -786,6 +786,37 @@ export async function fetchTechLeaders() {
   return fetchIndices(TECH_LEADERS);
 }
 
+/** 批量拉成分股行情（盘况板块加权用） */
+export async function fetchMembersQuotes(members) {
+  if (!members?.length) return [];
+  const uniq = new Map();
+  for (const m of members) {
+    const secid = m.secid || `${m.marketNo}.${m.code}`;
+    if (!uniq.has(secid)) {
+      uniq.set(secid, {
+        code: m.code,
+        marketNo: m.marketNo,
+        secid,
+        name: m.name || m.code,
+        kind: 'stock',
+        market:
+          m.marketNo === 90
+            ? 'BK'
+            : m.marketNo === 177 || m.marketNo === 100
+              ? 'KR'
+              : 'US',
+      });
+    }
+  }
+  const list = [...uniq.values()];
+  const out = [];
+  for (let i = 0; i < list.length; i += 40) {
+    const chunk = await fetchIndices(list.slice(i, i + 40));
+    out.push(...chunk);
+  }
+  return out;
+}
+
 export async function fetchIndices(list) {
   if (!list?.length) return [];
   const secids = list.map((x) => x.secid || toSecid(x.market, x.code, x.marketNo)).join(',');
