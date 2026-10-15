@@ -980,13 +980,16 @@ async function refreshDetailCharts() {
   try {
     const period = state.period;
     const kltMap = { day: 101, week: 102, month: 103, year: 106 };
-    const tasks = [
+    const [mainRes, flowRes] = await Promise.allSettled([
       period === 'intraday'
         ? fetchIntraday(secid)
         : fetchKline(secid, kltMap[period] || 101, period === 'year' ? 40 : 90),
       fetchStockMoneyFlow(secid),
-    ];
-    const [mainData, flow] = await Promise.all(tasks);
+    ]);
+    const mainData = mainRes.status === 'fulfilled' ? mainRes.value : null;
+    const flow = flowRes.status === 'fulfilled' ? flowRes.value : null;
+    if (mainRes.status === 'rejected') console.error(mainRes.reason);
+    if (flowRes.status === 'rejected') console.error(flowRes.reason);
 
     const axisMode = chartAxisMode();
     const markLine = currentMarkLine(mainData?.preClose);
@@ -1006,7 +1009,7 @@ async function refreshDetailCharts() {
             avgs: intra.points.map((p) => p.avg),
             volumes: intra.points.map((p) => p.volume),
             preClose: intra.preClose,
-            markLine: currentMarkLine(item, auto, intra.preClose),
+            markLine: markLine,
           },
           { axisMode },
         );

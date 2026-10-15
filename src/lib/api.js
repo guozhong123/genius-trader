@@ -786,12 +786,25 @@ export async function fetchMarketMoneyFlow() {
 
 /** 个股主力资金分时 */
 export async function fetchStockMoneyFlow(secid) {
-  const url =
-    `https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?lmt=0&klt=1&secid=${encodeURIComponent(secid)}` +
+  const q =
+    `lmt=0&klt=1&secid=${encodeURIComponent(secid)}` +
     '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63';
-  const res = await fetch(url);
-  const json = await res.json();
-  return parseFlowKlines(json?.data?.klines);
+  const urls = [
+    `https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?${q}`,
+    `https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get?${q}`,
+  ];
+  for (const url of urls) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const json = await res.json();
+      const parsed = parseFlowKlines(json?.data?.klines);
+      if (parsed?.times?.length) return parsed;
+    } catch {
+      /* try next */
+    }
+  }
+  return parseFlowKlines([]);
 }
 
 /** 涨跌家数分布 */
