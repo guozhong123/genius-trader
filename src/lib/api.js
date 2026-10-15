@@ -298,11 +298,120 @@ function putFundQuote(map, code, payload) {
   if (raw !== padded) map[`fund:FUND:${raw}`] = payload;
 }
 
+const isExtension = typeof chrome !== 'undefined' && chrome.runtime?.id;
+
+function parseFundEstimate(gszRaw) {
+  if (gszRaw == null || gszRaw === '' || gszRaw === '--') return null;
+  const n = Number(gszRaw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function parseFundChangePct(raw) {
+  if (raw == null || raw === '' || raw === '--') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+function resolveFundPrice(estimate, nav) {
+  if (estimate != null && estimate > 0) return estimate;
+  const n = Number(nav);
+  if (Number.isFinite(n) && n > 0) return n;
+  return null;
+}
+
+function quoteFromMnfRow(row) {
+  const code = String(row.FCODE || '').padStart(6, '0');
+  const nav = Number(row.NAV || row.DWJZ || 0);
+  const estimate = parseFundEstimate(row.GSZ);
+  const pctRaw =
+    row.GSZZL != null && row.GSZZL !== ''
+      ? row.GSZZL
+      : row.NAVCHGRT != null && row.NAVCHGRT !== ''
+        ? row.NAVCHGRT
+        : null;
+  const changePct = parseFundChangePct(pctRaw);
+  const price = resolveFundPrice(estimate, nav);
+  return {
+    code,
+    payload: {
+      name: row.SHORTNAME || row.NAME || '',
+      price,
+      nav: nav > 0 ? nav : null,
+      estimate,
+      changePct,
+      updatedAt: Date.now(),
+      asOf: row.GZTIME || row.PDATE || '',
+      source: estimate != null ? '估' : '净',
+    },
+  };
+}
+
+function quoteFromGzData(data, fallback) {
+  const code = String(data.fundcode || fallback?.code || '').padStart(6, '0');
+  const nav = Number(data.dwjz || 0);
+  const estimate = parseFundEstimate(data.gsz);
+  const changePct = parseFundChangePct(data.gszzl);
+  const price = resolveFundPrice(estimate, nav);
+  return {
+    code,
+    payload: {
+      name: data.name || fallback?.name || '',
+      price,
+      nav: nav > 0 ? nav : null,
+      estimate,
+      changePct,
+      updatedAt: Date.now(),
+      asOf: data.gztime || data.jzrq || '',
+      source: estimate != null ? '估' : '净',
+    },
+  };
+}
+
+/** fundgz JSONP（浏览器无 CORS 限制） */
+let fundGzJsonpQueue = Promise.resolve();
+
+export function fetchFundGzJsonp(code) {
+  const padded = String(code).padStart(6, '0');
+  const run = () =>
+    new Promise((resolve, reject) => {
+      if (typeof document === 'undefined') {
+        reject(new Error('no document'));
+        return;
+      }
+      const script = document.createElement('script');
+      const prevJsonpgz = window.jsonpgz;
+      const timer = setTimeout(() => {
+        window.jsonpgz = prevJsonpgz;
+        script.remove();
+        reject(new Error('fundgz timeout'));
+      }, 12000);
+      script.onerror = () => {
+        clearTimeout(timer);
+        window.jsonpgz = prevJsonpgz;
+        script.remove();
+        reject(new Error('fundgz load error'));
+      };
+      window.jsonpgz = (data) => {
+        clearTimeout(timer);
+        if (typeof prevJsonpgz === 'function') prevJsonpgz(data);
+        window.jsonpgz = prevJsonpgz;
+        script.remove();
+        resolve(data);
+      };
+      script.src = `https://fundgz.1234567.com.cn/js/${padded}.js?rt=${Date.now()}`;
+      document.head.appendChild(script);
+    });
+
+  fundGzJsonpQueue = fundGzJsonpQueue.then(run, run);
+  return fundGzJsonpQueue;
+}
+
 async function fetchFundQuotes(funds) {
   if (!funds.length) return {};
   const map = {};
   const chunkSize = 40;
   const codes = funds.map((f) => String(f.code).padStart(6, '0'));
+  let mnfHadFailure = false;
 
   for (let i = 0; i < codes.length; i += chunkSize) {
     const chunk = codes.slice(i, i + chunkSize);
@@ -312,71 +421,31 @@ async function fetchFundQuotes(funds) {
         `&plat=Android&appType=ttjj&product=EFund&Version=1&deviceid=genius-trader` +
         `&Fcodes=${chunk.join(',')}`;
       const res = await fetch(url);
+      if (!res.ok) throw new Error(`FundMNFInfo ${res.status}`);
       const json = await res.json();
       const rows = json?.Datas || json?.Data || [];
       for (const row of rows) {
-        const code = String(row.FCODE || '').padStart(6, '0');
-        const nav = Number(row.NAV || row.DWJZ || 0);
-        const gszRaw = row.GSZ;
-        const estimate =
-          gszRaw != null && gszRaw !== '' && !Number.isNaN(Number(gszRaw)) ? Number(gszRaw) : null;
-        const pctRaw =
-          row.GSZZL != null && row.GSZZL !== ''
-            ? row.GSZZL
-            : row.NAVCHGRT != null && row.NAVCHGRT !== ''
-              ? row.NAVCHGRT
-              : null;
-        const changePct = pctRaw == null ? NaN : Number(pctRaw);
-        const price = estimate != null && estimate > 0 ? estimate : nav;
-        putFundQuote(map, code, {
-          name: row.SHORTNAME || row.NAME || '',
-          price: price || null,
-          nav: nav || null,
-          estimate,
-          changePct: Number.isFinite(changePct) ? changePct : null,
-          updatedAt: Date.now(),
-          asOf: row.GZTIME || row.PDATE || '',
-          source: estimate != null ? '估' : '净',
-        });
+        const { code, payload } = quoteFromMnfRow(row);
+        putFundQuote(map, code, payload);
       }
     } catch {
-      /* try next chunk / fallback */
+      mnfHadFailure = true;
     }
   }
 
   const missing = funds.filter((f) => !map[fundQuoteKey(f.code)]);
-  await Promise.all(
-    missing.map(async (f) => {
-      try {
-        const code = String(f.code).padStart(6, '0');
-        const u = `https://fundgz.1234567.com.cn/js/${code}.js?rt=${Date.now()}`;
-        const text = await (await fetch(u)).text();
-        const m = text.match(/jsonpgz\((.*)\)/);
-        if (!m) return;
-        const data = JSON.parse(m[1]);
-        const nav = Number(data.dwjz || 0);
-        const estimate = data.gsz != null && data.gsz !== '' ? Number(data.gsz) : null;
-        const changePct =
-          data.gszzl != null && data.gszzl !== ''
-            ? Number(data.gszzl)
-            : data.dwjz != null
-              ? null
-              : null;
-        putFundQuote(map, code, {
-          name: data.name || f.name,
-          price: (estimate != null && estimate > 0 ? estimate : nav) || null,
-          nav: nav || null,
-          estimate,
-          changePct: Number.isFinite(changePct) ? changePct : null,
-          updatedAt: Date.now(),
-          asOf: data.gztime || data.jzrq || '',
-          source: estimate != null ? '估' : '净',
-        });
-      } catch {
-        /* ignore */
-      }
-    }),
-  );
+  const jsonpAllOnWeb = !isExtension && (mnfHadFailure || missing.length > 0);
+  const jsonpTargets = jsonpAllOnWeb ? funds : missing;
+
+  for (const f of jsonpTargets) {
+    try {
+      const data = await fetchFundGzJsonp(f.code);
+      const { code, payload } = quoteFromGzData(data, f);
+      putFundQuote(map, code, payload);
+    } catch {
+      /* ignore single fund */
+    }
+  }
 
   return map;
 }

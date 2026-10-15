@@ -47,12 +47,64 @@ function splitLine() {
   return getComputedStyle(document.documentElement).getPropertyValue('--chart-split').trim() || '#f1f5f9';
 }
 
-export function renderIntradayChart(el, { times, prices, avgs, preClose, markLine }) {
+function padTimeLabel(t) {
+  const s = String(t || '');
+  const part = s.includes(' ') ? s.split(' ').pop() : s;
+  return part.slice(0, 5);
+}
+
+/** A 股交易日分时轴：09:30–11:30、13:00–15:00（含端点，逐分钟） */
+export function buildAshareSessionTimes() {
+  const times = [];
+  const pushRange = (h0, m0, h1, m1) => {
+    let cur = h0 * 60 + m0;
+    const end = h1 * 60 + m1;
+    while (cur <= end) {
+      const h = Math.floor(cur / 60);
+      const m = cur % 60;
+      times.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+      cur += 1;
+    }
+  };
+  pushRange(9, 30, 11, 30);
+  pushRange(13, 0, 15, 0);
+  return times;
+}
+
+/** 将稀疏分时对齐到完整交易时段，缺失分钟填 null */
+export function padSeriesToSession(times, ...seriesArrays) {
+  const session = buildAshareSessionTimes();
+  const index = new Map((times || []).map((t, i) => [padTimeLabel(t), i]));
+  const series = seriesArrays.map((arr) =>
+    session.map((t) => {
+      const i = index.get(t);
+      if (i == null || arr == null) return null;
+      const v = arr[i];
+      return v == null ? null : v;
+    }),
+  );
+  return { times: session, series };
+}
+
+export function renderIntradayChart(
+  el,
+  { times, prices, avgs, preClose, markLine },
+  { axisMode = 'full' } = {},
+) {
   if (!el) return;
+  let chartTimes = times;
+  let chartPrices = prices;
+  let chartAvgs = avgs;
+  if (axisMode === 'full' && times?.length) {
+    const padded = padSeriesToSession(times, prices, avgs);
+    chartTimes = padded.times;
+    [chartPrices, chartAvgs] = padded.series;
+  }
   const chart = getChart(el);
   const up = '#e11d48';
   const down = '#059669';
-  const last = prices[prices.length - 1];
+  const last =
+    [...chartPrices].reverse().find((v) => v != null) ?? chartPrices[chartPrices.length - 1];
   const color = last >= preClose ? up : down;
   const mute = axisMute();
   const defaultMark = preClose
@@ -73,9 +125,9 @@ export function renderIntradayChart(el, { times, prices, avgs, preClose, markLin
     },
     xAxis: {
       type: 'category',
-      data: times,
+      data: chartTimes,
       boundaryGap: false,
-      axisLabel: { color: mute, fontSize: 10, interval: Math.ceil(times.length / 5) },
+      axisLabel: { color: mute, fontSize: 10, interval: Math.ceil(chartTimes.length / 5) },
       axisLine: { lineStyle: { color: splitLine() } },
     },
     yAxis: {
@@ -88,7 +140,7 @@ export function renderIntradayChart(el, { times, prices, avgs, preClose, markLin
       {
         name: '分时',
         type: 'line',
-        data: prices,
+        data: chartPrices,
         showSymbol: false,
         smooth: 0.15,
         lineStyle: { width: 2, color },
@@ -103,7 +155,7 @@ export function renderIntradayChart(el, { times, prices, avgs, preClose, markLin
       {
         name: '均价',
         type: 'line',
-        data: avgs,
+        data: chartAvgs,
         showSymbol: false,
         smooth: 0.15,
         lineStyle: { width: 1.2, color: '#f59e0b', opacity: 0.85 },
@@ -182,8 +234,25 @@ export function renderSparkline(el, prices, preClose) {
   return chart;
 }
 
-export function renderFlowChart(el, flow) {
+export function renderFlowChart(el, flow, { axisMode = 'full', legendNames } = {}) {
   if (!el || !flow?.times?.length) return;
+  let times = flow.times;
+  let main = flow.main;
+  let huge = flow.huge;
+  let large = flow.large;
+  let mid = flow.mid;
+  let small = flow.small;
+  if (axisMode === 'full') {
+    const padded = padSeriesToSession(times, main, huge, large, mid, small);
+    times = padded.times;
+    [main, huge, large, mid, small] = padded.series;
+  }
+  const legends = legendNames?.length
+    ? legendNames
+    : ['主力', '超大单', '大单', '中单', '小单'];
+  const colors = ['#e11d48', '#f97316', '#0f766e', '#0ea5e9', '#059669'];
+  const widths = [2.2, 1.2, 1.2, 1.2, 1.2];
+  const seriesData = [main, huge, large, mid, small];
   const chart = getChart(el);
   const mute = axisMute();
   chart.setOption({
@@ -191,15 +260,15 @@ export function renderFlowChart(el, flow) {
     legend: {
       top: 0,
       textStyle: { color: mute, fontSize: 11 },
-      data: ['主力', '超大单', '大单', '中单', '小单'],
+      data: legends,
     },
     grid: { left: 48, right: 16, top: 36, bottom: 28 },
     tooltip: { trigger: 'axis' },
     xAxis: {
       type: 'category',
-      data: flow.times,
+      data: times,
       boundaryGap: false,
-      axisLabel: { color: mute, fontSize: 10, interval: Math.ceil(flow.times.length / 5) },
+      axisLabel: { color: mute, fontSize: 10, interval: Math.ceil(times.length / 5) },
       axisLine: { lineStyle: { color: splitLine() } },
     },
     yAxis: {
@@ -209,13 +278,13 @@ export function renderFlowChart(el, flow) {
       splitLine: { lineStyle: { color: splitLine() } },
       axisLabel: { color: mute, fontSize: 10 },
     },
-    series: [
-      { name: '主力', type: 'line', showSymbol: false, data: flow.main, lineStyle: { width: 2.2, color: '#e11d48' } },
-      { name: '超大单', type: 'line', showSymbol: false, data: flow.huge, lineStyle: { width: 1.2, color: '#f97316' } },
-      { name: '大单', type: 'line', showSymbol: false, data: flow.large, lineStyle: { width: 1.2, color: '#0f766e' } },
-      { name: '中单', type: 'line', showSymbol: false, data: flow.mid, lineStyle: { width: 1.2, color: '#0ea5e9' } },
-      { name: '小单', type: 'line', showSymbol: false, data: flow.small, lineStyle: { width: 1.2, color: '#059669' } },
-    ],
+    series: legends.map((name, i) => ({
+      name,
+      type: 'line',
+      showSymbol: false,
+      data: seriesData[i] ?? [],
+      lineStyle: { width: widths[i] ?? 1.2, color: colors[i] ?? mute },
+    })),
   });
   return chart;
 }

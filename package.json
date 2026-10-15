@@ -1,11 +1,13 @@
 {
   "name": "genius-trader",
-  "version": "1.6.1",
+  "version": "1.7.0",
   "private": true,
   "description": "天才交易员 - 股票基金盯盘 Chrome 扩展",
   "scripts": {
     "dev": "vite build --watch",
     "build": "vite build",
+    "build:web": "node scripts/build-web.mjs",
+    "deploy:pages": "node scripts/deploy-pages.mjs",
     "icons": "node scripts/make-icons.mjs"
   },
   "devDependencies": {

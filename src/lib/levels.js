@@ -59,7 +59,8 @@ export function checkStopLoss(item, quote) {
   return { hit: false, kind: null, price, stopLoss: stop, pctToStop };
 }
 
-export function buildLevelMarkLines({ support, resistance, stopLoss, preClose }) {
+/** 图表标记线：昨收、支撑、止损（不绘制压力线） */
+export function buildLevelMarkLines({ support, stopLoss, preClose }) {
   const mute = '#94a3b8';
   const data = [];
   if (preClose != null && Number.isFinite(Number(preClose))) {
@@ -76,14 +77,6 @@ export function buildLevelMarkLines({ support, resistance, stopLoss, preClose })
       name: '支撑',
       lineStyle: { type: 'solid', color: '#059669', width: 1.2 },
       label: { formatter: '支撑', color: '#059669', fontSize: 10 },
-    });
-  }
-  if (resistance != null) {
-    data.push({
-      yAxis: resistance,
-      name: '压力',
-      lineStyle: { type: 'solid', color: '#e11d48', width: 1.2 },
-      label: { formatter: '压力', color: '#e11d48', fontSize: 10 },
     });
   }
   if (stopLoss != null && Number.isFinite(Number(stopLoss))) {

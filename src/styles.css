@@ -233,11 +233,43 @@
     }
   }
 
+  .sticky-top {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    backdrop-filter: blur(16px);
+  }
+
   .top-toolbar {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 0.5rem;
+  }
+
+  .news-dot {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: var(--up);
+    box-shadow: 0 0 0 1.5px var(--panel-solid);
+  }
+
+  .news-item.major a,
+  .news-item.major {
+    color: var(--up);
+  }
+
+  .news-item.major a {
+    font-weight: 700;
+  }
+
+  .brief-tab.active {
+    background: var(--accent);
+    color: #fff;
   }
 
   .indices-bar {

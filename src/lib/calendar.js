@@ -24,6 +24,12 @@ function firstFriday(year, month0) {
   return d;
 }
 
+function eventResult(dateStr, now = new Date()) {
+  const today = ymd(now);
+  if (dateStr < today) return '已公布，关注市场反应';
+  return '待公布';
+}
+
 const IMPACT = {
   nfp: {
     tip: '非农就业数据公布窗口',
@@ -79,37 +85,39 @@ function cpiWindowDays(year, month0) {
  * 生成 [fromDate-lookback, fromDate+days] 区间事件
  */
 export function getMacroEvents(fromDate = new Date(), days = 60, lookback = 3) {
-  const start = addDays(
-    new Date(fromDate.getFullYear(), fromDate.getMonth(), fromDate.getDate()),
-    -lookback,
-  );
-  const end = addDays(new Date(fromDate.getFullYear(), fromDate.getMonth(), fromDate.getDate()), days);
+  const anchor = new Date(fromDate.getFullYear(), fromDate.getMonth(), fromDate.getDate());
+  const start = addDays(anchor, -lookback);
+  const end = addDays(anchor, days);
   const events = [];
 
   for (let y = start.getFullYear(); y <= end.getFullYear(); y += 1) {
     for (let m = 0; m < 12; m += 1) {
       const nfp = firstFriday(y, m);
       if (nfp >= start && nfp <= end) {
+        const date = ymd(nfp);
         events.push({
-          id: `nfp-${ymd(nfp)}`,
-          date: ymd(nfp),
+          id: `nfp-${date}`,
+          date,
           type: 'nfp',
           title: '美国非农就业',
           tip: IMPACT.nfp.tip,
           impact: IMPACT.nfp.impact,
           level: 'high',
+          result: eventResult(date, anchor),
         });
       }
       for (const cpi of cpiWindowDays(y, m)) {
         if (cpi >= start && cpi <= end) {
+          const date = ymd(cpi);
           events.push({
-            id: `cpi-${ymd(cpi)}`,
-            date: ymd(cpi),
+            id: `cpi-${date}`,
+            date,
             type: 'cpi',
             title: '美国 CPI 关注日',
             tip: IMPACT.cpi.tip,
             impact: IMPACT.cpi.impact,
             level: 'high',
+            result: eventResult(date, anchor),
           });
         }
       }
@@ -127,6 +135,7 @@ export function getMacroEvents(fromDate = new Date(), days = 60, lookback = 3) {
         tip: IMPACT.fomc.tip,
         impact: IMPACT.fomc.impact,
         level: 'high',
+        result: eventResult(date, anchor),
       });
     }
   }

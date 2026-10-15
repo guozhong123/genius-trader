@@ -1,3 +1,5 @@
+import { normalizeGroups, normalizeImportedGroup } from './stock-groups.js';
+
 export function itemKey(item) {
   return `${item.kind}:${item.market || ''}:${item.code}`;
 }
@@ -14,6 +16,8 @@ export const DEFAULT_INDICES = [
   { name: '沪深300', code: '000300', market: 'SH', marketNo: 1, secid: '1.000300', kind: 'stock', label: '沪' },
   { name: '恒生指数', code: 'HSI', market: 'HK', marketNo: 100, secid: '100.HSI', kind: 'stock', label: '港' },
   { name: '纳斯达克', code: 'NDX', market: 'US', marketNo: 100, secid: '100.NDX', kind: 'stock', label: '美' },
+  { name: '日经225', code: 'N225', market: 'JP', marketNo: 100, secid: '100.N225', kind: 'stock', label: '日' },
+  { name: '韩国KOSPI', code: 'KS11', market: 'KR', marketNo: 100, secid: '100.KS11', kind: 'stock', label: '韩' },
 ];
 
 /** 固定可选指数池（勾选添加） */
@@ -31,6 +35,8 @@ export const INDEX_PRESETS = [
   { name: '中证白酒', code: '399997', market: 'SZ', marketNo: 0, secid: '0.399997', kind: 'stock', label: '深' },
   { name: 'COMEX黄金', code: 'GC00Y', market: 'US', marketNo: 101, secid: '101.GC00Y', kind: 'stock', label: '期' },
   { name: '黄金ETF', code: '518880', market: 'SH', marketNo: 1, secid: '1.518880', kind: 'stock', label: '沪' },
+  { name: '日经225', code: 'N225', market: 'JP', marketNo: 100, secid: '100.N225', kind: 'stock', label: '日' },
+  { name: '韩国KOSPI', code: 'KS11', market: 'KR', marketNo: 100, secid: '100.KS11', kind: 'stock', label: '韩' },
 ];
 
 export const DEFAULT_SETTINGS = {
@@ -38,8 +44,12 @@ export const DEFAULT_SETTINGS = {
   viewMode: 'list',
   sortBy: 'manual',
   activeGroup: 'all',
-  groups: [{ id: 'default', name: '默认' }],
+  groups: [{ id: 'other', name: '其他' }],
   indices: DEFAULT_INDICES,
+  chartAxisMode: 'full',
+  funFlowNames: false,
+  predictOpen: true,
+  briefModalTab: 'insight',
   newsSidebarOpen: true,
   dismissedNewsIds: [],
   readNewsIds: [],
@@ -80,7 +90,7 @@ export async function addItem(item) {
     ...list,
     {
       ...item,
-      groupId: item.groupId || 'default',
+      groupId: item.groupId || 'other',
       pinned: false,
       order: list.length,
       addedAt: Date.now(),
@@ -112,11 +122,20 @@ export async function importShenqiBundle(bundle) {
   const settings = await getSettings();
 
   const groupMap = new Map((settings.groups || []).map((g) => [g.id, g]));
-  for (const g of groups) {
-    if (!groupMap.has(g.id)) groupMap.set(g.id, g);
-    else groupMap.set(g.id, { ...groupMap.get(g.id), name: g.name || groupMap.get(g.id).name });
+  for (const raw of groups) {
+    const g = normalizeImportedGroup(raw);
+    const mergeKey = raw.id === 'default' ? 'other' : g.id;
+    if (!groupMap.has(mergeKey)) groupMap.set(mergeKey, g);
+    else {
+      groupMap.set(mergeKey, {
+        ...groupMap.get(mergeKey),
+        name: g.name || groupMap.get(mergeKey).name,
+      });
+    }
   }
-  const nextGroups = [...groupMap.values()];
+  let nextGroups = [...groupMap.values()];
+  const normalized = normalizeGroups(nextGroups, []);
+  nextGroups = normalized.groups;
 
   const list = await getWatchlist();
   const exist = new Set(list.map(itemKey));
@@ -125,22 +144,29 @@ export async function importShenqiBundle(bundle) {
     const key = itemKey(item);
     if (exist.has(key)) continue;
     exist.add(key);
+    const gid =
+      !item.groupId || item.groupId === 'default' ? 'other' : item.groupId;
     merged.push({
       ...item,
       name: item.name || item.code,
-      groupId: item.groupId || 'default',
+      groupId: gid,
       pinned: !!item.pinned,
       order: merged.length,
       addedAt: item.addedAt || Date.now(),
     });
   }
 
-  await setWatchlist(merged);
+  const listNorm = normalizeGroups(nextGroups, merged);
+  await setWatchlist(listNorm.list);
   const nextSettings = await saveSettings({
-    groups: nextGroups,
+    groups: listNorm.groups,
     importedShenqi: true,
   });
-  return { list: merged, settings: nextSettings, added: merged.length - list.length };
+  return {
+    list: listNorm.list,
+    settings: { ...nextSettings, groups: listNorm.groups },
+    added: listNorm.list.length - list.length,
+  };
 }
 
 export async function reorderWatchlist(orderedKeys) {

@@ -49,13 +49,20 @@ import {
   checkStopLoss,
   resolveLevels,
 } from './lib/levels.js';
+import { normalizeGroups, regroupStocks } from './lib/stock-groups.js';
+import { analyzeMainForceIntent } from './lib/predict.js';
+
 const REFRESH_MS = 15000;
 
 const GROUP_NAME_FIX = {
   股票: '自选股',
   工业母鸡: '工业母机',
-  默认: '未分组',
+  默认: '其他',
+  未分组: '其他',
 };
+
+const FUN_FLOW_NAMES = ['畜生', '庄家', '游资', '打工人', '韭菜'];
+const FLOW_NAMES_NORMAL = ['主力', '超大单', '大单', '中单', '小单'];
 
 const THEMES = [
   { id: 'light', label: '浅色', colors: ['#14b8a6', '#e2e8f0'] },
@@ -94,6 +101,8 @@ const state = {
   rank: { dir: 'up', rows: [], sort: 'pct' },
   dialogResolve: null,
   dragKey: null,
+  briefOpen: false,
+  briefTab: 'insight',
   insightOpen: false,
   insightNews: [],
   techLeaders: [],
@@ -157,9 +166,21 @@ const els = {
   inputSupport: $('input-support'),
   inputResist: $('input-resist'),
   saveLevelsBtn: $('save-levels-btn'),
+  briefOpenBtn: $('brief-open-btn'),
+  briefRoot: $('brief-root'),
+  briefMask: $('brief-mask'),
+  briefBody: $('brief-body'),
+  briefClose: $('brief-close'),
+  newsDot: $('news-dot'),
+  exportBtn: $('export-btn'),
+  predictCard: $('predict-card'),
+  predictBody: $('predict-body'),
+  predictToggle: $('predict-toggle'),
+  funNamesBtn: $('fun-names-btn'),
+  watchSubnav: $('watch-subnav'),
 };
 
-const NEWS_REFRESH_MS = 20 * 60 * 1000; // 重大消息不要刷太勤
+const NEWS_REFRESH_MS = 2 * 60 * 1000;
 const MACRO_HINT = /非农|CPI|PCE|美联储|降息|加息/;
 
 function quoteKey(item) {
@@ -213,7 +234,44 @@ function escAttr(s) {
 }
 
 function displayGroupName(name) {
-  return GROUP_NAME_FIX[name] || name || '未分组';
+  if (!name || name === '未分组' || name === '默认') return '其他';
+  return GROUP_NAME_FIX[name] || name;
+}
+
+function flowLegendNames() {
+  return state.settings?.funFlowNames ? FUN_FLOW_NAMES : FLOW_NAMES_NORMAL;
+}
+
+function chartAxisMode() {
+  return state.settings?.chartAxisMode || 'full';
+}
+
+function sortCycleLabel(sortBy) {
+  if (sortBy === 'pct') return '涨↓';
+  if (sortBy === 'pctAsc') return '跌↑';
+  return '不排';
+}
+
+function nextSortCycle(sortBy) {
+  if (sortBy === 'manual') return 'pct';
+  if (sortBy === 'pct') return 'pctAsc';
+  return 'manual';
+}
+
+function syncAxisModeButtons() {
+  const mode = chartAxisMode();
+  document.querySelectorAll('.axis-mode-btn').forEach((btn) => {
+    const on = btn.dataset.axisMode === mode;
+    btn.classList.toggle('bg-accent', on);
+    btn.classList.toggle('text-white', on);
+    btn.style.color = on ? '#fff' : 'var(--muted)';
+  });
+  document.querySelectorAll('.detail-axis-btn').forEach((btn) => {
+    const on = btn.dataset.detailAxis === mode;
+    btn.classList.toggle('bg-accent', on);
+    btn.classList.toggle('text-white', on);
+    btn.style.color = on ? '#fff' : 'var(--muted)';
+  });
 }
 
 function applyTheme(theme) {
@@ -243,21 +301,23 @@ function renderThemePicker() {
 
 function setView(view) {
   state.view = view;
-  ['watch', 'data', 'boards', 'rank', 'etf'].forEach((v) => {
+  ['watch', 'data', 'etf'].forEach((v) => {
     const el = $(`view-${v}`);
     if (el) el.classList.toggle('hidden', v !== view);
   });
-  // 大盘只在自选显示
   els.indicesBar?.classList.toggle('hidden', view !== 'watch');
+  els.watchSubnav?.classList.toggle('hidden', view !== 'watch');
   document.querySelectorAll('.view-tab').forEach((tab) => {
     const on = tab.dataset.view === view;
     tab.classList.toggle('bg-accent', on);
     tab.classList.toggle('text-white', on);
     tab.style.color = on ? '#fff' : 'var(--muted)';
   });
-  if (view === 'data') loadDataCenter();
-  if (view === 'boards') loadBoards();
-  if (view === 'rank') loadRank();
+  if (view === 'data') {
+    loadDataCenter();
+    loadBoards();
+    loadRank();
+  }
   requestAnimationFrame(() => resizeAllCharts());
 }
 
@@ -266,7 +326,7 @@ function groupsForPrimary() {
   const counts = new Map();
   for (const item of state.list) {
     if (item.kind !== kind) continue;
-    const gid = item.groupId || 'default';
+    const gid = item.groupId || 'other';
     counts.set(gid, (counts.get(gid) || 0) + 1);
   }
   const groups = state.settings?.groups || [];
@@ -281,7 +341,7 @@ function groupsForPrimary() {
 function sortedList() {
   let rows = state.list.filter((x) => x.kind === state.primaryKind);
   if (state.secondaryGroup !== 'all') {
-    rows = rows.filter((x) => (x.groupId || 'default') === state.secondaryGroup);
+    rows = rows.filter((x) => (x.groupId || 'other') === state.secondaryGroup);
   }
   const sortBy = state.settings?.sortBy || 'manual';
   const q = (item) => state.quotes[quoteKey(item)] || {};
@@ -449,7 +509,7 @@ function rowHtml(item) {
   const isFund = item.kind === 'fund';
   const gname =
     state.secondaryGroup === 'all'
-      ? displayGroupName((state.settings?.groups || []).find((g) => g.id === (item.groupId || 'default'))?.name)
+      ? displayGroupName((state.settings?.groups || []).find((g) => g.id === (item.groupId || 'other'))?.name)
       : '';
   const priceLabel = isFund
     ? `${fmtPrice(price, 'FUND')}${q.source ? `<span class="ml-0.5 text-[9px] font-normal" style="color:var(--muted)">${q.source}</span>` : ''}`
@@ -489,15 +549,12 @@ function rowHtml(item) {
 
 function listHeaderHtml() {
   const sortBy = state.settings?.sortBy || 'manual';
-  const on = (key) => (sortBy === key ? 'active' : '');
   return `
     <div class="list-head mb-0.5">
       <div class="col-name">
         <span>名称</span>
         <span class="col-sort">
-          <button type="button" data-sort-col="pct" class="${on('pct')}" title="涨幅从高到低">涨↓</button>
-          <button type="button" data-sort-col="pctAsc" class="${on('pctAsc')}" title="跌幅优先">跌↑</button>
-          <button type="button" data-sort-col="manual" class="${on('manual')}" title="不排序，可拖拽">不排</button>
+          <button type="button" data-sort-cycle class="active" title="点击切换：不排 → 涨↓ → 跌↑">${sortCycleLabel(sortBy)}</button>
         </span>
       </div>
       <div class="col-num">${state.primaryKind === 'fund' ? '净值/估值' : '现价'}</div>
@@ -531,10 +588,9 @@ function renderList() {
 }
 
 function bindListEvents() {
-  els.list.querySelectorAll('[data-sort-col]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      await setSort(btn.getAttribute('data-sort-col') || 'manual');
-    });
+  els.list.querySelector('[data-sort-cycle]')?.addEventListener('click', async () => {
+    const cur = state.settings?.sortBy || 'manual';
+    await setSort(nextSortCycle(cur));
   });
 
   els.list.querySelectorAll('[data-open]').forEach((row) => {
@@ -626,8 +682,8 @@ function renderSearchResults() {
         state.secondaryGroup !== 'all'
           ? state.secondaryGroup
           : state.primaryKind === 'fund'
-            ? groupsForPrimary()[0]?.id || 'default'
-            : 'default';
+            ? groupsForPrimary()[0]?.id || 'other'
+            : 'other';
       state.list = await addItem({ ...item, groupId });
       if (item.kind === 'stock' || item.kind === 'fund') state.primaryKind = item.kind;
       setView('watch');
@@ -681,6 +737,26 @@ function renderFlowSummary() {
   if (nb) $('nb-summary').innerHTML = `净流入 <span class="font-semibold ${tone(nb.last)}">${fmtYi(nb.last)} 亿</span>`;
 }
 
+function renderPredictCard() {
+  if (!els.predictCard || !els.predictBody) return;
+  const open = state.settings?.predictOpen !== false;
+  els.predictBody.classList.toggle('hidden', !open);
+  if (els.predictToggle) els.predictToggle.textContent = open ? '关闭' : '展开';
+  if (!open) return;
+  const s = state.center.flow?.summary;
+  if (!s) {
+    els.predictBody.textContent = '暂无主力资金数据';
+    return;
+  }
+  const intent = analyzeMainForceIntent(s);
+  els.predictBody.innerHTML = `
+    <div class="flex flex-wrap items-baseline gap-2">
+      <span class="text-sm font-semibold text-accent">${esc(intent.label)}</span>
+      <span class="text-[11px] tabular-nums" style="color:var(--muted)">置信 ${Math.round(intent.probability * 100)}%</span>
+    </div>
+    <p class="mt-1">${esc(intent.detail)}</p>`;
+}
+
 async function loadDataCenter() {
   try {
     const [flow, updown, northbound, overview] = await Promise.all([
@@ -691,9 +767,12 @@ async function loadDataCenter() {
     ]);
     state.center = { flow, updown, northbound, overview };
     renderFlowSummary();
-    if (flow) renderFlowChart($('chart-market-flow'), flow);
+    const axisOpts = { axisMode: chartAxisMode(), legendNames: flowLegendNames() };
+    if (flow) renderFlowChart($('chart-market-flow'), flow, axisOpts);
     if (updown) renderUpDownChart($('chart-updown'), updown);
     if (northbound) renderNorthboundChart($('chart-northbound'), northbound);
+    renderPredictCard();
+    if (state.briefOpen && state.briefTab === 'insight') renderBriefBody();
   } catch (e) {
     console.error(e);
   }
@@ -851,9 +930,10 @@ async function openDetail(item) {
 
 function fillLevelInputs(item) {
   if (!els.inputStop) return;
-  els.inputStop.value = item.stopLoss != null && item.stopLoss !== '' ? item.stopLoss : '';
-  els.inputSupport.value = item.support != null && item.support !== '' ? item.support : '';
-  els.inputResist.value = item.resistance != null && item.resistance !== '' ? item.resistance : '';
+  els.inputStop.value =
+    item.stopLoss != null && item.stopLoss !== '' ? Number(item.stopLoss).toFixed(2) : '';
+  els.inputSupport.value =
+    item.support != null && item.support !== '' ? String(item.support) : '';
 }
 
 function currentMarkLine(item, auto = {}, preClose) {
@@ -906,11 +986,10 @@ async function refreshDetailCharts() {
     state.autoLevels[itemKey(item)] = auto;
     // 输入框空时展示自动估算占位
     if (els.inputSupport && (item.support == null || item.support === '')) {
-      els.inputSupport.placeholder = auto.support != null ? `自动 ${auto.support}` : '自动/手填';
+      els.inputSupport.placeholder =
+        auto.support != null ? `自动 ${Number(auto.support).toFixed(2)}` : '自动/手填';
     }
-    if (els.inputResist && (item.resistance == null || item.resistance === '')) {
-      els.inputResist.placeholder = auto.resistance != null ? `自动 ${auto.resistance}` : '自动/手填';
-    }
+    const axisMode = chartAxisMode();
     const markLine = currentMarkLine(item, auto, mainData?.preClose);
 
     // 清空占位后再渲染，保证容器已有尺寸
@@ -920,13 +999,17 @@ async function refreshDetailCharts() {
     if (period === 'intraday') {
       const intra = mainData;
       if (intra?.points?.length) {
-        renderIntradayChart(els.chartMain, {
-          times: intra.points.map((p) => p.time),
-          prices: intra.points.map((p) => p.price),
-          avgs: intra.points.map((p) => p.avg),
-          preClose: intra.preClose,
-          markLine: currentMarkLine(item, auto, intra.preClose),
-        });
+        renderIntradayChart(
+          els.chartMain,
+          {
+            times: intra.points.map((p) => p.time),
+            prices: intra.points.map((p) => p.price),
+            avgs: intra.points.map((p) => p.avg),
+            preClose: intra.preClose,
+            markLine: currentMarkLine(item, auto, intra.preClose),
+          },
+          { axisMode },
+        );
         const last = intra.points[intra.points.length - 1];
         if (last?.price != null) {
           $('detail-price').textContent = fmtPrice(last.price, item.market);
@@ -967,7 +1050,10 @@ async function refreshDetailCharts() {
           </div>`,
         )
         .join('');
-      renderFlowChart(els.chartStockFlow, flow);
+      renderFlowChart(els.chartStockFlow, flow, {
+        axisMode,
+        legendNames: flowLegendNames(),
+      });
     } else {
       els.detailFlowCards.innerHTML = '';
       els.chartStockFlow.innerHTML =
@@ -997,7 +1083,7 @@ async function refreshQuotes() {
   renderList();
   renderStatus();
   renderStopBanner();
-  if (state.insightOpen) renderInsightPanel();
+  if (state.briefOpen && state.briefTab === 'insight') renderBriefBody();
 }
 
 function renderStopBanner() {
@@ -1124,21 +1210,18 @@ async function saveDetailLevels() {
   if (!item || item.kind === 'fund') return;
   const stopRaw = els.inputStop?.value?.trim();
   const supportRaw = els.inputSupport?.value?.trim();
-  const resistRaw = els.inputResist?.value?.trim();
   const patch = {
     stopLoss: stopRaw === '' ? null : Number(stopRaw),
     support: supportRaw === '' ? null : Number(supportRaw),
-    resistance: resistRaw === '' ? null : Number(resistRaw),
   };
   if (patch.stopLoss != null && !Number.isFinite(patch.stopLoss)) patch.stopLoss = null;
   if (patch.support != null && !Number.isFinite(patch.support)) patch.support = null;
-  if (patch.resistance != null && !Number.isFinite(patch.resistance)) patch.resistance = null;
   state.list = await updateItem(item, patch);
   state.detail = state.list.find((x) => itemKey(x) === itemKey(item)) || { ...item, ...patch };
   state.settings = await saveSettings({ stopBannerDismissed: false });
   renderStopBanner();
   await refreshDetailCharts();
-  els.statusText.textContent = '已保存止损/支撑/压力位';
+  els.statusText.textContent = '已保存止损/支撑位';
 }
 
 async function refreshAll() {
@@ -1147,9 +1230,9 @@ async function refreshAll() {
   els.refreshBtn.classList.add('animate-spin');
   try {
     await Promise.all([refreshIndices(), refreshQuotes()]);
-    if (state.view === 'data') await loadDataCenter();
-    if (state.view === 'boards') await loadBoards();
-    if (state.view === 'rank') await loadRank();
+    if (state.view === 'data') {
+      await Promise.all([loadDataCenter(), loadBoards(), loadRank()]);
+    }
     if (state.detail) {
       if (state.detail.kind === 'fund') await openDetail(state.detail);
       else await refreshDetailCharts();
@@ -1199,7 +1282,7 @@ async function renameGroup(gid) {
       <label class="mt-3 flex items-center gap-2 text-[12px]" style="color:var(--up)">
         <input id="dlg-group-del" type="checkbox" /> 删除此分组
       </label>
-      <p class="mt-1 text-[10px]" style="color:var(--muted)">删除后持仓将移到「未分组」。</p>`,
+      <p class="mt-1 text-[10px]" style="color:var(--muted)">删除后持仓将移到「其他」。</p>`,
   });
   if (!ok) return;
   if ($('dlg-group-del')?.checked) {
@@ -1231,26 +1314,23 @@ async function addGroupDialog() {
 }
 
 async function deleteGroup(gid) {
-  if (!gid || gid === 'default') {
-    await confirmDialog('无法删除', '默认分组不能删除。');
-    return;
-  }
+  if (!gid) return;
   const g = (state.settings.groups || []).find((x) => x.id === gid);
   if (!g) return;
-  const count = state.list.filter((x) => (x.groupId || 'default') === gid).length;
+  const count = state.list.filter((x) => (x.groupId || 'other') === gid).length;
   const ok = await confirmDialog(
     '删除分组',
     count
-      ? `「${g.name}」内有 ${count} 只，删除后将移到「未分组/默认」。继续？`
-      : `确定删除「${g.name}」吗？`,
+      ? `「${displayGroupName(g.name)}」内有 ${count} 只，删除后将移到「其他」。继续？`
+      : `确定删除「${displayGroupName(g.name)}」吗？`,
   );
   if (!ok) return;
-  const groups = (state.settings.groups || []).filter((x) => x.id !== gid);
-  if (!groups.some((x) => x.id === 'default')) {
-    groups.unshift({ id: 'default', name: '未分组' });
+  let groups = (state.settings.groups || []).filter((x) => x.id !== gid);
+  if (!groups.some((x) => x.id === 'other')) {
+    groups.unshift({ id: 'other', name: '其他' });
   }
   const nextList = state.list.map((item) =>
-    (item.groupId || 'default') === gid ? { ...item, groupId: 'default' } : item,
+    (item.groupId || 'other') === gid ? { ...item, groupId: 'other' } : item,
   );
   await setWatchlist(nextList);
   state.list = nextList;
@@ -1267,7 +1347,7 @@ async function moveItemGroup(item) {
     bodyHtml: `<div class="space-y-1">${groups
       .map(
         (g) => `<label class="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 ring-soft">
-        <input type="radio" name="move-gid" value="${escAttr(g.id)}" ${(item.groupId || 'default') === g.id ? 'checked' : ''} />
+        <input type="radio" name="move-gid" value="${escAttr(g.id)}" ${(item.groupId || 'other') === g.id ? 'checked' : ''} />
         <span class="text-sm">${esc(displayGroupName(g.name))}</span>
       </label>`,
       )
@@ -1320,55 +1400,33 @@ async function pickIndicesDialog() {
   await refreshIndices();
 }
 
-function buildInsight() {
-  const rows = state.list
-    .filter((x) => x.kind === state.primaryKind)
-    .map((item) => {
-      const q = state.quotes[quoteKey(item)] || {};
-      return {
-        item,
-        name: q.name || item.name,
-        pct: Number(q.changePct),
-        price: q.price,
-      };
-    })
-    .filter((r) => Number.isFinite(r.pct));
-
+function buildBriefInsightHtml() {
   const idx = state.indices || [];
   const sh = idx.find((x) => x.code === '000001');
   const sz = idx.find((x) => x.code === '399001');
   const cy = idx.find((x) => x.code === '399006');
 
-  const up = rows.filter((r) => r.pct > 0).sort((a, b) => b.pct - a.pct);
-  const down = rows.filter((r) => r.pct < 0).sort((a, b) => a.pct - b.pct);
-  const flat = rows.filter((r) => r.pct === 0);
-  const avg = rows.length ? rows.reduce((s, r) => s + r.pct, 0) / rows.length : 0;
-
   const marketBits = [];
   if (sh) marketBits.push(`上证 ${fmtPct(sh.changePct)}`);
   if (sz) marketBits.push(`深证 ${fmtPct(sz.changePct)}`);
   if (cy) marketBits.push(`创业板 ${fmtPct(cy.changePct)}`);
+
+  const zd = state.center?.updown;
+  const ov = state.center?.overview;
+  const upCnt = zd?.up ?? ov?.up ?? '—';
+  const downCnt = zd?.down ?? ov?.down ?? '—';
+
+  const news = state.insightNews || [];
+  const tech = (state.techLeaders || []).filter((t) => Number.isFinite(Number(t.changePct)));
+  const tips = [];
   const mktList = [sh, sz, cy].filter(Boolean);
   const mktAvg =
     mktList.reduce((s, x) => s + (Number(x.changePct) || 0), 0) / Math.max(1, mktList.length);
 
-  const tips = [];
-  if (rows.length) {
-    if (avg > 1 && mktAvg > 0.3) {
-      tips.push('持仓整体偏强且大盘偏暖，可侧重观察强势品种，避免追高已大幅拉升的标的。');
-    } else if (avg < -1 && mktAvg < -0.3) {
-      tips.push('持仓与大盘同步偏弱，优先关注止损纪律与仓位，忌恐慌性一把清仓。');
-    } else if (avg > 0.5 && mktAvg < 0) {
-      tips.push('持仓相对大盘抗跌/偏强，可观察是否有独立逻辑，不宜盲目加仓弱势市场。');
-    } else if (avg < -0.5 && mktAvg > 0.3) {
-      tips.push('大盘偏暖但持仓偏弱，重点排查个股基本面与板块轮动，考虑是否调仓到更强方向。');
-    } else {
-      tips.push('市场与持仓涨跌分化不明显，适合按计划分批操作，少做情绪化交易。');
-    }
-  }
+  if (mktAvg > 0.5) tips.push('主要指数偏强，风险偏好尚可，注意追高风险。');
+  else if (mktAvg < -0.5) tips.push('主要指数偏弱，宜控制仓位、重视止损。');
+  else tips.push('指数震荡，宜按计划分批，少追涨杀跌。');
 
-  const news = state.insightNews || [];
-  const tech = (state.techLeaders || []).filter((t) => Number.isFinite(Number(t.changePct)));
   const techStrong = [...tech].sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct)).slice(0, 6);
   if (techStrong.length) {
     const soft = techStrong.filter((t) => t.changePct <= -2).map((t) => t.name);
@@ -1377,14 +1435,8 @@ function buildInsight() {
     if (soft.length) tips.push(`科技龙头偏弱：${soft.join('、')}，留意风险偏好与估值波动。`);
   }
   if (news.some((n) => MACRO_HINT.test(n.title))) {
-    tips.push('侧栏有宏观重磅（如 CPI/非农/美联储），仓位宜更谨慎，等落地后再加大动作。');
+    tips.push('有宏观重磅（如 CPI/非农/美联储），仓位宜更谨慎，等落地后再加大动作。');
   }
-
-  const topLine = (arr, n = 3) =>
-    arr
-      .slice(0, n)
-      .map((r) => `<span class="${tone(r.pct)}">${esc(r.name)} ${fmtPct(r.pct)}</span>`)
-      .join(' · ') || '—';
 
   const techHtml = tech.length
     ? `<div class="mb-2">
@@ -1400,71 +1452,189 @@ function buildInsight() {
       </div>`
     : '';
 
-  return {
-    html: `
-      <div class="insight-head">
-        <div>
-          <div class="text-sm font-semibold">实时简析</div>
-          <div class="text-[10px]" style="color:var(--muted)">${marketBits.join(' · ') || '大盘加载中'}</div>
-        </div>
-        <button type="button" id="insight-close" class="rounded-md p-1" style="color:var(--muted)" title="关闭">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
-        </button>
-      </div>
-      ${techHtml}
-      ${
-        rows.length
-          ? `<div class="mb-2 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
-        <div class="rounded-lg px-2 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">持仓均涨跌</div><div class="text-sm font-semibold tabular-nums ${tone(avg)}">${fmtPct(avg)}</div></div>
-        <div class="rounded-lg px-2 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">上涨</div><div class="text-sm font-semibold text-up">${up.length}</div></div>
-        <div class="rounded-lg px-2 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">下跌</div><div class="text-sm font-semibold text-down">${down.length}</div></div>
-        <div class="rounded-lg px-2 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">平盘</div><div class="text-sm font-semibold">${flat.length}</div></div>
-      </div>
-      <div class="mb-2 space-y-1 text-[12px]">
-        <div><span style="color:var(--muted)">领涨 </span>${topLine(up)}</div>
-        <div><span style="color:var(--muted)">领跌 </span>${topLine(down)}</div>
-      </div>`
-          : '<p class="mb-2 text-sm" style="color:var(--muted)">当前没有可分析的持仓涨跌。</p>'
-      }
-      <ul class="space-y-1 text-[12px] leading-relaxed">
-        ${tips.map((t) => `<li class="pl-2" style="border-left:2px solid var(--accent)">${esc(t)}</li>`).join('')}
-      </ul>
-      <p class="mt-2 text-[10px]" style="color:var(--muted)">消息与行情仅供参考，不构成投资建议。</p>`,
-  };
+  return `
+    <div class="mb-2">
+      <div class="text-sm font-semibold">实时简析</div>
+      <div class="text-[10px]" style="color:var(--muted)">${marketBits.join(' · ') || '大盘加载中'}</div>
+    </div>
+    <div class="mb-2 grid grid-cols-2 gap-1.5">
+      <div class="rounded-lg px-2 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">全市场上涨</div><div class="text-sm font-semibold text-up">${upCnt}</div></div>
+      <div class="rounded-lg px-2 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">全市场下跌</div><div class="text-sm font-semibold text-down">${downCnt}</div></div>
+    </div>
+    ${techHtml}
+    <ul class="space-y-1 text-[12px] leading-relaxed">
+      ${tips.map((t) => `<li class="pl-2" style="border-left:2px solid var(--accent)">${esc(t)}</li>`).join('')}
+    </ul>
+    <p class="mt-2 text-[10px]" style="color:var(--muted)">消息与行情仅供参考，不构成投资建议。</p>`;
 }
 
-function renderInsightPanel() {
-  if (!state.insightOpen) {
-    els.insightPanel.classList.add('hidden');
-    els.insightPanel.innerHTML = '';
-    return;
+function formatNewsTime(t) {
+  if (!t) return '';
+  const s = String(t).trim();
+  const parsed = Date.parse(s.replace(/-/g, '/'));
+  if (!Number.isNaN(parsed)) {
+    const d = new Date(parsed);
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const h = String(d.getHours()).padStart(2, '0');
+    const min = String(d.getMinutes()).padStart(2, '0');
+    return `${m}-${day} ${h}:${min}`;
   }
-  const { html } = buildInsight();
-  els.insightPanel.classList.remove('hidden');
-  els.insightPanel.innerHTML = html;
-  $('insight-close')?.addEventListener('click', () => {
-    state.insightOpen = false;
-    renderInsightPanel();
+  const m = s.match(/(\d{1,2})[-/月](\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?/);
+  if (m) {
+    const mm = String(m[1]).padStart(2, '0');
+    const dd = String(m[2]).padStart(2, '0');
+    const hh = m[3] != null ? String(m[3]).padStart(2, '0') : '00';
+    const mi = m[4] != null ? m[4] : '00';
+    return `${mm}-${dd} ${hh}:${mi}`;
+  }
+  return s.slice(0, 16);
+}
+
+function newsItemMajorClass(n) {
+  if (n.major) return true;
+  if (n.score != null && n.score >= 6) return true;
+  return n.tone === 'up' || n.tone === 'down';
+}
+
+function renderBriefNewsHtml() {
+  const news = visibleNews();
+  if (!news.length) {
+    return '<p class="text-sm" style="color:var(--muted)">暂无重大消息</p>';
+  }
+  return news
+    .map((n) => {
+      const major = newsItemMajorClass(n);
+      const tag =
+        n.tone === 'up'
+          ? '<span class="tag" style="background:color-mix(in oklab,var(--up) 14%,transparent);color:var(--up)">利好倾向</span>'
+          : n.tone === 'down'
+            ? '<span class="tag" style="background:color-mix(in oklab,var(--down) 14%,transparent);color:var(--down)">利空倾向</span>'
+            : '<span class="tag" style="background:color-mix(in oklab,var(--muted) 14%,transparent);color:var(--muted)">关注</span>';
+      const body = n.url
+        ? `<a href="${escAttr(n.url)}" target="_blank" rel="noreferrer" class="hover:underline">${esc(n.title)}</a>`
+        : esc(n.title);
+      return `<div class="news-item${major ? ' major' : ''}" data-news-id="${escAttr(n.id)}">
+        <div class="mb-1 flex items-start justify-between gap-1">
+          <div class="min-w-0 flex-1">${tag}${body}</div>
+          <button type="button" data-dismiss-news="${escAttr(n.id)}" class="shrink-0 rounded px-1 text-[11px]" style="color:var(--muted)" title="不再显示">×</button>
+        </div>
+        ${n.impact ? `<div class="mb-1 text-[11px] leading-snug" style="color:var(--muted)"><span class="font-semibold text-accent">影响：</span>${esc(n.impact)}</div>` : ''}
+        ${n.time ? `<div class="text-[10px]" style="color:var(--muted)">${esc(formatNewsTime(n.time))}</div>` : ''}
+      </div>`;
+    })
+    .join('');
+}
+
+function renderBriefCalendarHtml() {
+  const events = getUpcomingEvents(new Date(), 21);
+  const today = todayStr();
+  if (!events.length) {
+    return '<p class="text-sm" style="color:var(--muted)">近三周暂无预设事件</p>';
+  }
+  return `<div class="space-y-1.5">
+    ${events
+      .map((e) => {
+        const isToday = e.date === today;
+        const typeColor =
+          e.type === 'cpi' ? 'var(--up)' : e.type === 'nfp' ? '#b45309' : 'var(--accent)';
+        return `<div class="flex items-start gap-2 rounded-lg px-2 py-1.5 ${isToday ? 'ring-soft' : ''}" style="${isToday ? 'background:color-mix(in oklab,var(--accent) 8%,transparent)' : ''}">
+          <span class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="color:${typeColor};background:color-mix(in oklab,${typeColor} 12%,transparent)">${e.type.toUpperCase()}</span>
+          <div class="min-w-0 flex-1">
+            <div class="text-[12px] font-semibold">${esc(e.date)} ${esc(e.title)}${isToday ? ' · 今日' : ''}</div>
+            <div class="text-[11px]" style="color:var(--muted)">${esc(e.tip)}</div>
+            ${e.impact ? `<div class="mt-0.5 text-[11px] leading-snug"><span class="font-semibold text-accent">影响：</span>${esc(e.impact)}</div>` : ''}
+            ${e.result ? `<div class="mt-0.5 text-[10px]" style="color:var(--muted)">状态：${esc(e.result)}</div>` : ''}
+          </div>
+        </div>`;
+      })
+      .join('')}
+  </div>
+  <p class="mt-2 text-[10px]" style="color:var(--muted)">CPI 日期为常用区间近似，请以美国劳工部/美联储官网为准。仅供风控提示。</p>`;
+}
+
+function syncBriefTabButtons() {
+  document.querySelectorAll('.brief-tab').forEach((btn) => {
+    const on = btn.dataset.briefTab === state.briefTab;
+    btn.classList.toggle('bg-accent', on);
+    btn.classList.toggle('text-white', on);
+    btn.style.color = on ? '#fff' : 'var(--muted)';
   });
 }
 
-async function runInsight() {
-  state.insightOpen = true;
-  els.insightPanel.classList.remove('hidden');
-  els.insightPanel.innerHTML =
-    '<div class="text-sm" style="color:var(--muted)">正在拉取科技龙头与持仓…</div>';
-  try {
-    const [, , tech] = await Promise.all([
-      refreshQuotes(),
-      refreshIndices(),
-      fetchTechLeaders(),
-    ]);
-    state.insightNews = state.settings?.cachedNews || state.insightNews || [];
-    state.techLeaders = tech || [];
-  } catch {
-    /* still show with whatever we have */
+function renderBriefBody() {
+  if (!els.briefBody) return;
+  syncBriefTabButtons();
+  if (state.briefTab === 'insight') {
+    els.briefBody.innerHTML = buildBriefInsightHtml();
+  } else if (state.briefTab === 'news') {
+    els.briefBody.innerHTML = renderBriefNewsHtml();
+    els.briefBody.querySelectorAll('[data-dismiss-news]').forEach((btn) => {
+      btn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const id = btn.getAttribute('data-dismiss-news');
+        const dismissedNewsIds = [...new Set([...(state.settings.dismissedNewsIds || []), id])].slice(
+          -40,
+        );
+        state.settings = await saveSettings({ dismissedNewsIds });
+        renderBriefBody();
+        syncBriefUnreadUi();
+      });
+    });
+  } else {
+    els.briefBody.innerHTML = renderBriefCalendarHtml();
   }
-  renderInsightPanel();
+}
+
+async function ensureBriefInsightData() {
+  try {
+    const [, tech] = await Promise.all([refreshIndices(), fetchTechLeaders()]);
+    state.techLeaders = tech || [];
+    if (!state.center?.updown) await loadDataCenter();
+  } catch {
+    /* use cached */
+  }
+}
+
+async function openBrief(tab = 'insight') {
+  state.briefOpen = true;
+  state.briefTab = tab;
+  state.insightOpen = tab === 'insight';
+  state.eventPanelOpen = tab === 'calendar';
+  els.briefRoot?.classList.remove('hidden');
+  els.briefRoot?.classList.add('flex');
+  await markNewsRead();
+  syncBriefUnreadUi();
+  if (tab === 'insight') {
+    els.briefBody.innerHTML =
+      '<div class="text-sm" style="color:var(--muted)">正在拉取大盘与科技龙头…</div>';
+    await ensureBriefInsightData();
+  }
+  renderBriefBody();
+  if (tab === 'news') refreshMajorNews(false);
+}
+
+function closeBrief() {
+  state.briefOpen = false;
+  state.insightOpen = false;
+  state.eventPanelOpen = false;
+  els.briefRoot?.classList.add('hidden');
+  els.briefRoot?.classList.remove('flex');
+}
+
+function exportWatchlistJson() {
+  const payload = {
+    groups: state.settings?.groups || [],
+    watchlist: state.list,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'genius-trader-export.json';
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function visibleNews() {
@@ -1481,79 +1651,25 @@ function isMobileLayout() {
   return window.matchMedia('(max-width: 900px)').matches;
 }
 
-function syncNewsSidebarUi() {
-  const open = state.settings?.newsSidebarOpen !== false;
-  els.newsSidebar?.classList.toggle('collapsed', !open);
-  els.newsOpenBtn?.classList.toggle('hidden', open);
-  els.newsBackdrop?.classList.toggle('hidden', !open || !isMobileLayout());
-  document.body.style.overflow = open && isMobileLayout() ? 'hidden' : '';
+function syncBriefUnreadUi() {
   const n = unreadNewsCount();
+  const show = !state.briefOpen && n > 0;
   if (els.newsBadge) {
-    if (!open && n > 0) {
+    if (show) {
       els.newsBadge.classList.remove('hidden');
       els.newsBadge.textContent = String(n > 9 ? '9+' : n);
     } else {
       els.newsBadge.classList.add('hidden');
     }
   }
+  els.newsDot?.classList.toggle('hidden', !show);
 }
 
 async function markNewsRead() {
   const ids = visibleNews().map((n) => n.id);
   const readNewsIds = [...new Set([...(state.settings?.readNewsIds || []), ...ids])].slice(-80);
   state.settings = await saveSettings({ readNewsIds });
-  syncNewsSidebarUi();
-}
-
-function renderNewsSidebar() {
-  const news = visibleNews();
-  syncNewsSidebarUi();
-  if (!els.newsList) return;
-  if (!news.length) {
-    els.newsList.innerHTML = '';
-    els.newsEmpty?.classList.remove('hidden');
-    return;
-  }
-  els.newsEmpty?.classList.add('hidden');
-  els.newsList.innerHTML = news
-    .map((n) => {
-      const tag =
-        n.tone === 'up'
-          ? '<span class="tag" style="background:color-mix(in oklab,var(--up) 14%,transparent);color:var(--up)">利好倾向</span>'
-          : n.tone === 'down'
-            ? '<span class="tag" style="background:color-mix(in oklab,var(--down) 14%,transparent);color:var(--down)">利空倾向</span>'
-            : '<span class="tag" style="background:color-mix(in oklab,var(--muted) 14%,transparent);color:var(--muted)">关注</span>';
-      const body = n.url
-        ? `<a href="${escAttr(n.url)}" target="_blank" rel="noreferrer" class="hover:underline">${esc(n.title)}</a>`
-        : esc(n.title);
-      return `<div class="news-item" data-news-id="${escAttr(n.id)}">
-        <div class="mb-1 flex items-start justify-between gap-1">
-          <div class="min-w-0 flex-1">${tag}${body}</div>
-          <button type="button" data-dismiss-news="${escAttr(n.id)}" class="shrink-0 rounded px-1 text-[11px]" style="color:var(--muted)" title="不再显示">×</button>
-        </div>
-        ${n.impact ? `<div class="mb-1 text-[11px] leading-snug" style="color:var(--muted)"><span class="text-accent font-semibold">影响：</span>${esc(n.impact)}</div>` : ''}
-        ${n.time ? `<div class="text-[10px]" style="color:var(--muted)">${esc(n.time)}</div>` : ''}
-      </div>`;
-    })
-    .join('');
-
-  els.newsList.querySelectorAll('[data-dismiss-news]').forEach((btn) => {
-    btn.addEventListener('click', async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const id = btn.getAttribute('data-dismiss-news');
-      const dismissedNewsIds = [...new Set([...(state.settings.dismissedNewsIds || []), id])].slice(
-        -40,
-      );
-      state.settings = await saveSettings({ dismissedNewsIds });
-      renderNewsSidebar();
-    });
-  });
-
-  // 侧栏打开时视为已读，关掉后若有新消息才显示角标
-  if (state.settings?.newsSidebarOpen !== false) {
-    markNewsRead();
-  }
+  syncBriefUnreadUi();
 }
 
 async function refreshMajorNews(force = false) {
@@ -1561,7 +1677,8 @@ async function refreshMajorNews(force = false) {
   const last = state.settings?.lastNewsFetchAt || 0;
   if (!force && state.settings?.cachedNews?.length && now - last < NEWS_REFRESH_MS) {
     state.insightNews = state.settings.cachedNews;
-    renderNewsSidebar();
+    syncBriefUnreadUi();
+    if (state.briefOpen && state.briefTab === 'news') renderBriefBody();
     return state.insightNews;
   }
   try {
@@ -1580,7 +1697,8 @@ async function refreshMajorNews(force = false) {
     console.error(e);
     state.insightNews = state.settings?.cachedNews || [];
   }
-  renderNewsSidebar();
+  syncBriefUnreadUi();
+  if (state.briefOpen && state.briefTab === 'news') renderBriefBody();
   return state.insightNews;
 }
 
@@ -1597,38 +1715,64 @@ document.querySelectorAll('.primary-tab').forEach((tab) => {
     renderGroupTabs();
     renderList();
     renderStatus();
-    if (state.insightOpen) renderInsightPanel();
+    if (state.briefOpen && state.briefTab === 'insight') renderBriefBody();
   });
 });
 
-els.insightBtn?.addEventListener('click', () => {
-  if (state.insightOpen) {
-    state.insightOpen = false;
-    renderInsightPanel();
-  } else {
-    runInsight();
-  }
-});
-async function closeNewsSidebar() {
-  state.settings = await saveSettings({ newsSidebarOpen: false });
-  syncNewsSidebarUi();
-}
-els.newsCloseBtn?.addEventListener('click', () => closeNewsSidebar());
-els.newsBackdrop?.addEventListener('click', () => closeNewsSidebar());
-els.newsOpenBtn?.addEventListener('click', async () => {
-  state.settings = await saveSettings({ newsSidebarOpen: true });
-  await markNewsRead();
-  syncNewsSidebarUi();
-  refreshMajorNews(false);
+els.briefOpenBtn?.addEventListener('click', () => openBrief('news'));
+els.briefClose?.addEventListener('click', () => closeBrief());
+els.briefMask?.addEventListener('click', () => closeBrief());
+document.querySelectorAll('[data-brief-tab]').forEach((btn) => {
+  btn.addEventListener('click', async () => {
+    const tab = btn.dataset.briefTab || 'insight';
+    state.briefTab = tab;
+    if (tab === 'insight') await ensureBriefInsightData();
+    if (tab === 'news') await refreshMajorNews(false);
+    renderBriefBody();
+  });
 });
 
-els.calendarBtn?.addEventListener('click', () => {
-  state.eventPanelOpen = !state.eventPanelOpen;
-  renderEventPanel();
+els.insightBtn?.addEventListener('click', () => openBrief('insight'));
+els.newsOpenBtn?.addEventListener('click', () => openBrief('news'));
+els.newsCloseBtn?.addEventListener('click', () => closeBrief());
+els.calendarBtn?.addEventListener('click', () => openBrief('calendar'));
+els.eventCalendarBtn?.addEventListener('click', () => openBrief('calendar'));
+
+els.exportBtn?.addEventListener('click', () => exportWatchlistJson());
+
+els.predictToggle?.addEventListener('click', async () => {
+  const curOpen = state.settings?.predictOpen !== false;
+  state.settings = await saveSettings({ predictOpen: !curOpen });
+  renderPredictCard();
 });
-els.eventCalendarBtn?.addEventListener('click', () => {
-  state.eventPanelOpen = true;
-  renderEventPanel();
+
+els.funNamesBtn?.addEventListener('click', async () => {
+  const next = !state.settings?.funFlowNames;
+  state.settings = await saveSettings({ funFlowNames: next });
+  if (els.funNamesBtn) {
+    els.funNamesBtn.classList.toggle('bg-accent', next);
+    els.funNamesBtn.classList.toggle('text-white', next);
+  }
+  if (state.view === 'data') await loadDataCenter();
+  if (state.detail?.kind === 'stock') await refreshDetailCharts();
+});
+
+document.querySelectorAll('.axis-mode-btn').forEach((btn) => {
+  btn.addEventListener('click', async () => {
+    state.settings = await saveSettings({ chartAxisMode: btn.dataset.axisMode || 'full' });
+    syncAxisModeButtons();
+    if (state.view === 'data') await loadDataCenter();
+    if (state.detail?.kind === 'stock') await refreshDetailCharts();
+  });
+});
+
+document.querySelectorAll('.detail-axis-btn').forEach((btn) => {
+  btn.addEventListener('click', async () => {
+    state.settings = await saveSettings({ chartAxisMode: btn.dataset.detailAxis || 'full' });
+    syncAxisModeButtons();
+    if (state.view === 'data') await loadDataCenter();
+    if (state.detail?.kind === 'stock') await refreshDetailCharts();
+  });
 });
 els.eventDismissBtn?.addEventListener('click', async () => {
   state.settings = await saveSettings({ eventBannerDismissDate: todayStr() });
@@ -1731,14 +1875,13 @@ $('import-btn')?.addEventListener('click', async () => {
 
 window.addEventListener('resize', () => {
   resizeAllCharts();
-  syncNewsSidebarUi();
   renderGroupTabs();
 });
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (!els.dialogRoot.classList.contains('hidden')) closeDialog(false);
     else if (!els.detailRoot.classList.contains('hidden')) closeDetail();
-    else if (state.settings?.newsSidebarOpen !== false && isMobileLayout()) closeNewsSidebar();
+    else if (state.briefOpen) closeBrief();
   }
 });
 
@@ -1746,10 +1889,6 @@ async function boot() {
   state.settings = await getSettings();
   if (state.settings.theme !== 'light' && state.settings.theme !== 'dark') {
     state.settings = await saveSettings({ theme: 'light' });
-  }
-  // 窄屏默认收起消息侧栏，避免占满首屏
-  if (isMobileLayout() && state.settings.newsSidebarOpen !== false) {
-    state.settings = await saveSettings({ newsSidebarOpen: false });
   }
   state.list = await getWatchlist();
   // 规范化基金字段，避免行情 key 对不上
@@ -1773,6 +1912,23 @@ async function boot() {
     }
   }
   const added = await importShenqiData(false);
+  {
+    const norm = normalizeGroups(state.settings.groups, state.list);
+    let groups = norm.groups;
+    let list = norm.list;
+    let changed = norm.changed;
+    const reg = regroupStocks(list, groups);
+    if (reg.changed) {
+      list = reg.list;
+      groups = reg.groups;
+      changed = true;
+    }
+    if (changed) {
+      await setWatchlist(list);
+      state.list = list;
+      state.settings = await saveSettings({ groups });
+    }
+  }
   if (state.settings.groups?.some((g) => GROUP_NAME_FIX[g.name])) {
     state.settings = await saveSettings({
       groups: state.settings.groups.map((g) => ({
@@ -1782,6 +1938,10 @@ async function boot() {
     });
   }
   applyTheme(state.settings.theme);
+  syncAxisModeButtons();
+  if (state.settings?.funFlowNames && els.funNamesBtn) {
+    els.funNamesBtn.classList.add('bg-accent', 'text-white');
+  }
   state.primaryKind = 'stock';
   state.insightNews = state.settings.cachedNews || [];
   setView('watch');
@@ -1789,8 +1949,7 @@ async function boot() {
   renderGroupTabs();
   renderList();
   renderStatus();
-  syncNewsSidebarUi();
-  renderNewsSidebar();
+  syncBriefUnreadUi();
   renderEventBanner();
   if (added > 0) els.statusText.textContent = `已导入神器自选 ${added} 只`;
   await Promise.all([refreshAll(), refreshMajorNews(false)]);
