@@ -55,7 +55,7 @@ import { buildLevelMarkLines } from './lib/levels.js';
 import { normalizeGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
 import { calcValuationBias } from './lib/valuation.js';
-import { buildStockAiAdvice } from './lib/ai-advice.js';
+import { askDeepseekReport, buildStockFacts } from './lib/deepseek.js';
 import { isLoggedIn, login, logout, currentUser } from './lib/auth.js';
 
 const REFRESH_MS = 15000;
@@ -110,6 +110,7 @@ const state = {
   dragKey: null,
   aiAdvice: null,
   aiAdviceKey: null,
+  aiRunning: {},
   timersStarted: false,
   briefOpen: false,
   briefTab: 'insight',
@@ -543,6 +544,20 @@ function renderIndices() {
   bindIndexEvents(els.indices);
 }
 
+function aiReportOf(item) {
+  return state.settings?.aiReports?.[itemKey(item)] || null;
+}
+
+function aiRowBtn(item) {
+  if (item.kind === 'fund') return '';
+  const key = itemKey(item);
+  const running = !!state.aiRunning?.[key];
+  const report = aiReportOf(item);
+  const label = running ? '分析中' : report?.action || 'AI';
+  const toneCls = report?.action === '买入' ? 'up' : report?.action === '不买' ? 'down' : '';
+  return `<button type="button" data-ai="${escAttr(key)}" class="ai-row-btn ${toneCls}" title="${report ? '重新分析，点股票看报告' : 'DeepSeek 分析'}">${esc(label)}</button>`;
+}
+
 function valuationBadgeHtml(item, q) {
   if (state.settings?.showValuationBias === false) return '';
   if (item.kind === 'fund') return '';
@@ -594,6 +609,7 @@ function rowHtml(item) {
           <p class="mt-0.5 truncate text-[10px] leading-none" style="color:var(--muted)">${esc(item.code)}${isFund && q.asOf ? ` · ${esc(q.asOf)}` : ''}</p>
         </div>
         <span class="pct-chip shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular-nums" style="${chip(pct)}">${fmtPct(pct)}</span>
+        ${aiRowBtn(item)}
       </div>
       <div class="col-num text-[13px] font-semibold leading-none">${priceLabel}</div>
       <div class="col-actions">
@@ -709,6 +725,14 @@ function bindListEvents() {
       e.stopPropagation();
       const item = state.list.find((x) => itemKey(x) === btn.getAttribute('data-move-group'));
       if (item) await moveItemGroup(item);
+    });
+  });
+
+  els.list.querySelectorAll('[data-ai]').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const item = state.list.find((x) => itemKey(x) === btn.getAttribute('data-ai'));
+      if (item) await runDeepseekForItem(item);
     });
   });
 }
@@ -959,89 +983,123 @@ function closeDetail() {
   }
 }
 
-function adviceActionClass(action) {
-  if (/买入/.test(action) && !/观望/.test(action)) return 'text-up';
-  if (/减仓|回避|偏空/.test(action)) return 'text-down';
-  return '';
+function renderDeepseekReport(report) {
+  if (!els.aiAdviceBody || !report) return;
+  const when = report.generatedAt
+    ? new Date(report.generatedAt).toLocaleString('zh-CN', { hour12: false })
+    : '';
+  const cls = report.action === '买入' ? 'text-up' : report.action === '不买' ? 'text-down' : '';
+  const block = (title, text) =>
+    text
+      ? `<div class="mb-2"><div class="text-[11px] font-semibold">${esc(title)}</div><div class="mt-0.5 text-[12px] leading-relaxed">${esc(text)}</div></div>`
+      : '';
+  els.aiAdviceBody.innerHTML = `
+    <div class="mb-2 flex flex-wrap items-end justify-between gap-2">
+      <div>
+        <div class="text-[11px]" style="color:var(--muted)">DeepSeek · 跟主力</div>
+        <div class="text-lg font-semibold ${cls}">${esc(report.action || '继续等')}</div>
+      </div>
+      <div class="text-[10px]" style="color:var(--muted)">${esc(when)}</div>
+    </div>
+    <div class="mb-2 grid grid-cols-3 gap-1.5 text-center">
+      <div class="rounded-lg px-1 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">买入</div><div class="text-sm font-semibold text-up">${report.buyProb ?? 0}%</div></div>
+      <div class="rounded-lg px-1 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">继续等</div><div class="text-sm font-semibold">${report.waitProb ?? 0}%</div></div>
+      <div class="rounded-lg px-1 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">不买</div><div class="text-sm font-semibold text-down">${report.avoidProb ?? 0}%</div></div>
+    </div>
+    <p class="mb-2 text-[13px] leading-relaxed">${esc(report.summary || '')}</p>
+    ${block('主力', report.mainForce)}
+    ${block('消息', report.news)}
+    ${block('估值与涨幅', report.valuation)}
+    ${block('大盘', report.market)}
+    ${block('怎么做', report.plan)}
+    ${block('放弃条件', report.stop)}
+    <p class="text-[10px] leading-snug" style="color:var(--muted)">概率是模型对当前公开数据的判断，不是胜率承诺。A股跟主力也要防诱多，单票仓位宜轻，先定止损再谈买入。</p>`;
 }
 
-function renderAiAdvice(advice) {
-  if (!els.aiAdviceBody || !advice) return;
-  const dayCls = adviceActionClass(advice.day.action);
-  const weekCls = adviceActionClass(advice.week.action);
-  const marketPct =
-    advice.marketView.avgPct == null
-      ? '—'
-      : `${advice.marketView.avgPct >= 0 ? '+' : ''}${advice.marketView.avgPct.toFixed(2)}%`;
-  els.aiAdviceBody.innerHTML = `
-    <div class="ai-advice-actions mb-2">
-      <div class="ai-advice-pill">
-        <div class="label">未来一天</div>
-        <div class="action ${dayCls}">${esc(advice.day.action)}</div>
-        <div class="tip">${esc(advice.day.tip)}</div>
-        <div class="mt-1 text-[10px]" style="color:var(--muted)">置信 ${(advice.day.confidence * 100).toFixed(0)}%</div>
-      </div>
-      <div class="ai-advice-pill">
-        <div class="label">未来一周</div>
-        <div class="action ${weekCls}">${esc(advice.week.action)}</div>
-        <div class="tip">${esc(advice.week.tip)}</div>
-        <div class="mt-1 text-[10px]" style="color:var(--muted)">置信 ${(advice.week.confidence * 100).toFixed(0)}%</div>
-      </div>
-    </div>
-    <div class="mb-2 rounded-lg px-2.5 py-2" style="background:var(--panel-solid);border:1px solid color-mix(in oklab,var(--line) 90%,transparent)">
-      <div class="text-[11px] font-semibold">大盘环境 · ${esc(advice.marketView.label)}（${marketPct}）</div>
-      <div class="mt-0.5 text-[11px]" style="color:var(--muted)">${esc(advice.marketView.text)}</div>
-    </div>
-    <ul class="mb-2 list-disc space-y-0.5 pl-4 text-[11px]" style="color:var(--ink)">
-      ${advice.bullets.map((b) => `<li>${esc(b)}</li>`).join('')}
-    </ul>
-    <p class="text-[10px] leading-snug" style="color:var(--muted)">${esc(advice.disclaimer)}</p>`;
+async function ensureDeepseekKey() {
+  const saved = String(state.settings?.deepseekApiKey || '').trim();
+  if (saved) return saved;
+  const ok = await openDialog({
+    title: '接入 DeepSeek',
+    bodyHtml: `<p class="mb-2 text-[12px] leading-relaxed" style="color:var(--muted)">在 <a class="text-accent underline" href="https://platform.deepseek.com/api_keys" target="_blank" rel="noreferrer">platform.deepseek.com</a> 创建密钥。只存在本机，用来分析你点过的股票。</p>
+      <input id="dlg-ds-key" type="password" autocomplete="off" placeholder="sk-..." class="w-full rounded-lg px-3 py-2 text-sm outline-none" style="background:var(--panel);border:1px solid var(--line)" />`,
+  });
+  if (!ok) return '';
+  const key = String(state.dialogSnapshot?.['dlg-ds-key'] || '').trim();
+  if (!key) return '';
+  state.settings = await saveSettings({ deepseekApiKey: key });
+  return key;
+}
+
+async function runDeepseekForItem(item) {
+  if (!item || item.kind === 'fund') return;
+  const keyId = itemKey(item);
+  if (state.aiRunning?.[keyId]) return;
+  const apiKey = await ensureDeepseekKey();
+  if (!apiKey) return;
+  state.aiRunning = { ...state.aiRunning, [keyId]: true };
+  renderList();
+  if (state.detail && itemKey(state.detail) === keyId && els.aiAdviceBody) {
+    els.aiAdviceBody.innerHTML =
+      '<div class="text-[12px]" style="color:var(--muted)">正在把行情、主力、估值和消息交给 DeepSeek…</div>';
+  }
+  try {
+    const secid = item.secid || toSecid(item.market, item.code, item.marketNo);
+    const [dayK, flow, news] = await Promise.all([
+      fetchKline(secid, 101, 30).catch(() => null),
+      fetchStockMoneyFlow(secid).catch(() => null),
+      state.insightNews?.length ? Promise.resolve(state.insightNews) : fetchMarketNews(6).catch(() => []),
+    ]);
+    const q = state.quotes[quoteKey(item)] || {};
+    const valuation = calcValuationBias(q);
+    const intent = analyzeMainForceIntent(flow?.summary || {});
+    const facts = buildStockFacts({
+      item,
+      quote: { ...q, name: preferDisplayName(q.name, item.name) },
+      dayK,
+      flow,
+      news: news || [],
+      indices: state.indices || [],
+      valuation,
+      intent,
+    });
+    const report = await askDeepseekReport(apiKey, facts);
+    const aiReports = { ...(state.settings?.aiReports || {}), [keyId]: report };
+    const keys = Object.keys(aiReports);
+    if (keys.length > 40) delete aiReports[keys[0]];
+    state.settings = await saveSettings({ aiReports });
+    if (state.detail && itemKey(state.detail) === keyId) renderDeepseekReport(report);
+  } catch (e) {
+    console.error(e);
+    const msg = String(e?.message || e);
+    if (state.detail && itemKey(state.detail) === keyId && els.aiAdviceBody) {
+      els.aiAdviceBody.innerHTML = `<div class="text-[12px]" style="color:var(--up)">${esc(msg || '分析失败')}</div>`;
+    }
+    if (/401|invalid|api key|密钥/i.test(msg)) {
+      state.settings = await saveSettings({ deepseekApiKey: '' });
+    }
+  } finally {
+    const next = { ...state.aiRunning };
+    delete next[keyId];
+    state.aiRunning = next;
+    renderList();
+  }
 }
 
 async function loadDetailAiAdvice(force = false) {
   const item = state.detail;
   if (!item || item.kind === 'fund' || !els.aiAdviceBody) return;
-  if (!force && state.aiAdviceKey === itemKey(item) && state.aiAdvice) {
-    renderAiAdvice(state.aiAdvice);
+  const saved = aiReportOf(item);
+  if (saved && !force) {
+    renderDeepseekReport(saved);
+    return;
+  }
+  if (force) {
+    await runDeepseekForItem(item);
     return;
   }
   els.aiAdviceBody.innerHTML =
-    '<div class="text-[12px]" style="color:var(--muted)">正在综合历史走势、主力资金、新闻与大盘…</div>';
-  const secid = item.secid || toSecid(item.market, item.code, item.marketNo);
-  try {
-    const [dayK, flow, news] = await Promise.all([
-      fetchKline(secid, 101, 40).catch(() => null),
-      fetchStockMoneyFlow(secid).catch(() => null),
-      (state.insightNews?.length
-        ? Promise.resolve(state.insightNews)
-        : fetchMarketNews(8).catch(() => [])),
-    ]);
-    if (!state.indices?.length) {
-      try {
-        state.indices = await fetchIndices(state.settings?.indices || []);
-      } catch {
-        /* ignore */
-      }
-    }
-    const q = state.quotes[quoteKey(item)] || {};
-    const advice = buildStockAiAdvice({
-      name: preferDisplayName(q.name, item.name),
-      dayK,
-      flow,
-      news: news || state.insightNews || [],
-      indices: state.indices || [],
-      quote: q,
-    });
-    state.aiAdvice = advice;
-    state.aiAdviceKey = itemKey(item);
-    if (state.detail && itemKey(state.detail) === itemKey(item)) {
-      renderAiAdvice(advice);
-    }
-  } catch (e) {
-    console.error(e);
-    els.aiAdviceBody.innerHTML =
-      '<div class="text-[12px]" style="color:var(--muted)">AI 分析暂时不可用，请稍后重试。</div>';
-  }
+    '<div class="text-[12px] leading-relaxed" style="color:var(--muted)">还没有这份报告。回到列表，点这只股票旁边的 <b>AI</b>，分析完再点进来看：买 / 不买 / 继续等，以及主力、消息、估值。</div>';
 }
 
 function showAppAfterLogin() {
@@ -1114,7 +1172,7 @@ async function openDetail(item) {
   }
   // 等弹窗完成布局后再画图，避免首次空白
   await waitFrames(3);
-  await Promise.all([refreshDetailCharts(), loadDetailAiAdvice(true)]);
+  await Promise.all([refreshDetailCharts(), loadDetailAiAdvice(false)]);
   await waitFrames(1);
   resizeAllCharts();
 }
@@ -1757,11 +1815,33 @@ function buildBriefInsightHtml() {
       </div>`
     : '';
 
+  const reports = Object.entries(state.settings?.aiReports || {})
+    .map(([key, report]) => {
+      const item = state.list.find((x) => itemKey(x) === key);
+      if (!item || !report) return '';
+      const cls = report.action === '买入' ? 'text-up' : report.action === '不买' ? 'text-down' : '';
+      return `<div class="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 ring-soft">
+        <span class="min-w-0 truncate text-[12px]">${esc(item.name || item.code)}</span>
+        <span class="shrink-0 text-[12px] font-semibold ${cls}">${esc(report.action)} · 买${report.buyProb ?? 0}%</span>
+      </div>`;
+    })
+    .filter(Boolean)
+    .slice(0, 8)
+    .join('');
+
   return `
     <div class="mb-2">
-      <div class="text-sm font-semibold">实时简析</div>
-      <div class="text-[10px]" style="color:var(--muted)">${marketBits.join(' · ') || '大盘加载中'}</div>
+      <div class="text-sm font-semibold">今日操作台</div>
+      <div class="text-[10px]" style="color:var(--muted)">${marketBits.join(' · ') || '大盘加载中'} · 个股结论以列表 AI 报告为准</div>
     </div>
+    <div class="mb-2 rounded-lg px-2.5 py-2 text-[12px] leading-relaxed" style="background:color-mix(in oklab,var(--accent) 8%,transparent)">
+      大A个人做法：只做主力净流入且估值不高的票；已大涨不追；单票轻仓；先写止损再买。列表点 <b>AI</b> 出报告，再点股票看买 / 不买 / 继续等。
+    </div>
+    ${
+      reports
+        ? `<div class="mb-2"><div class="mb-1 text-[11px] font-semibold" style="color:var(--muted)">已分析的自选</div><div class="grid gap-1">${reports}</div></div>`
+        : `<p class="mb-2 text-[12px]" style="color:var(--muted)">还没有个股报告。回到自选，点股票右侧 AI。</p>`
+    }
     <div class="mb-2 grid grid-cols-2 gap-1.5">
       <div class="rounded-lg px-2 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">全市场上涨</div><div class="text-sm font-semibold text-up">${upCnt}</div></div>
       <div class="rounded-lg px-2 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">全市场下跌</div><div class="text-sm font-semibold text-down">${downCnt}</div></div>

@@ -516,11 +516,15 @@
       box-sizing: border-box;
     }
 
-    /* 涨幅固定右列，竖向对齐（略靠右） */
-    .list-row .col-name-block,
+    /* 涨幅固定右列，竖向对齐（略靠右）；AI 按钮保留 */
     .list-head .col-name {
       grid-template-columns: minmax(0, 1fr) 5.25rem;
       gap: 10px;
+    }
+
+    .list-row .col-name-block {
+      grid-template-columns: minmax(0, 1fr) 4.6rem auto;
+      gap: 6px;
     }
 
     .list-row .col-name-block .pct-chip {
@@ -732,9 +736,9 @@
 
   .list-row .col-name-block {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 5.25rem;
+    grid-template-columns: minmax(0, 1fr) 5.25rem auto;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     width: 100%;
     min-width: 0;
   }
@@ -750,6 +754,29 @@
     min-width: 5rem;
     text-align: center;
     box-sizing: border-box;
+  }
+
+  .ai-row-btn {
+    justify-self: end;
+    min-width: 2.6rem;
+    border-radius: 6px;
+    padding: 3px 6px;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.2;
+    color: var(--accent);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 45%, transparent);
+    background: color-mix(in oklab, var(--accent) 8%, transparent);
+  }
+
+  .ai-row-btn.up {
+    color: var(--up);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--up) 45%, transparent);
+  }
+
+  .ai-row-btn.down {
+    color: var(--down);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--down) 45%, transparent);
   }
 
   .list-row .col-actions {

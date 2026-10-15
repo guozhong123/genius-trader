@@ -33,6 +33,7 @@
     "https://smartbox.gtimg.cn/*",
     "https://qt.gtimg.cn/*",
     "https://52etf.site/*",
-    "http://52etf.site/*"
+    "http://52etf.site/*",
+    "https://api.deepseek.com/*"
   ]
 }
