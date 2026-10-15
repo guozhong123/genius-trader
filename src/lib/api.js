@@ -940,6 +940,139 @@ export async function fetchMarketMoneyFlow() {
   return parseFlowKlines(json?.data?.klines);
 }
 
+/**
+ * 单只股票的估值与盘口，只在点 AI 时拉，不进自选轮询。
+ * 成交额/市值单位：亿元。
+ */
+export async function fetchStockSnapshot(secid) {
+  const fields = 'f12,f14,f2,f3,f6,f7,f8,f9,f10,f15,f16,f17,f18,f20,f21,f23,f100,f103';
+  const url = `https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&fields=${fields}&secids=${encodeURIComponent(secid)}`;
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  const row = (await res.json())?.data?.diff?.[0];
+  if (!row) return null;
+  const n = (v) => {
+    const x = Number(v);
+    return Number.isFinite(x) ? x : null;
+  };
+  const yi = (v) => {
+    const x = n(v);
+    return x == null ? null : x / 1e8;
+  };
+  return {
+    name: row.f14 || '',
+    price: n(row.f2),
+    changePct: n(row.f3),
+    amountYi: yi(row.f6),
+    amplitude: n(row.f7),
+    turnover: n(row.f8),
+    pe: n(row.f9),
+    volumeRatio: n(row.f10),
+    high: n(row.f15),
+    low: n(row.f16),
+    open: n(row.f17),
+    prevClose: n(row.f18),
+    totalMvYi: yi(row.f20),
+    floatMvYi: yi(row.f21),
+    pb: n(row.f23),
+    industry: row.f100 || '',
+    concepts: String(row.f103 || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 8),
+  };
+}
+
+/** 近几日主力拆单（亿元）。无数据时返回空数组。 */
+export async function fetchStockFlowDays(secid, limit = 8) {
+  const q =
+    `lmt=${limit}&klt=101&secid=${encodeURIComponent(secid)}` +
+    '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63';
+  const urls = [
+    `https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?${q}`,
+    `https://push2.eastmoney.com/api/qt/stock/fflow/daykline/get?${q}`,
+  ];
+  const yi = 1e8;
+  for (const url of urls) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const lines = (await res.json())?.data?.klines || [];
+      if (!lines.length) continue;
+      return lines.map((line) => {
+        const p = String(line).split(',');
+        const yuan = (i) => +(Number(p[i] || 0) / yi).toFixed(2);
+        return {
+          date: p[0],
+          main: yuan(1),
+          small: yuan(2),
+          mid: yuan(3),
+          large: yuan(4),
+          huge: yuan(5),
+          changePct: Number(p[12]),
+        };
+      });
+    } catch {
+      /* try next */
+    }
+  }
+  return [];
+}
+
+/** 标题里带这只股票的近期资讯。 */
+export async function fetchStockHeadlines(keyword, limit = 6) {
+  const name = String(keyword || '').trim();
+  if (name.length < 2) return [];
+  const param = {
+    uid: '',
+    keyword: name,
+    type: ['cmsArticleWebOld'],
+    client: 'web',
+    clientType: 'web',
+    clientVersion: 'curr',
+    param: {
+      cmsArticleWebOld: {
+        searchScope: 'default',
+        sort: 'time',
+        pageIndex: 1,
+        pageSize: limit,
+        preTag: '',
+        postTag: '',
+      },
+    },
+  };
+  const url = `https://search-api-web.eastmoney.com/search/jsonp?cb=cb&param=${encodeURIComponent(JSON.stringify(param))}`;
+  const res = await fetch(url);
+  if (!res.ok) return [];
+  const text = await res.text();
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end <= start) return [];
+  const rows = JSON.parse(text.slice(start, end + 1))?.result?.cmsArticleWebOld || [];
+  return rows.slice(0, limit).map((r) => ({
+    title: String(r.title || '').replace(/<[^>]+>/g, '').trim(),
+    time: String(r.date || '').slice(0, 16),
+    source: r.mediaName || '',
+  })).filter((r) => r.title);
+}
+
+/** A 股公告。港美韩没有这套代码时返回空。 */
+export async function fetchStockAnnouncements(code, limit = 3) {
+  const c = String(code || '').replace(/\D/g, '');
+  if (!/^\d{6}$/.test(c)) return [];
+  const url =
+    `https://np-anotice-stock.eastmoney.com/api/security/ann?sr=-1&page_size=${limit}` +
+    `&page_index=1&ann_type=A&client_source=web&stock_list=${c}&f_node=0&s_node=0`;
+  const res = await fetch(url);
+  if (!res.ok) return [];
+  const list = (await res.json())?.data?.list || [];
+  return list.slice(0, limit).map((r) => ({
+    title: String(r.title_ch || r.title || '').trim(),
+    date: String(r.notice_date || '').slice(0, 10),
+  })).filter((r) => r.title);
+}
+
 /** 个股主力资金分时 */
 export async function fetchStockMoneyFlow(secid) {
   const q =

@@ -25,6 +25,10 @@ import {
   fetchNorthbound,
   fetchQuotes,
   fetchStockMoneyFlow,
+  fetchStockSnapshot,
+  fetchStockFlowDays,
+  fetchStockHeadlines,
+  fetchStockAnnouncements,
   fetchTechLeaders,
   fetchMembersQuotes,
   fetchTopMovers,
@@ -996,7 +1000,7 @@ function renderDeepseekReport(report) {
   els.aiAdviceBody.innerHTML = `
     <div class="mb-2 flex flex-wrap items-end justify-between gap-2">
       <div>
-        <div class="text-[11px]" style="color:var(--muted)">DeepSeek · 跟主力</div>
+        <div class="text-[11px]" style="color:var(--muted)">DeepSeek · 主力 · 均线 · 个股消息</div>
         <div class="text-lg font-semibold ${cls}">${esc(report.action || '继续等')}</div>
       </div>
       <div class="text-[10px]" style="color:var(--muted)">${esc(when)}</div>
@@ -1008,10 +1012,12 @@ function renderDeepseekReport(report) {
     </div>
     <p class="mb-2 text-[13px] leading-relaxed">${esc(report.summary || '')}</p>
     ${block('主力', report.mainForce)}
+    ${block('量价', report.trend)}
     ${block('消息', report.news)}
     ${block('估值与涨幅', report.valuation)}
     ${block('大盘', report.market)}
     ${block('怎么做', report.plan)}
+    ${block('最大风险', report.risk)}
     ${block('放弃条件', report.stop)}
     <p class="text-[10px] leading-snug" style="color:var(--muted)">概率是模型对当前公开数据的判断，不是胜率承诺。A股跟主力也要防诱多，单票仓位宜轻，先定止损再谈买入。</p>`;
 }
@@ -1041,27 +1047,41 @@ async function runDeepseekForItem(item) {
   renderList();
   if (state.detail && itemKey(state.detail) === keyId && els.aiAdviceBody) {
     els.aiAdviceBody.innerHTML =
-      '<div class="text-[12px]" style="color:var(--muted)">正在把行情、主力、估值和消息交给 DeepSeek…</div>';
+      '<div class="text-[12px]" style="color:var(--muted)">正在拉日K、近5日主力、估值和这只股票的消息…</div>';
   }
   try {
     const secid = item.secid || toSecid(item.market, item.code, item.marketNo);
-    const [dayK, flow, news] = await Promise.all([
-      fetchKline(secid, 101, 30).catch(() => null),
+    const displayName = preferDisplayName(
+      state.quotes[quoteKey(item)]?.name,
+      item.name,
+    );
+    const [dayK, flow, flowDays, snapshot, headlines, announcements, news] = await Promise.all([
+      fetchKline(secid, 101, 80).catch(() => null),
       fetchStockMoneyFlow(secid).catch(() => null),
-      state.insightNews?.length ? Promise.resolve(state.insightNews) : fetchMarketNews(6).catch(() => []),
+      fetchStockFlowDays(secid, 8).catch(() => []),
+      fetchStockSnapshot(secid).catch(() => null),
+      fetchStockHeadlines(displayName, 6).catch(() => []),
+      fetchStockAnnouncements(item.code, 3).catch(() => []),
+      state.insightNews?.length ? Promise.resolve(state.insightNews) : fetchMarketNews(4).catch(() => []),
     ]);
-    const q = state.quotes[quoteKey(item)] || {};
+    if (!state.center?.overview) await loadDataCenter().catch(() => {});
+    const q = { ...(state.quotes[quoteKey(item)] || {}), ...(snapshot || {}) };
     const valuation = calcValuationBias(q);
     const intent = analyzeMainForceIntent(flow?.summary || {});
     const facts = buildStockFacts({
       item,
-      quote: { ...q, name: preferDisplayName(q.name, item.name) },
+      quote: { ...q, name: displayName },
       dayK,
       flow,
+      flowDays,
+      snapshot,
+      headlines,
+      announcements,
       news: news || [],
       indices: state.indices || [],
       valuation,
       intent,
+      center: state.center,
     });
     const report = await askDeepseekReport(apiKey, facts);
     const aiReports = { ...(state.settings?.aiReports || {}), [keyId]: report };
