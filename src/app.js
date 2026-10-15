@@ -68,7 +68,7 @@ import { normalizeGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
 import { calcValuationBias } from './lib/valuation.js';
 import { askDeepseekReport, askMarketReport, askSeatReport, buildMarketFacts, buildSeatFacts, buildStockFacts, disciplineStop } from './lib/deepseek.js';
-import { OVERNIGHT_LINKS, buildOvernight, marketClock, moodLabel, planText, reviewCalls, scoreMainLines, shYmd, sheetBrief } from './lib/trend.js';
+import { OVERNIGHT_LINKS, buildOvernight, marketClock, moodLabel, planText, reviewCalls, scoreMainLines, shYmd, sheetBrief, tradingSlot } from './lib/trend.js';
 import { isLoggedIn, login, logout, currentUser } from './lib/auth.js';
 
 const REFRESH_MS = 15000;
@@ -1300,9 +1300,9 @@ function reportArticleHtml(report) {
         : `${checksLine(report)}${reportBlock('今天怎么做', report.today)}${reportBlock('板块', report.sector)}${reportBlock('持仓', report.position)}${reportBlock('主力', report.mainForce)}${reportBlock('量价', report.trend)}${reportBlock('消息', report.news)}${reportBlock('估值与涨幅', report.valuation)}${reportBlock('大盘', report.market)}${reportBlock('仓位', report.plan)}${reportBlock('当天离场', report.exit)}${reportBlock('放弃条件', report.stop)}${reportBlock('风险', report.risk)}${reportBlock('和前几天比', report.consistency)}`;
   const intro =
     report.kind === 'market'
-      ? 'AI盘 / 顺势结论：只有点按钮才会生成。它告诉你这一天手里的票整体怎么处理，以及主力方向跟哪一段、哪一段不跟。'
+      ? 'AI盘 / 顺势结论：告诉你这一天手里的票怎么处理，以及主力方向跟哪一段。顺势每个交易日自动三次：开盘、盘中、尾盘。AI盘要自己点。'
       : report.kind === 'seat'
-        ? '期货席位：点了才生成。它说明中信和其他机构是在偏多、偏空，还是多空一起加、更像对冲。最后看你的持仓，以及跟不跟这一段。'
+        ? '期货席位：说明中信和其他机构是偏多、偏空，还是多空一起加、更像对冲。每个交易日自动三次：开盘、盘中、尾盘。点按钮可以马上重做。最后看持仓，以及跟不跟这一段。'
         : '个股报告：点「分析」才会生成。看的是这只票跟不跟主力，以及你填的成本这一天怎么处理。';
   const hold = report.hold || (report.kind === 'market' ? '' : report.position || '');
   const follow = report.follow || '';
@@ -2043,7 +2043,7 @@ function renderTrend() {
       ? `<div class="text-[12px]" style="color:var(--up)">${esc(state.futAiError)}</div>`
       : state.futAdvice
         ? reportArticleHtml(state.futAdvice)
-        : '<div class="text-[12px]" style="color:var(--muted)">还没有席位结论。上面的粗读不会调用模型。</div>';
+        : '<div class="text-[12px]" style="color:var(--muted)">席位结论还没有。保存过密钥的话，开盘 9:25、盘中 13:00、尾盘 14:40 各自动写一次。</div>';
   const advice = state.trendAdvice;
   const adviceHtml = state.trendAiRunning
     ? '<div class="text-[12px]" style="color:var(--muted)">正在调用模型，只根据上面这张纸…</div>'
@@ -2051,7 +2051,7 @@ function renderTrend() {
       ? `<div class="text-[12px]" style="color:var(--up)">${esc(state.trendAiError)}</div>`
       : advice
         ? reportArticleHtml(advice)
-        : '<div class="text-[12px]" style="color:var(--muted)">还没有模型结论。上面是行情和规则粗判，不会自动调用。</div>';
+        : '<div class="text-[12px]" style="color:var(--muted)">模型结论还没有。保存过密钥的话，开盘 9:25、盘中 13:00、尾盘 14:40 各自动写一次。上面的规则粗判不是模型。</div>';
   els.trendSheet.innerHTML = `
     <div class="mb-1 flex flex-wrap items-baseline gap-2">
       <div class="text-sm font-semibold">顺势</div>
@@ -2074,29 +2074,34 @@ function renderTrend() {
     <div class="trend-block">
       <div class="mb-1 flex items-center justify-between gap-2">
         <div class="trend-label">期货席位${fut?.date ? ` · 持仓日 ${esc(fut.date)}` : ''}</div>
-        <button type="button" data-fut-ai class="rounded-md bg-accent px-2 py-1 text-[11px] font-semibold text-white" ${state.futAiRunning ? 'disabled' : ''}>${state.futAiRunning ? '分析中' : '分析这些席位'}</button>
+        <button type="button" data-fut-ai class="rounded-md bg-accent px-2 py-1 text-[11px] font-semibold text-white" ${state.futAiRunning ? 'disabled' : ''}>${state.futAiRunning ? '分析中' : state.futAdvice ? '重新分析' : '分析这些席位'}</button>
       </div>
       <p class="mb-1 text-[10px] leading-relaxed" style="color:var(--muted)">加多单，是这家期货公司当天多头持仓比上一交易日多了多少手。加空单是空头增加。括号里的数字是增减，前面是持仓手数。带「代客」的是客户的单，不是期货公司自己的钱。多空一起加，更像对冲或客户两边都有，不要当成它在单边看涨。这是交易所公布的前 20 名会员，不是全部持仓，也不是股票账户。持仓日是 ${esc(fut?.date || '—')}，用来看大A ${esc(clock.next)}。</p>
       ${futHtml || '<div style="color:var(--muted)">这天的期货席位还没出来。</div>'}
-      <p class="mb-1 mt-2 text-[10px] leading-relaxed" style="color:var(--muted)">点这个按钮才调用 DeepSeek。它会逐条说是偏多、偏空还是对冲，并写成持仓怎么处理、跟不跟这一段。</p>
+      <p class="mb-1 mt-2 text-[10px] leading-relaxed" style="color:var(--muted)">每个交易日自动三次：开盘 9:25、盘中 13:00、尾盘 14:40。过了点再打开，只补当前这一档。点按钮会马上再写一版，逐条说偏多、偏空还是对冲，并写成持仓怎么处理、跟不跟这一段。</p>
       ${futAdviceHtml}
     </div>
     <div class="trend-block"><div class="trend-label">报告对照 · ${esc(sheet.review?.day || '还没有')} 的结论，对 ${esc(clock.today)} 的涨跌</div><p class="mb-1">${esc(sheet.review?.summary || '')}</p><div class="trend-chips">${reviewRows}</div></div>
     <div class="trend-block">
       <div class="mb-1 flex items-center justify-between gap-2">
         <div class="trend-label">最终建议</div>
-        <button type="button" data-trend-ai class="rounded-md bg-accent px-2 py-1 text-[11px] font-semibold text-white" ${state.trendAiRunning ? 'disabled' : ''}>${state.trendAiRunning ? '分析中' : '用 AI 出结论'}</button>
+        <button type="button" data-trend-ai class="rounded-md bg-accent px-2 py-1 text-[11px] font-semibold text-white" ${state.trendAiRunning ? 'disabled' : ''}>${state.trendAiRunning ? '分析中' : advice ? '重新分析' : '用 AI 出结论'}</button>
       </div>
-      <p class="mb-1 text-[10px] leading-relaxed" style="color:var(--muted)">点这个按钮才调用 DeepSeek。结论对着大A ${esc(clock.next)}，并写成持仓怎么处理、跟哪段主力。</p>
+      <p class="mb-1 text-[10px] leading-relaxed" style="color:var(--muted)">对着大A ${esc(clock.next)}。每个交易日自动三次：开盘 9:25、盘中 13:00、尾盘 14:40。过了点再打开，只补当前这一档。点按钮会马上重做。结论写成持仓怎么处理、跟哪段主力。</p>
       ${adviceHtml}
     </div>
     <p class="text-[10px] leading-snug" style="color:var(--muted)">外盘、连板和席位是公开数据的粗判，不是机构底仓。已经大涨的方向写成不宜再追。不构成买卖承诺。</p>`;
 }
 
-async function runTrendAi() {
-  if (state.trendAiRunning) return;
-  const apiKey = await ensureDeepseekKey();
-  if (!apiKey) return;
+function slotNote(slot) {
+  if (!slot) return '';
+  return `\n这一档是${slot.label}。开盘看开盘这段怎么走，盘中看上午的方向还在不在，尾盘看收盘前持仓过不过夜。`;
+}
+
+async function runTrendAi(opts = {}) {
+  if (state.trendAiRunning) return false;
+  const apiKey = opts.auto ? String(state.settings?.deepseekApiKey || '').trim() : await ensureDeepseekKey();
+  if (!apiKey) return false;
   if (!state.trend) await loadTrendSheet();
   state.trendAiRunning = true;
   state.trendAiError = '';
@@ -2112,40 +2117,46 @@ async function runTrendAi() {
         tape: judgeTape(state.center)?.label || '',
         prior: priorContext((r) => r.kind === 'market'),
         sheet: state.trend?.brief || '',
-        clock: clock.line,
+        clock: `${clock.line}${slotNote(opts.slot)}`,
       }),
       state.settings?.aiModel,
     );
     state.trendAdvice = await pushReport({
       ...report,
       kind: 'market',
-      title: `顺势 ${clock.next}`,
+      title: opts.slot ? `顺势 ${opts.day} ${opts.slot.label}` : `顺势 ${clock.beijing} 手动`,
       itemKey: '',
       code: '',
+      slot: opts.slot?.id || '',
+      sessionDay: opts.day || clock.today,
     });
+    return true;
   } catch (e) {
     console.error(e);
     state.trendAiError = String(e?.message || e || '分析失败');
     if (/401|invalid|api key|密钥/i.test(state.trendAiError)) {
       state.settings = await saveSettings({ deepseekApiKey: '' });
     }
+    return false;
   } finally {
     state.trendAiRunning = false;
     renderTrend();
   }
 }
 
-async function runFuturesAi() {
-  if (state.futAiRunning) return;
+async function runFuturesAi(opts = {}) {
+  if (state.futAiRunning) return false;
   const seats = state.trend?.futures;
   const rows = [...(seats?.indexRows || []), ...(seats?.commodityRows || [])];
   if (!rows.length) {
-    state.futAiError = '席位还没取到，先点右上角刷新。';
-    renderTrend();
-    return;
+    if (!opts.auto) {
+      state.futAiError = '席位还没取到，先点右上角刷新。';
+      renderTrend();
+    }
+    return false;
   }
-  const apiKey = await ensureDeepseekKey();
-  if (!apiKey) return;
+  const apiKey = opts.auto ? String(state.settings?.deepseekApiKey || '').trim() : await ensureDeepseekKey();
+  if (!apiKey) return false;
   state.futAiRunning = true;
   state.futAiError = '';
   renderTrend();
@@ -2153,24 +2164,77 @@ async function runFuturesAi() {
     const clock = marketClock();
     const report = await askSeatReport(
       apiKey,
-      buildSeatFacts({ seats, clock: clock.line }),
+      buildSeatFacts({ seats, clock: `${clock.line}${slotNote(opts.slot)}` }),
       state.settings?.aiModel,
     );
     state.futAdvice = await pushReport({
       ...report,
-      title: `期货席位 ${seats.date || clock.today}`,
+      title: opts.slot ? `期货席位 ${opts.day} ${opts.slot.label}` : `期货席位 ${seats.date || clock.today} 手动`,
       itemKey: '',
       code: '',
+      slot: opts.slot?.id || '',
+      sessionDay: opts.day || clock.today,
     });
+    return true;
   } catch (e) {
     console.error(e);
     state.futAiError = String(e?.message || e || '分析失败');
     if (/401|invalid|api key|密钥/i.test(state.futAiError)) {
       state.settings = await saveSettings({ deepseekApiKey: '' });
     }
+    return false;
   } finally {
     state.futAiRunning = false;
     renderTrend();
+  }
+}
+
+function hydrateSessionReports() {
+  if (!state.trendAdvice) {
+    const hit = reportHistory().find((r) => r.kind === 'market');
+    if (hit) state.trendAdvice = hit;
+  }
+  if (!state.futAdvice) {
+    const hit = reportHistory().find((r) => r.kind === 'seat');
+    if (hit) state.futAdvice = hit;
+  }
+}
+
+async function markAutoSlot(key) {
+  const aiAutoDone = [key, ...(state.settings?.aiAutoDone || []).filter((item) => item !== key)].slice(0, 24);
+  state.settings = await saveSettings({ aiAutoDone });
+}
+
+/** 顺势和期货席位：开盘、盘中、尾盘各一次。没有密钥不弹窗。失败等 20 分钟再试。 */
+async function maybeAutoSessionAi() {
+  if (state.autoSessionRunning) return;
+  const slot = tradingSlot();
+  if (!slot) return;
+  if (!String(state.settings?.deepseekApiKey || '').trim()) return;
+  const done = new Set(state.settings?.aiAutoDone || []);
+  const trendKey = `${slot.day}|${slot.id}|trend`;
+  const seatKey = `${slot.day}|${slot.id}|seat`;
+  const needTrend = !done.has(trendKey);
+  const needSeat = !done.has(seatKey);
+  if (!needTrend && !needSeat) return;
+  if (state.autoSessionFailAt && Date.now() - state.autoSessionFailAt < 20 * 60 * 1000) return;
+  state.autoSessionRunning = true;
+  try {
+    if (!state.trend || Date.now() - (state.trendAt || 0) > 3 * 60 * 1000) await loadTrendSheet(true);
+    hydrateSessionReports();
+    renderTrend();
+    const seatRows = [...(state.trend?.futures?.indexRows || []), ...(state.trend?.futures?.commodityRows || [])];
+    if (needSeat) {
+      if (!seatRows.length) state.autoSessionFailAt = Date.now();
+      else if (await runFuturesAi({ auto: true, slot, day: slot.day })) await markAutoSlot(seatKey);
+      else state.autoSessionFailAt = Date.now();
+    }
+    if (needTrend) {
+      if (await runTrendAi({ auto: true, slot, day: slot.day })) await markAutoSlot(trendKey);
+      else state.autoSessionFailAt = Date.now();
+    }
+  } finally {
+    state.autoSessionRunning = false;
   }
 }
 
@@ -2273,6 +2337,7 @@ async function loadTrendSheet(force = false) {
   } finally {
     state.trendLoading = false;
     state.trendTask = null;
+    hydrateSessionReports();
     renderTrend();
   }
   })();
@@ -3299,10 +3364,14 @@ async function bootApp() {
   };
   renderPulseBoards();
   await Promise.all([refreshAll(), refreshMajorNews(false), loadDataCenter()]);
+  void maybeAutoSessionAi();
   if (!state.timersStarted) {
     state.timersStarted = true;
     setInterval(refreshAll, REFRESH_MS);
     setInterval(() => refreshMajorNews(false), NEWS_REFRESH_MS);
+    setInterval(() => {
+      void maybeAutoSessionAi();
+    }, 60 * 1000);
   }
 }
 

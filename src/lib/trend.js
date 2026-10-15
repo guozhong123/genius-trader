@@ -101,6 +101,24 @@ export function shYmd(ts = Date.now()) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(ts);
 }
 
+/** 每个交易日三档。到点之后打开页面，只补当前这一档。 */
+export const SESSION_SLOTS = [
+  { id: 'open', label: '开盘', start: 9 * 60 + 25 },
+  { id: 'mid', label: '盘中', start: 13 * 60 },
+  { id: 'close', label: '尾盘', start: 14 * 60 + 40 },
+];
+
+export function tradingSlot(now = new Date()) {
+  const sh = shParts(now);
+  if (sh.weekday === 'Sat' || sh.weekday === 'Sun') return null;
+  let current = null;
+  for (const slot of SESSION_SLOTS) {
+    if (sh.mins >= slot.start) current = slot;
+  }
+  if (!current) return null;
+  return { id: current.id, label: current.label, day: sh.ymd };
+}
+
 export function moodLabel(sentiment) {
   if (!sentiment) return '';
   const { height, zbRate, premium, promoRate } = sentiment;

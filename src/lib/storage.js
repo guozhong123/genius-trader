@@ -77,6 +77,8 @@ export const DEFAULT_SETTINGS = {
   /** 全部历史报告，新的在前 */
   aiHistory: [],
   aiHistoryMigrated: false,
+  /** 已自动写过的档，形如 2026-10-15|close|trend */
+  aiAutoDone: [],
   /** 移动端分组条是否展开；默认折叠 */
   mobileGroupsExpanded: false,
   /** 刷新后回到上次的页面、股票/基金、分组 */
