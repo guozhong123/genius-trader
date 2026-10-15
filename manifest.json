@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "天才交易员",
   "description": "自选股票与基金盯盘：A股 / 港股 / 美股 / 场外基金，净值、分时K线、主力资金与板块热力图。",
-  "version": "1.9.4",
+  "version": "1.9.5",
   "action": {
     "default_title": "天才交易员",
     "default_icon": {
@@ -35,6 +35,10 @@
     "https://datacenter-web.eastmoney.com/*",
     "https://smartbox.gtimg.cn/*",
     "https://qt.gtimg.cn/*",
+    "https://web.ifzq.gtimg.cn/*",
+    "https://ifzq.gtimg.cn/*",
+    "https://vip.stock.finance.sina.com.cn/*",
+    "https://money.finance.sina.com.cn/*",
     "https://52etf.site/*",
     "http://52etf.site/*",
     "https://api.deepseek.com/*"
