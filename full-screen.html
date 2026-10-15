@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#0f766e" />
     <meta name="mobile-web-app-capable" content="yes" />
     <title>天才交易员</title>
-    <script type="module" crossorigin src="/genius-trader/assets/full-screen-CojwqHUt.js"></script>
-    <link rel="modulepreload" crossorigin href="/genius-trader/assets/styles-Cpg_MWA3.js">
-    <link rel="stylesheet" crossorigin href="/genius-trader/assets/styles-ByNwpUZB.css">
+    <script type="module" crossorigin src="/genius-trader/assets/full-screen-CAXWtGki.js"></script>
+    <link rel="modulepreload" crossorigin href="/genius-trader/assets/styles-B8aFwZuF.js">
+    <link rel="stylesheet" crossorigin href="/genius-trader/assets/styles-pcDzLAfI.css">
   </head>
   <body>
     <!-- 登录门禁 -->
@@ -52,6 +52,7 @@
 
             <div class="top-nav flex shrink-0 rounded-lg p-0.5 text-xs font-semibold" style="background: var(--panel-solid); border: 1px solid var(--line)">
               <button data-view="watch" class="view-tab rounded-md bg-accent px-2 py-1.5 text-white">自选</button>
+              <button data-view="pulse" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">盘况</button>
               <button data-view="data" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">资金</button>
               <button data-view="etf" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">热力图</button>
             </div>
@@ -62,7 +63,10 @@
                 <span id="news-badge" class="news-badge hidden">0</span>
                 <span id="news-dot" class="news-dot hidden" aria-hidden="true"></span>
               </button>
-              <div id="theme-picker" class="glass flex items-center gap-0.5 rounded-lg p-0.5"></div>
+              <button id="theme-toggle" type="button" class="theme-toggle glass inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" title="切换浅色/深色" aria-label="切换主题">
+                <span class="theme-toggle-icon" aria-hidden="true"></span>
+              </button>
+              <div id="theme-picker" class="hidden" aria-hidden="true"></div>
               <button id="export-btn" class="glass shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold" style="color: var(--muted)">导出</button>
               <button id="import-btn" class="glass shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold" style="color: var(--muted)">导入</button>
               <button id="logout-btn" class="glass shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold" style="color: var(--muted)" title="退出登录">退出</button>
@@ -82,21 +86,6 @@
           </div>
         </div>
 
-        <!-- 盘况：大A / 美股 / 韩股 · 盘前盘中盘后暗盘 + 板块涨跌 -->
-        <div id="pulse-bar" class="pulse-bar glass mb-2 hidden rounded-xl p-2.5">
-          <div class="mb-2 flex flex-wrap items-center gap-1.5">
-            <span class="text-[12px] font-semibold">盘况 · 板块</span>
-            <div class="flex rounded-lg p-0.5 text-[11px] font-semibold" style="background: color-mix(in oklab, var(--line) 35%, transparent)">
-              <button type="button" data-pulse-market="CN" class="pulse-market-btn rounded-md px-2.5 py-1" style="color: var(--muted)">大A</button>
-              <button type="button" data-pulse-market="US" class="pulse-market-btn rounded-md bg-accent px-2.5 py-1 text-white">美股</button>
-              <button type="button" data-pulse-market="KR" class="pulse-market-btn rounded-md px-2.5 py-1" style="color: var(--muted)">韩股</button>
-            </div>
-            <span id="pulse-session" class="rounded-md px-2 py-0.5 text-[11px] font-semibold ring-soft" style="color: var(--accent)">—</span>
-            <span id="pulse-hint" class="text-[10px]" style="color: var(--muted)"></span>
-          </div>
-          <div id="pulse-boards" class="pulse-boards"></div>
-        </div>
-
         <!-- 大盘指数：仅自选显示 -->
         <div id="indices-bar" class="indices-bar mb-2">
           <div class="indices-label flex shrink-0 items-center text-[10px] font-semibold" style="color: var(--muted)">指数</div>
@@ -106,7 +95,7 @@
         <section id="indices-mobile" class="hidden"></section>
 
         <!-- 自选 -->
-        <section id="view-watch">
+        <section id="view-watch" class="view-pane">
           <div id="list" class="list-panel mx-auto"></div>
           <div id="empty" class="glass mx-auto mt-2 hidden max-w-xl rounded-xl px-4 py-10 text-center">
             <h2 data-empty-title class="text-base font-semibold">还没有自选</h2>
@@ -114,7 +103,23 @@
           </div>
         </section>
 
-        <section id="view-data" class="hidden space-y-2">
+        <!-- 盘况独立页 -->
+        <section id="view-pulse" class="view-pane hidden">
+          <div id="pulse-bar" class="pulse-bar glass rounded-xl p-3">
+            <div class="mb-3 flex flex-wrap items-center gap-2">
+              <div class="flex rounded-lg p-0.5 text-[12px] font-semibold" style="background: color-mix(in oklab, var(--line) 35%, transparent)">
+                <button type="button" data-pulse-market="CN" class="pulse-market-btn rounded-md px-3 py-1.5" style="color: var(--muted)">大A</button>
+                <button type="button" data-pulse-market="US" class="pulse-market-btn rounded-md bg-accent px-3 py-1.5 text-white">美股</button>
+                <button type="button" data-pulse-market="KR" class="pulse-market-btn rounded-md px-3 py-1.5" style="color: var(--muted)">韩股</button>
+              </div>
+              <span id="pulse-session" class="rounded-md px-2 py-1 text-[11px] font-semibold ring-soft" style="color: var(--accent)">—</span>
+              <span id="pulse-hint" class="text-[11px]" style="color: var(--muted)"></span>
+            </div>
+            <div id="pulse-boards" class="pulse-boards"></div>
+          </div>
+        </section>
+
+        <section id="view-data" class="view-pane hidden space-y-2">
           <div id="flow-summary" class="grid grid-cols-3 gap-1 sm:grid-cols-4 lg:grid-cols-7"></div>
           <div class="glass rounded-xl p-2.5">
             <div class="mb-1 flex flex-wrap items-center gap-2">
@@ -179,7 +184,7 @@
           </div>
         </section>
 
-        <section id="view-etf" class="hidden">
+        <section id="view-etf" class="view-pane hidden">
           <div class="glass mb-1.5 rounded-lg px-2.5 py-1.5 text-[10px]" style="color: var(--muted)">
             内嵌 <a href="https://52etf.site/" target="_blank" rel="noreferrer" class="text-accent underline">52etf.site</a>
           </div>
@@ -193,19 +198,19 @@
     <!-- 简讯合一弹窗：简析 / 消息 / 日历 -->
     <div id="brief-root" class="modal-wrap fixed inset-0 z-[60] hidden items-center justify-center p-3 sm:p-6">
       <div id="brief-mask" class="absolute inset-0" style="background: var(--mask)"></div>
-      <div id="brief-panel" class="modal-panel brief-panel relative z-10 flex h-[min(680px,90vh)] w-[min(760px,96vw)] flex-col overflow-hidden rounded-2xl shadow-2xl"
+      <div id="brief-panel" class="modal-panel brief-panel relative z-10 flex h-[min(820px,92vh)] w-[min(920px,96vw)] flex-col overflow-hidden rounded-2xl shadow-2xl"
         style="background: var(--panel-solid); border: 1px solid var(--line)">
-        <div class="flex shrink-0 items-center gap-2 border-b px-3 py-2.5" style="border-color: var(--line)">
+        <div class="flex shrink-0 items-center gap-2 border-b px-4 py-3" style="border-color: var(--line)">
           <div class="flex rounded-lg p-0.5 text-xs font-semibold" style="background: color-mix(in oklab, var(--line) 35%, transparent)">
-            <button type="button" data-brief-tab="insight" class="brief-tab rounded-md bg-accent px-2.5 py-1 text-white">实时简析</button>
-            <button type="button" data-brief-tab="news" class="brief-tab rounded-md px-2.5 py-1" style="color: var(--muted)">消息</button>
-            <button type="button" data-brief-tab="calendar" class="brief-tab rounded-md px-2.5 py-1" style="color: var(--muted)">事件日历</button>
+            <button type="button" data-brief-tab="insight" class="brief-tab rounded-md bg-accent px-3 py-1.5 text-white">实时简析</button>
+            <button type="button" data-brief-tab="news" class="brief-tab rounded-md px-3 py-1.5" style="color: var(--muted)">消息</button>
+            <button type="button" data-brief-tab="calendar" class="brief-tab rounded-md px-3 py-1.5" style="color: var(--muted)">事件日历</button>
           </div>
           <button id="brief-close" class="ml-auto rounded-lg p-1.5" style="color: var(--muted)">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
           </button>
         </div>
-        <div id="brief-body" class="brief-body min-h-0 flex-1 overflow-auto p-3.5"></div>
+        <div id="brief-body" class="brief-body min-h-0 flex-1 overflow-auto p-4 sm:p-5"></div>
       </div>
     </div>
 
