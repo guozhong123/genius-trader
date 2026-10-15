@@ -3,6 +3,7 @@
  * Data is unofficial and for personal reference only.
  */
 
+// f15高 f16低 f17开 f18昨收；用于列表估值高低判断
 const STOCK_FIELDS = 'f12,f13,f14,f2,f3,f4,f15,f16,f17,f18,f124';
 
 const MARKET_BY_CODE = {

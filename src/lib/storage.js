@@ -50,6 +50,8 @@ export const DEFAULT_SETTINGS = {
   funFlowNames: false,
   predictOpen: true,
   briefModalTab: 'insight',
+  /** 列表显示估值偏高/偏低，默认开 */
+  showValuationBias: true,
   newsSidebarOpen: true,
   dismissedNewsIds: [],
   readNewsIds: [],

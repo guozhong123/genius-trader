@@ -43,14 +43,10 @@ import {
   resizeAllCharts,
 } from './lib/charts.js';
 import { getTodayEvents, getUpcomingEvents } from './lib/calendar.js';
-import {
-  buildLevelMarkLines,
-  calcAutoLevels,
-  checkStopLoss,
-  resolveLevels,
-} from './lib/levels.js';
-import { normalizeGroups, regroupStocks } from './lib/stock-groups.js';
+import { buildLevelMarkLines } from './lib/levels.js';
+import { normalizeGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
+import { calcValuationBias } from './lib/valuation.js';
 
 const REFRESH_MS = 15000;
 
@@ -100,6 +96,7 @@ const state = {
   boardType: 'industry',
   rank: { dir: 'up', rows: [], sort: 'pct' },
   dialogResolve: null,
+  dialogSnapshot: null,
   dragKey: null,
   briefOpen: false,
   briefTab: 'insight',
@@ -107,8 +104,6 @@ const state = {
   insightNews: [],
   techLeaders: [],
   eventPanelOpen: false,
-  autoLevels: {},
-  stopHits: [],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -159,13 +154,7 @@ const els = {
   eventCalendarBtn: $('event-calendar-btn'),
   eventDismissBtn: $('event-dismiss-btn'),
   calendarBtn: $('calendar-btn'),
-  stopBanner: $('stop-banner'),
-  stopBannerText: $('stop-banner-text'),
-  stopBannerClose: $('stop-banner-close'),
-  inputStop: $('input-stop'),
-  inputSupport: $('input-support'),
-  inputResist: $('input-resist'),
-  saveLevelsBtn: $('save-levels-btn'),
+  valuationToggle: $('valuation-toggle'),
   briefOpenBtn: $('brief-open-btn'),
   briefRoot: $('brief-root'),
   briefMask: $('brief-mask'),
@@ -503,6 +492,30 @@ function renderIndices() {
   bindIndexEvents(els.indices);
 }
 
+function valuationBadgeHtml(item, q) {
+  if (state.settings?.showValuationBias === false) return '';
+  if (item.kind === 'fund') return '';
+  const bias = calcValuationBias(q);
+  if (!bias.label) return '';
+  const style =
+    bias.label === '偏高'
+      ? 'background:color-mix(in oklab,var(--up) 14%,transparent);color:var(--up)'
+      : bias.label === '偏低'
+        ? 'background:color-mix(in oklab,var(--down) 14%,transparent);color:var(--down)'
+        : 'background:color-mix(in oklab,var(--muted) 12%,transparent);color:var(--muted)';
+  return `<span class="shrink-0 rounded px-1 text-[9px] font-semibold" style="${style}" title="${escAttr(bias.tip)}">${bias.label}</span>`;
+}
+
+function syncValuationToggle() {
+  const on = state.settings?.showValuationBias !== false;
+  const btn = els.valuationToggle;
+  if (!btn) return;
+  btn.classList.toggle('bg-accent', on);
+  btn.classList.toggle('text-white', on);
+  btn.style.color = on ? '#fff' : 'var(--muted)';
+  btn.textContent = on ? '估值·开' : '估值·关';
+}
+
 function rowHtml(item) {
   const q = state.quotes[quoteKey(item)] || {};
   const name = q.name || item.name;
@@ -523,17 +536,8 @@ function rowHtml(item) {
         <div class="meta min-w-0 overflow-hidden">
         <div class="flex min-w-0 items-center gap-1">
             ${item.pinned ? '<span class="shrink-0 text-[9px] text-accent">顶</span>' : ''}
-            ${
-              (() => {
-                const r = checkStopLoss(item, q);
-                if (r.kind === 'stop')
-                  return '<span class="shrink-0 rounded px-1 text-[9px] font-semibold" style="background:color-mix(in oklab,var(--up) 14%,transparent);color:var(--up)">止损</span>';
-                if (r.kind === 'near')
-                  return '<span class="shrink-0 rounded px-1 text-[9px] font-semibold" style="background:color-mix(in oklab,#f59e0b 18%,transparent);color:#b45309">近止损</span>';
-                return '';
-              })()
-            }
             <h3 class="truncate text-[13px] font-medium leading-none">${esc(name)}</h3>
+            ${valuationBadgeHtml(item, q)}
             ${gname ? `<span class="shrink-0 rounded px-1 text-[9px]" style="background:color-mix(in oklab,var(--muted) 12%,transparent);color:var(--muted)">${esc(gname)}</span>` : ''}
         </div>
           <p class="mt-0.5 truncate text-[10px] leading-none" style="color:var(--muted)">${esc(item.code)}${isFund && q.asOf ? ` · ${esc(q.asOf)}` : ''}</p>
@@ -846,13 +850,30 @@ async function loadRank() {
 function openDialog({ title, bodyHtml }) {
   return new Promise((resolve) => {
     state.dialogResolve = resolve;
+    state.dialogSnapshot = null;
     els.dialogTitle.textContent = title;
     els.dialogBody.innerHTML = bodyHtml;
     els.dialogRoot.classList.remove('hidden');
     els.dialogRoot.classList.add('flex');
+    const focusEl = els.dialogBody.querySelector('input:not([type="checkbox"]):not([type="radio"]), textarea');
+    focusEl?.focus?.();
   });
 }
+function snapshotDialogForm() {
+  const snap = {};
+  els.dialogBody.querySelectorAll('input, textarea, select').forEach((el) => {
+    if (!el.id && !el.name) return;
+    const key = el.id || el.name;
+    if (el.type === 'checkbox') snap[key] = !!el.checked;
+    else if (el.type === 'radio') {
+      if (el.checked) snap[key] = el.value;
+    } else snap[key] = el.value;
+  });
+  state.dialogSnapshot = snap;
+  return snap;
+}
 function closeDialog(result) {
+  if (result) snapshotDialogForm();
   els.dialogRoot.classList.add('hidden');
   els.dialogRoot.classList.remove('flex');
   state.dialogResolve?.(result);
@@ -918,7 +939,6 @@ async function openDetail(item) {
 
   els.fundStats.classList.add('hidden');
   els.stockChartWrap.classList.remove('hidden');
-  fillLevelInputs(item);
   els.chartMain.innerHTML =
     '<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">加载中…</div>';
   els.chartStockFlow.innerHTML =
@@ -930,22 +950,8 @@ async function openDetail(item) {
   resizeAllCharts();
 }
 
-function fillLevelInputs(item) {
-  if (!els.inputStop) return;
-  els.inputStop.value =
-    item.stopLoss != null && item.stopLoss !== '' ? Number(item.stopLoss).toFixed(2) : '';
-  els.inputSupport.value =
-    item.support != null && item.support !== '' ? String(item.support) : '';
-}
-
-function currentMarkLine(item, auto = {}, preClose) {
-  const levels = resolveLevels(item, auto);
-  return buildLevelMarkLines({
-    support: levels.support,
-    resistance: levels.resistance,
-    stopLoss: item.stopLoss,
-    preClose,
-  });
+function currentMarkLine(preClose) {
+  return buildLevelMarkLines({ preClose });
 }
 
 async function ensureFundQuote(item) {
@@ -972,7 +978,6 @@ async function refreshDetailCharts() {
   if (!item || item.kind === 'fund') return;
   const secid = item.secid || toSecid(item.market, item.code, item.marketNo);
   try {
-    // 并行拉取，减少首次等待；顺带日K用于自动支撑/压力
     const period = state.period;
     const kltMap = { day: 101, week: 102, month: 103, year: 106 };
     const tasks = [
@@ -980,20 +985,11 @@ async function refreshDetailCharts() {
         ? fetchIntraday(secid)
         : fetchKline(secid, kltMap[period] || 101, period === 'year' ? 40 : 90),
       fetchStockMoneyFlow(secid),
-      period === 'intraday' ? fetchKline(secid, 101, 40) : Promise.resolve(null),
     ];
-    const [mainData, flow, dayK] = await Promise.all(tasks);
+    const [mainData, flow] = await Promise.all(tasks);
 
-    const autoSrc = period === 'intraday' ? dayK?.points : mainData?.points;
-    const auto = calcAutoLevels(autoSrc || [], 20);
-    state.autoLevels[itemKey(item)] = auto;
-    // 输入框空时展示自动估算占位
-    if (els.inputSupport && (item.support == null || item.support === '')) {
-      els.inputSupport.placeholder =
-        auto.support != null ? `自动 ${Number(auto.support).toFixed(2)}` : '自动/手填';
-    }
     const axisMode = chartAxisMode();
-    const markLine = currentMarkLine(item, auto, mainData?.preClose);
+    const markLine = currentMarkLine(mainData?.preClose);
 
     // 清空占位后再渲染，保证容器已有尺寸
     els.chartMain.innerHTML = '';
@@ -1093,7 +1089,6 @@ async function refreshQuotes() {
       state.lastUpdated = Date.now();
       renderList();
       renderStatus();
-      renderStopBanner();
     } catch (e) {
       console.error(e);
     }
@@ -1113,43 +1108,6 @@ async function refreshQuotes() {
   } else if (state.briefOpen && state.briefTab === 'insight') {
     renderBriefBody();
   }
-}
-
-function renderStopBanner() {
-  if (!els.stopBanner) return;
-  if (state.settings?.stopBannerDismissed) {
-    els.stopBanner.classList.add('hidden');
-    return;
-  }
-  const hits = [];
-  for (const item of state.list) {
-    if (item.kind !== 'stock' || item.stopLoss == null || item.stopLoss === '') continue;
-    const q = state.quotes[quoteKey(item)] || {};
-    const r = checkStopLoss(item, q);
-    if (r.hit) {
-      hits.push({
-        item,
-        ...r,
-        name: q.name || item.name,
-      });
-    }
-  }
-  state.stopHits = hits;
-  if (!hits.length) {
-    els.stopBanner.classList.add('hidden');
-    return;
-  }
-  els.stopBanner.classList.remove('hidden');
-  els.stopBannerText.innerHTML = hits
-    .slice(0, 4)
-    .map((h) => {
-      const tag =
-        h.kind === 'stop'
-          ? `<span class="font-semibold" style="color:var(--up)">已触及止损</span>`
-          : `<span class="font-semibold" style="color:#b45309">接近止损</span>`;
-      return `${tag} ${esc(h.name)} 现价 ${fmtPrice(h.price, h.item.market)} / 止损 ${fmtPrice(h.stopLoss, h.item.market)}`;
-    })
-    .join('<br/>');
 }
 
 function todayStr() {
@@ -1234,25 +1192,6 @@ function renderEventPanel() {
   });
 }
 
-async function saveDetailLevels() {
-  const item = state.detail;
-  if (!item || item.kind === 'fund') return;
-  const stopRaw = els.inputStop?.value?.trim();
-  const supportRaw = els.inputSupport?.value?.trim();
-  const patch = {
-    stopLoss: stopRaw === '' ? null : Number(stopRaw),
-    support: supportRaw === '' ? null : Number(supportRaw),
-  };
-  if (patch.stopLoss != null && !Number.isFinite(patch.stopLoss)) patch.stopLoss = null;
-  if (patch.support != null && !Number.isFinite(patch.support)) patch.support = null;
-  state.list = await updateItem(item, patch);
-  state.detail = state.list.find((x) => itemKey(x) === itemKey(item)) || { ...item, ...patch };
-  state.settings = await saveSettings({ stopBannerDismissed: false });
-  renderStopBanner();
-  await refreshDetailCharts();
-  els.statusText.textContent = '已保存止损/支撑位';
-}
-
 async function refreshAll() {
   state.loading = true;
   renderStatus();
@@ -1305,21 +1244,28 @@ async function setSort(sortBy) {
 async function renameGroup(gid) {
   const g = (state.settings.groups || []).find((x) => x.id === gid);
   if (!g) return;
+  const canDelete = gid !== 'other';
   const ok = await openDialog({
     title: '修改分组',
     bodyHtml: `<input id="dlg-group-name" class="glass w-full rounded-lg px-3 py-2 text-sm outline-none" value="${escAttr(g.name)}" />
-      <label class="mt-3 flex items-center gap-2 text-[12px]" style="color:var(--up)">
-        <input id="dlg-group-del" type="checkbox" /> 删除此分组
+      ${
+        canDelete
+          ? `<label class="mt-3 flex items-center gap-2 text-[12px]" style="color:var(--up)">
+        <input id="dlg-group-del" type="checkbox" /> 删除此分组（勾选后点确定）
       </label>
-      <p class="mt-1 text-[10px]" style="color:var(--muted)">删除后持仓将移到「其他」。</p>`,
+      <p class="mt-1 text-[10px]" style="color:var(--muted)">删除后持仓将移到「其他」。</p>`
+          : `<p class="mt-2 text-[10px]" style="color:var(--muted)">「其他」为默认分组，不可删除。</p>`
+      }`,
   });
   if (!ok) return;
-  if ($('dlg-group-del')?.checked) {
-    await deleteGroup(gid);
+  const snap = state.dialogSnapshot || {};
+  const shouldDelete = !!snap['dlg-group-del'];
+  const name = String(snap['dlg-group-name'] || '').trim();
+  if (shouldDelete) {
+    await deleteGroup(gid, { skipConfirm: true });
     return;
   }
-  const name = ($('dlg-group-name')?.value || '').trim();
-  if (!name) return;
+  if (!name || name === g.name) return;
   const groups = (state.settings.groups || []).map((x) => (x.id === gid ? { ...x, name } : x));
   state.settings = await saveSettings({ groups });
   renderGroupTabs();
@@ -1329,31 +1275,42 @@ async function renameGroup(gid) {
 async function addGroupDialog() {
   const ok = await openDialog({
     title: '新建分组',
-    bodyHtml: `<input id="dlg-new-group" class="glass w-full rounded-lg px-3 py-2 text-sm outline-none" placeholder="分组名称" />
+    bodyHtml: `<input id="dlg-new-group" class="glass w-full rounded-lg px-3 py-2 text-sm outline-none" placeholder="分组名称" autofocus />
       <p class="mt-2 text-[10px]" style="color:var(--muted)">创建后可拖拽排序；双击标签可改名或删除。</p>`,
   });
   if (!ok) return;
-  const name = ($('dlg-new-group')?.value || '').trim();
-  if (!name) return;
-  const groups = [...(state.settings.groups || []), { id: `g_${Date.now()}`, name }];
+  const name = String(state.dialogSnapshot?.['dlg-new-group'] || '').trim();
+  if (!name) {
+    els.statusText.textContent = '分组名不能为空';
+    return;
+  }
+  if ((state.settings.groups || []).some((g) => g.name === name)) {
+    els.statusText.textContent = '已有同名分组';
+    return;
+  }
+  const id = `g_${Date.now().toString(36)}`;
+  const groups = [...(state.settings.groups || []), { id, name }];
   state.settings = await saveSettings({ groups });
-  state.secondaryGroup = groups[groups.length - 1].id;
+  state.secondaryGroup = id;
   renderGroupTabs();
   renderList();
+  els.statusText.textContent = `已创建分组「${name}」`;
 }
 
-async function deleteGroup(gid) {
-  if (!gid) return;
+async function deleteGroup(gid, { skipConfirm = false } = {}) {
+  if (!gid || gid === 'other') return;
   const g = (state.settings.groups || []).find((x) => x.id === gid);
   if (!g) return;
   const count = state.list.filter((x) => (x.groupId || 'other') === gid).length;
-  const ok = await confirmDialog(
-    '删除分组',
-    count
-      ? `「${displayGroupName(g.name)}」内有 ${count} 只，删除后将移到「其他」。继续？`
-      : `确定删除「${displayGroupName(g.name)}」吗？`,
-  );
-  if (!ok) return;
+  if (!skipConfirm) {
+    const ok = await confirmDialog(
+      '删除分组',
+      count
+        ? `「${displayGroupName(g.name)}」内有 ${count} 只，删除后将移到「其他」。继续？`
+        : `确定删除「${displayGroupName(g.name)}」吗？`,
+    );
+    if (!ok) return;
+  }
   let groups = (state.settings.groups || []).filter((x) => x.id !== gid);
   if (!groups.some((x) => x.id === 'other')) {
     groups.unshift({ id: 'other', name: '其他' });
@@ -1367,6 +1324,7 @@ async function deleteGroup(gid) {
   if (state.secondaryGroup === gid) state.secondaryGroup = 'all';
   renderGroupTabs();
   renderList();
+  els.statusText.textContent = `已删除分组「${displayGroupName(g.name)}」`;
 }
 
 async function moveItemGroup(item) {
@@ -1807,11 +1765,12 @@ els.eventDismissBtn?.addEventListener('click', async () => {
   state.settings = await saveSettings({ eventBannerDismissDate: todayStr() });
   renderEventBanner();
 });
-els.stopBannerClose?.addEventListener('click', async () => {
-  state.settings = await saveSettings({ stopBannerDismissed: true });
-  renderStopBanner();
+els.valuationToggle?.addEventListener('click', async () => {
+  const next = state.settings?.showValuationBias === false;
+  state.settings = await saveSettings({ showValuationBias: next });
+  syncValuationToggle();
+  renderList();
 });
-els.saveLevelsBtn?.addEventListener('click', () => saveDetailLevels());
 
 document.querySelectorAll('.board-tab').forEach((tab) => {
   tab.addEventListener('click', () => {
@@ -1941,21 +1900,13 @@ async function boot() {
     }
   }
   const added = await importShenqiData(false);
+  // 仅清理历史「未分组/默认」，不再按主题强制重分（避免分组来回变、删不掉）
   {
     const norm = normalizeGroups(state.settings.groups, state.list);
-    let groups = norm.groups;
-    let list = norm.list;
-    let changed = norm.changed;
-    const reg = regroupStocks(list, groups);
-    if (reg.changed) {
-      list = reg.list;
-      groups = reg.groups;
-      changed = true;
-    }
-    if (changed) {
-      await setWatchlist(list);
-      state.list = list;
-      state.settings = await saveSettings({ groups });
+    if (norm.changed) {
+      await setWatchlist(norm.list);
+      state.list = norm.list;
+      state.settings = await saveSettings({ groups: norm.groups });
     }
   }
   if (state.settings.groups?.some((g) => GROUP_NAME_FIX[g.name])) {
@@ -1968,6 +1919,7 @@ async function boot() {
   }
   applyTheme(state.settings.theme);
   syncAxisModeButtons();
+  syncValuationToggle();
   if (state.settings?.funFlowNames && els.funNamesBtn) {
     els.funNamesBtn.classList.add('bg-accent', 'text-white');
   }
@@ -1982,7 +1934,6 @@ async function boot() {
   renderEventBanner();
   if (added > 0) els.statusText.textContent = `已导入神器自选 ${added} 只`;
   await Promise.all([refreshAll(), refreshMajorNews(false)]);
-  renderStopBanner();
   setInterval(refreshAll, REFRESH_MS);
   setInterval(() => refreshMajorNews(false), NEWS_REFRESH_MS);
 }
