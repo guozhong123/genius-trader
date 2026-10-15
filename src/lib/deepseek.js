@@ -140,6 +140,7 @@ export function buildStockFacts({
   industry,
   lhb,
   tape,
+  prior,
 }) {
   const name = quote?.name || snapshot?.name || item.name || '';
   const px = snapshot?.price ?? quote?.price;
@@ -218,6 +219,7 @@ export function buildStockFacts({
     related ? `个股相关资讯（只许引用这些）：\n${related}` : '个股相关资讯：未检索到。不要用常识补新闻。',
     anns ? `近期公告：\n${anns}` : '近期公告：未提供。',
     macro ? `市场快讯（宏观，不一定与该股有关）：\n${macro}` : '',
+    prior ? `近5日已生成的报告（只作对照，和今天数据矛盾时以今天为准）：\n${prior}` : '近5日没有这份标的的历史报告。',
   ]
     .filter(Boolean)
     .join('\n');
@@ -240,18 +242,24 @@ const SYSTEM = [
   '11. 行业今日跌超过2%时，压低买入概率，板块在跌就不要因为个股强而追。',
   '12. 近45日龙虎榜净额为负，或说明里有机构卖出，倾向不买。没上榜就写没上榜，禁止编座席位。',
   '13. 现价已经跌破纪律止损价时，action 只能是不买。',
+  '14. 用户做当日短线：当天分析、当天决定，默认不拿隔夜。today 要写清今天的买点、什么情况盘中走、尾盘还留不留。',
+  '15. 若给出了前几天的报告，consistency 说明结论有没有变。变了就写今天的数据哪里不同。没有历史就写「无更早报告」。',
   '输出严格 JSON：',
   '{"action":"买入|不买|继续等","buyProb":0到100整数,"waitProb":整数,"avoidProb":整数,',
-  '"summary":"两句，先说结论再说最关键的一个理由",',
-  '"position":"相对用户成本：未持仓/持有/不加仓/考虑减仓，并写出浮盈",',
+  '"summary":"四到六句：今天做不做、为什么、最关键的一个条件",',
+  '"today":"当日节奏：什么价位附近可以看、什么情况放弃、尾盘是否清掉",',
+  '"sector":"所属板块今天能否带动这只票，短线是否跟板块",',
+  '"position":"相对用户成本",',
   '"mainForce":"今日与近5日主力，点明真买/诱多/真卖/不明显",',
-  '"trend":"均线位置、区间涨幅、是否追高、量能",',
-  '"news":"只根据给出的资讯和公告",',
-  '"valuation":"市盈率市净率仅作位置参考，结合涨幅说贵不贵",',
-  '"market":"大盘是否允许做多",',
-  '"plan":"什么条件下才动手、仓位几成",',
-  '"stop":"跌破哪类条件就放弃",',
-  '"risk":"当前最大的一个风险"}',
+  '"trend":"均线、涨幅、是否追高、量能",',
+  '"news":"只根据给出的资讯和公告，对今天的影响",',
+  '"valuation":"位置贵不贵，短线是否还追得动",',
+  '"market":"大盘今天允不允许做短线",',
+  '"plan":"仓位几成，触发条件",',
+  '"exit":"当天怎么走：冲高走、跌破走、还是尾盘走",',
+  '"stop":"放弃条件",',
+  '"risk":"今天最大的一个风险",',
+  '"consistency":"和前几天报告比，结论变了没有"}',
   '三个概率加起来约等于100。',
 ].join('');
 
@@ -327,19 +335,122 @@ export async function askDeepseekReport(apiKey, facts, modelPref) {
     buyProb: clampPct(report.buyProb),
     waitProb: clampPct(report.waitProb),
     avoidProb: clampPct(report.avoidProb),
-    summary: String(report.summary || '').slice(0, 400),
-    position: String(report.position || '').slice(0, 300),
-    mainForce: String(report.mainForce || '').slice(0, 400),
-    trend: String(report.trend || '').slice(0, 400),
-    news: String(report.news || '').slice(0, 400),
-    valuation: String(report.valuation || '').slice(0, 300),
-    market: String(report.market || '').slice(0, 300),
-    plan: String(report.plan || '').slice(0, 400),
-    stop: String(report.stop || '').slice(0, 240),
-    risk: String(report.risk || '').slice(0, 240),
+    summary: clip(report.summary, 700),
+    today: clip(report.today, 500),
+    sector: clip(report.sector, 400),
+    position: clip(report.position, 400),
+    mainForce: clip(report.mainForce, 500),
+    trend: clip(report.trend, 500),
+    news: clip(report.news, 500),
+    valuation: clip(report.valuation, 400),
+    market: clip(report.market, 400),
+    plan: clip(report.plan, 500),
+    exit: clip(report.exit, 400),
+    stop: clip(report.stop, 300),
+    risk: clip(report.risk, 300),
+    consistency: clip(report.consistency, 400),
     generatedAt: Date.now(),
     source: used,
   };
+}
+
+const MARKET_SYSTEM = [
+  '你是个人A股短线参谋。用户当天看盘、当天决定做哪些板块，不做中长线配置。',
+  '只根据给出的指数、涨跌家数、资金和板块涨跌说话。禁止编造没列出的板块和涨幅。',
+  '短线要跟当天最强、主力还在进的方向，已经大涨的板块写明是接力还是不宜再追。',
+  '环境差时 action 用「今天不做」。环境一般用「只做最强」。环境好且有明确主线才用「做多」。',
+  '若有前几天的大盘报告，consistency 说明主线有没有切换。',
+  '禁止承诺收益。输出严格 JSON：',
+  '{"action":"做多|只做最强|今天不做","summary":"今天短线总判断，四到六句",',
+  '"leaders":"2到4个今天更可能有短线溢价的板块，每个写今日涨跌和理由",',
+  '"avoid":"今天不要碰的板块",',
+  '"rhythm":"早盘和午后怎么做，做还是等",',
+  '"risk":"今天最大的风险",',
+  '"consistency":"和前几天的大盘结论比"}',
+].join('');
+
+export function buildMarketFacts({ indices, center, boards, tape, prior }) {
+  const idx = (indices || [])
+    .slice(0, 8)
+    .map((x) => `${x.name || x.code} ${signed(x.changePct)}%`)
+    .join('，');
+  const zd = center?.updown;
+  const ov = center?.overview;
+  const nb = center?.northbound;
+  const flow = center?.flow?.summary;
+  const ranked = [...(boards || [])].filter((b) => Number.isFinite(Number(b.changePct)));
+  ranked.sort((a, b) => Number(b.changePct) - Number(a.changePct));
+  const top = ranked.slice(0, 8).map((b) => `${b.name} ${signed(b.changePct)}%`).join('，');
+  const bottom = ranked.slice(-5).map((b) => `${b.name} ${signed(b.changePct)}%`).join('，');
+  return [
+    `大盘：${idx || '暂无'}`,
+    `环境：${tape || '未知'}`,
+    `两市成交 ${num(ov?.amountYi)} 亿，涨 ${zd?.up ?? '—'} 跌 ${zd?.down ?? '—'}，涨停 ${zd?.limitUp ?? '—'}，跌停 ${zd?.limitDown ?? '—'}，北向 ${signed(nb?.last)} 亿，两市主力 ${signed(flow?.main)} 亿`,
+    top ? `大A板块涨幅靠前：${top}` : '大A板块：未取到',
+    bottom ? `大A板块涨幅靠后：${bottom}` : '',
+    prior ? `近5日大盘报告（对照，以今天板块涨跌为准）：\n${prior}` : '近5日没有大盘报告。',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+export async function askMarketReport(apiKey, facts, modelPref) {
+  const key = String(apiKey || '').trim();
+  if (!key) throw new Error('缺少 DeepSeek 密钥');
+  const messages = [
+    { role: 'system', content: MARKET_SYSTEM },
+    { role: 'user', content: facts },
+  ];
+  const preferred = modelPref === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash';
+  const attempts =
+    preferred === 'deepseek-v4-pro'
+      ? [
+          { model: 'deepseek-v4-pro', thinking: { type: 'disabled' } },
+          { model: 'deepseek-flash', thinking: { type: 'disabled' } },
+          { model: 'deepseek-chat' },
+        ]
+      : [
+          { model: 'deepseek-flash', thinking: { type: 'disabled' } },
+          { model: 'deepseek-chat' },
+        ];
+  let json = null;
+  let used = 'deepseek-flash';
+  let lastErr = null;
+  for (const attempt of attempts) {
+    try {
+      json = await postDeepseek(key, {
+        model: attempt.model,
+        temperature: 0.2,
+        response_format: { type: 'json_object' },
+        messages,
+        ...(attempt.thinking ? { thinking: attempt.thinking } : {}),
+      });
+      used = attempt.model;
+      break;
+    } catch (e) {
+      lastErr = e;
+      if (/401|invalid|api key|密钥/i.test(String(e?.message || ''))) throw e;
+    }
+  }
+  if (!json) throw lastErr || new Error('DeepSeek 分析失败');
+  const report = JSON.parse(json?.choices?.[0]?.message?.content || '{}');
+  const action = ['做多', '只做最强', '今天不做'].includes(report.action) ? report.action : '只做最强';
+  return {
+    kind: 'market',
+    action,
+    summary: clip(report.summary, 700),
+    leaders: clip(report.leaders, 700),
+    avoid: clip(report.avoid, 400),
+    rhythm: clip(report.rhythm, 500),
+    risk: clip(report.risk, 300),
+    consistency: clip(report.consistency, 400),
+    generatedAt: Date.now(),
+    source: used,
+  };
+}
+
+function clip(value, max) {
+  return String(value || '').slice(0, max);
 }
 
 function clampPct(n) {

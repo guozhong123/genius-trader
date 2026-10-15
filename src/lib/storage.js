@@ -72,8 +72,11 @@ export const DEFAULT_SETTINGS = {
   deepseekApiKey: '',
   /** deepseek-flash | deepseek-v4-pro */
   aiModel: 'deepseek-flash',
-  /** itemKey -> 报告 */
+  /** itemKey -> 最新一份，列表按钮用 */
   aiReports: {},
+  /** 全部历史报告，新的在前 */
+  aiHistory: [],
+  aiHistoryMigrated: false,
   /** 移动端分组条是否展开；默认折叠 */
   mobileGroupsExpanded: false,
 };

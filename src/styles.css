@@ -963,6 +963,64 @@
   font-weight: 700;
 }
 
+.report-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  background: var(--mask);
+}
+
+.report-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 60;
+  display: flex;
+  width: min(440px, 100vw);
+  height: 100vh;
+  flex-direction: column;
+  background: var(--panel-solid);
+  border-left: 1px solid var(--line);
+  box-shadow: -12px 0 40px rgba(0, 0, 0, 0.18);
+}
+
+.report-drawer.hidden,
+.report-backdrop.hidden {
+  display: none;
+}
+
+.report-drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.report-drawer-body {
+  flex: 1;
+  overflow: auto;
+  padding: 12px 14px 28px;
+}
+
+.report-row {
+  display: block;
+  width: 100%;
+  margin-bottom: 8px;
+  border-radius: 12px;
+  padding: 10px 12px;
+  text-align: left;
+  background: color-mix(in oklab, var(--accent) 6%, transparent);
+  border: 1px solid var(--line);
+}
+
+.report-row .line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .ai-advice-pill .tip {
   margin-top: 4px;
   font-size: 11px;

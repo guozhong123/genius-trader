@@ -62,7 +62,7 @@ import { buildLevelMarkLines } from './lib/levels.js';
 import { normalizeGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
 import { calcValuationBias } from './lib/valuation.js';
-import { askDeepseekReport, buildStockFacts, disciplineStop } from './lib/deepseek.js';
+import { askDeepseekReport, askMarketReport, buildMarketFacts, buildStockFacts, disciplineStop } from './lib/deepseek.js';
 import { isLoggedIn, login, logout, currentUser } from './lib/auth.js';
 
 const REFRESH_MS = 15000;
@@ -117,6 +117,8 @@ const state = {
   dragKey: null,
   aiAdvice: null,
   aiAdviceKey: null,
+  reportDrawer: { open: false, focusId: null, filter: null },
+  marketAiRunning: false,
   aiRunning: {},
   timersStarted: false,
   briefOpen: false,
@@ -191,6 +193,15 @@ const els = {
   logoutBtn: $('logout-btn'),
   aiAdviceBody: $('ai-advice-body'),
   aiAdviceRefresh: $('ai-advice-refresh'),
+  aiAdviceHistory: $('ai-advice-history'),
+  reportOpenBtn: $('report-open-btn'),
+  marketAiBtn: $('market-ai-btn'),
+  reportDrawer: $('report-drawer'),
+  reportBackdrop: $('report-backdrop'),
+  reportDrawerTitle: $('report-drawer-title'),
+  reportDrawerBody: $('report-drawer-body'),
+  reportBack: $('report-back'),
+  reportDrawerClose: $('report-drawer-close'),
   briefOpenBtn: $('brief-open-btn'),
   briefRoot: $('brief-root'),
   briefMask: $('brief-mask'),
@@ -550,8 +561,71 @@ function renderIndices() {
   bindIndexEvents(els.indices);
 }
 
+function reportHistory() {
+  return Array.isArray(state.settings?.aiHistory) ? state.settings.aiHistory : [];
+}
+
 function aiReportOf(item) {
-  return state.settings?.aiReports?.[itemKey(item)] || null;
+  const key = itemKey(item);
+  const latest = state.settings?.aiReports?.[key];
+  if (latest) return latest;
+  return reportHistory().find((r) => r.kind !== 'market' && r.itemKey === key) || null;
+}
+
+function priorContext(match, limit = 6) {
+  const cutoff = Date.now() - 5 * 86400000;
+  return reportHistory()
+    .filter((r) => (r.generatedAt || 0) >= cutoff && match(r))
+    .sort((a, b) => (a.generatedAt || 0) - (b.generatedAt || 0))
+    .slice(-limit)
+    .map((r) => {
+      const t = new Date(r.generatedAt).toLocaleString('zh-CN', {
+        hour12: false,
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      const extra = r.kind === 'market' ? r.leaders || r.summary : r.summary;
+      return `${t} ${r.action || ''} ${extra || ''}`.slice(0, 280);
+    })
+    .join('\n');
+}
+
+async function pushReport(entry) {
+  const row = {
+    ...entry,
+    id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    generatedAt: entry.generatedAt || Date.now(),
+  };
+  const aiHistory = [row, ...reportHistory()].slice(0, 160);
+  const patch = { aiHistory, aiHistoryMigrated: true };
+  if (row.kind === 'stock' && row.itemKey) {
+    patch.aiReports = { ...(state.settings?.aiReports || {}), [row.itemKey]: row };
+  }
+  state.settings = await saveSettings(patch);
+  return row;
+}
+
+async function ensureReportHistory() {
+  if (state.settings?.aiHistoryMigrated) return;
+  if (reportHistory().length) {
+    state.settings = await saveSettings({ aiHistoryMigrated: true });
+    return;
+  }
+  const seeded = Object.entries(state.settings?.aiReports || {})
+    .filter(([, report]) => report && typeof report === 'object' && !Array.isArray(report))
+    .map(([key, report]) => ({
+      ...report,
+      id: report.id || `legacy-${key}`,
+      kind: 'stock',
+      itemKey: key,
+      code: report.code || '',
+      title: report.title || key,
+      generatedAt: report.generatedAt || 0,
+    }))
+    .sort((a, b) => (b.generatedAt || 0) - (a.generatedAt || 0));
+  state.settings = await saveSettings({ aiHistory: seeded, aiHistoryMigrated: true });
 }
 
 const positionDrafts = new Map();
@@ -1160,41 +1234,125 @@ function closeDetail() {
   }
 }
 
-function renderDeepseekReport(report) {
-  if (!els.aiAdviceBody || !report) return;
+function actionClass(action) {
+  if (action === '买入' || action === '做多') return 'text-up';
+  if (action === '不买' || action === '今天不做') return 'text-down';
+  return '';
+}
+
+function reportBlock(title, text) {
+  if (!text) return '';
+  return `<div class="mb-2"><div class="text-[11px] font-semibold">${esc(title)}</div><div class="mt-0.5 text-[12px] leading-relaxed">${esc(text)}</div></div>`;
+}
+
+function reportArticleHtml(report) {
+  if (!report) return '';
   const when = report.generatedAt
     ? new Date(report.generatedAt).toLocaleString('zh-CN', { hour12: false })
     : '';
-  const cls = report.action === '买入' ? 'text-up' : report.action === '不买' ? 'text-down' : '';
-  const block = (title, text) =>
-    text
-      ? `<div class="mb-2"><div class="text-[11px] font-semibold">${esc(title)}</div><div class="mt-0.5 text-[12px] leading-relaxed">${esc(text)}</div></div>`
-      : '';
-  els.aiAdviceBody.innerHTML = `
+  const cls = actionClass(report.action);
+  const probs =
+    report.kind === 'market'
+      ? ''
+      : `<div class="mb-2 grid grid-cols-3 gap-1.5 text-center">
+      <div class="rounded-lg px-1 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">买入</div><div class="text-sm font-semibold text-up">${report.buyProb ?? 0}%</div></div>
+      <div class="rounded-lg px-1 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">继续等</div><div class="text-sm font-semibold">${report.waitProb ?? 0}%</div></div>
+      <div class="rounded-lg px-1 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">不买</div><div class="text-sm font-semibold text-down">${report.avoidProb ?? 0}%</div></div>
+    </div>`;
+  const body =
+    report.kind === 'market'
+      ? `${reportBlock('今天做哪些', report.leaders)}${reportBlock('今天避开', report.avoid)}${reportBlock('当天节奏', report.rhythm)}${reportBlock('风险', report.risk)}${reportBlock('和前几天比', report.consistency)}`
+      : `${checksLine(report)}${reportBlock('今天怎么做', report.today)}${reportBlock('板块', report.sector)}${reportBlock('持仓', report.position)}${reportBlock('主力', report.mainForce)}${reportBlock('量价', report.trend)}${reportBlock('消息', report.news)}${reportBlock('估值与涨幅', report.valuation)}${reportBlock('大盘', report.market)}${reportBlock('仓位', report.plan)}${reportBlock('当天离场', report.exit)}${reportBlock('放弃条件', report.stop)}${reportBlock('风险', report.risk)}${reportBlock('和前几天比', report.consistency)}`;
+  return `
     <div class="mb-2 flex flex-wrap items-end justify-between gap-2">
       <div>
-        <div class="text-[11px]" style="color:var(--muted)">${esc(report.source || 'DeepSeek')} · 主力 · 止损 · 龙虎榜</div>
+        <div class="text-[11px]" style="color:var(--muted)">${esc(report.title || (report.kind === 'market' ? '今日大盘' : '个股'))} · ${esc(report.source || 'DeepSeek')} · 当日短线</div>
         <div class="text-lg font-semibold ${cls}">${esc(report.action || '继续等')}</div>
       </div>
       <div class="text-[10px]" style="color:var(--muted)">${esc(when)}</div>
     </div>
-    <div class="mb-2 grid grid-cols-3 gap-1.5 text-center">
-      <div class="rounded-lg px-1 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">买入</div><div class="text-sm font-semibold text-up">${report.buyProb ?? 0}%</div></div>
-      <div class="rounded-lg px-1 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">继续等</div><div class="text-sm font-semibold">${report.waitProb ?? 0}%</div></div>
-      <div class="rounded-lg px-1 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">不买</div><div class="text-sm font-semibold text-down">${report.avoidProb ?? 0}%</div></div>
-    </div>
+    ${probs}
     <p class="mb-2 text-[13px] leading-relaxed">${esc(report.summary || '')}</p>
-    ${checksLine(report)}
-    ${block('持仓', report.position)}
-    ${block('主力', report.mainForce)}
-    ${block('量价', report.trend)}
-    ${block('消息', report.news)}
-    ${block('估值与涨幅', report.valuation)}
-    ${block('大盘', report.market)}
-    ${block('怎么做', report.plan)}
-    ${block('最大风险', report.risk)}
-    ${block('放弃条件', report.stop)}
-    <p class="text-[10px] leading-snug" style="color:var(--muted)">概率是模型对当前公开数据的判断，不是胜率承诺。A股跟主力也要防诱多，单票仓位宜轻，先定止损再谈买入。</p>`;
+    ${body}
+    <p class="text-[10px] leading-snug" style="color:var(--muted)">按当天公开数据做的短线判断，默认当天处理。概率不是胜率，也不承诺赚钱。先看止损，再决定做不做。</p>`;
+}
+
+function renderDeepseekReport(report) {
+  if (!els.aiAdviceBody || !report) return;
+  els.aiAdviceBody.innerHTML = reportArticleHtml(report);
+}
+
+function visibleReports() {
+  const { filter } = state.reportDrawer || {};
+  return reportHistory().filter((r) => {
+    if (!filter) return true;
+    if (filter === 'market') return r.kind === 'market';
+    return r.itemKey === filter;
+  });
+}
+
+function renderReportDrawer() {
+  const drawer = state.reportDrawer || {};
+  els.reportDrawer?.classList.toggle('hidden', !drawer.open);
+  els.reportBackdrop?.classList.toggle('hidden', !drawer.open);
+  els.reportDrawer?.setAttribute('aria-hidden', drawer.open ? 'false' : 'true');
+  if (!drawer.open || !els.reportDrawerBody) return;
+  els.reportBack?.classList.toggle('hidden', !drawer.focusId);
+  const focused = drawer.focusId ? reportHistory().find((r) => r.id === drawer.focusId) : null;
+  if (els.reportDrawerTitle) {
+    els.reportDrawerTitle.textContent = focused
+      ? focused.title || '报告'
+      : drawer.filter === 'market'
+        ? '大盘报告'
+        : drawer.filter
+          ? '这只的报告'
+          : '历史报告';
+  }
+  if (focused) {
+    els.reportDrawerBody.innerHTML = reportArticleHtml(focused);
+    return;
+  }
+  const rows = visibleReports();
+  const pending = state.marketAiRunning
+    ? '<div class="mb-2 text-[12px]" style="color:var(--muted)">正在看今天的指数、涨跌家数和板块…</div>'
+    : '';
+  if (!rows.length) {
+    els.reportDrawerBody.innerHTML = `${pending}<div class="text-[12px] leading-relaxed" style="color:var(--muted)">还没有报告。点顶部 <b>AI盘</b> 看今天哪些板块适合短线，或在自选里点股票旁边的 AI。生成过的都会留在这里，新的在最上面。</div>`;
+    return;
+  }
+  els.reportDrawerBody.innerHTML =
+    pending +
+    rows
+      .map((r) => {
+        const when = r.generatedAt
+          ? new Date(r.generatedAt).toLocaleString('zh-CN', { hour12: false })
+          : '';
+        return `<button type="button" class="report-row" data-report-id="${escAttr(r.id)}">
+          <div class="flex items-center justify-between gap-2">
+            <span class="min-w-0 truncate text-[13px] font-semibold">${esc(r.title || r.code || '报告')}</span>
+            <span class="shrink-0 text-[12px] font-semibold ${actionClass(r.action)}">${esc(r.action || '')}</span>
+          </div>
+          <div class="mt-0.5 text-[10px]" style="color:var(--muted)">${esc(when)} · ${r.kind === 'market' ? '大盘' : '个股'}</div>
+          <div class="mt-1 line-clamp-2 text-left text-[12px] leading-snug" style="color:var(--muted)">${esc(r.summary || '')}</div>
+        </button>`;
+      })
+      .join('');
+}
+
+function openReportDrawer({ focusId = null, filter = null } = {}) {
+  state.reportDrawer = { open: true, focusId, filter };
+  renderReportDrawer();
+}
+
+function closeReportDrawer() {
+  state.reportDrawer = { open: false, focusId: null, filter: null };
+  renderReportDrawer();
+}
+
+function syncMarketAiBtn() {
+  if (!els.marketAiBtn) return;
+  els.marketAiBtn.textContent = state.marketAiRunning ? '分析中' : 'AI盘';
+  els.marketAiBtn.disabled = !!state.marketAiRunning;
 }
 
 async function openModelSettings() {
@@ -1289,6 +1447,7 @@ async function runDeepseekForItem(item) {
       industry,
       lhb,
       tape: judgeTape(state.center)?.label || '',
+      prior: priorContext((r) => r.kind !== 'market' && r.itemKey === keyId),
     });
     const report = await askDeepseekReport(apiKey, facts, state.settings?.aiModel);
     const emPrice = Number(q.price);
@@ -1300,11 +1459,15 @@ async function runDeepseekForItem(item) {
       txTime: tencent?.time || '',
       diffPct: emPrice > 0 && txPrice > 0 ? ((txPrice - emPrice) / emPrice) * 100 : null,
     };
-    const aiReports = { ...(state.settings?.aiReports || {}), [keyId]: report };
-    const keys = Object.keys(aiReports);
-    if (keys.length > 40) delete aiReports[keys[0]];
-    state.settings = await saveSettings({ aiReports });
-    if (state.detail && itemKey(state.detail) === keyId) renderDeepseekReport(report);
+    const saved = await pushReport({
+      ...report,
+      kind: 'stock',
+      itemKey: keyId,
+      code: item.code,
+      title: displayName || item.name || item.code,
+    });
+    if (state.detail && itemKey(state.detail) === keyId) renderDeepseekReport(saved);
+    openReportDrawer({ focusId: saved.id });
   } catch (e) {
     console.error(e);
     const msg = String(e?.message || e);
@@ -1335,7 +1498,53 @@ async function loadDetailAiAdvice(force = false) {
     return;
   }
   els.aiAdviceBody.innerHTML =
-    '<div class="text-[12px] leading-relaxed" style="color:var(--muted)">还没有这份报告。回到列表，点这只股票旁边的 <b>AI</b>，分析完再点进来看：买 / 不买 / 继续等，以及主力、消息、估值。</div>';
+    '<div class="text-[12px] leading-relaxed" style="color:var(--muted)">还没有这份当日报告。点重新分析，或回到列表点这只股票旁边的 AI。生成后会留在右上角「报告」里。</div>';
+}
+
+async function runMarketAi() {
+  if (state.marketAiRunning) return;
+  const apiKey = await ensureDeepseekKey();
+  if (!apiKey) return;
+  state.marketAiRunning = true;
+  syncMarketAiBtn();
+  openReportDrawer({ filter: 'market' });
+  try {
+    if (!state.center?.overview) await loadDataCenter().catch(() => {});
+    const ready = (state.pulseBoards?.CN || []).filter((b) => Number.isFinite(Number(b.changePct)));
+    if (ready.length < 3) await refreshPulse();
+    const boards = (state.pulseBoards?.CN || []).filter((b) => Number.isFinite(Number(b.changePct)));
+    const report = await askMarketReport(
+      apiKey,
+      buildMarketFacts({
+        indices: state.indices || [],
+        center: state.center,
+        boards,
+        tape: judgeTape(state.center)?.label || '',
+        prior: priorContext((r) => r.kind === 'market'),
+      }),
+      state.settings?.aiModel,
+    );
+    const saved = await pushReport({
+      ...report,
+      kind: 'market',
+      title: '今日大盘',
+      itemKey: '',
+      code: '',
+    });
+    openReportDrawer({ focusId: saved.id });
+  } catch (e) {
+    console.error(e);
+    const msg = String(e?.message || e);
+    if (els.reportDrawerBody) {
+      els.reportDrawerBody.innerHTML = `<div class="text-[12px]" style="color:var(--up)">${esc(msg || '大盘分析失败')}</div>`;
+    }
+    if (/401|invalid|api key|密钥/i.test(msg)) {
+      state.settings = await saveSettings({ deepseekApiKey: '' });
+    }
+  } finally {
+    state.marketAiRunning = false;
+    syncMarketAiBtn();
+  }
 }
 
 function showAppAfterLogin() {
@@ -2569,10 +2778,31 @@ els.logoutBtn?.addEventListener('click', async () => {
   logout();
   closeDetail();
   closeBrief();
+  closeReportDrawer();
   showLoginGate();
 });
 
 els.aiAdviceRefresh?.addEventListener('click', () => loadDetailAiAdvice(true));
+els.aiAdviceHistory?.addEventListener('click', () => {
+  if (!state.detail) return;
+  openReportDrawer({ filter: itemKey(state.detail) });
+});
+els.reportOpenBtn?.addEventListener('click', () => openReportDrawer());
+els.marketAiBtn?.addEventListener('click', () => runMarketAi());
+els.reportDrawerClose?.addEventListener('click', () => closeReportDrawer());
+els.reportBackdrop?.addEventListener('click', () => closeReportDrawer());
+els.reportBack?.addEventListener('click', () => {
+  const filter = state.reportDrawer?.filter || null;
+  openReportDrawer({ filter, focusId: null });
+});
+els.reportDrawerBody?.addEventListener('click', (e) => {
+  const btn = e.target.closest?.('[data-report-id]');
+  if (!btn) return;
+  openReportDrawer({
+    filter: state.reportDrawer?.filter || null,
+    focusId: btn.getAttribute('data-report-id'),
+  });
+});
 
 async function boot() {
   if (!isLoggedIn()) {
@@ -2585,6 +2815,7 @@ async function boot() {
 
 async function bootApp() {
   state.settings = await getSettings();
+  await ensureReportHistory();
   if (state.settings.theme !== 'light' && state.settings.theme !== 'dark') {
     state.settings = await saveSettings({ theme: 'light' });
   }
