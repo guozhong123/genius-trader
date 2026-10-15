@@ -945,7 +945,7 @@ export async function fetchMarketMoneyFlow() {
  * 成交额/市值单位：亿元。
  */
 export async function fetchStockSnapshot(secid) {
-  const fields = 'f12,f14,f2,f3,f6,f7,f8,f9,f10,f15,f16,f17,f18,f20,f21,f23,f100,f103';
+  const fields = 'f12,f14,f2,f3,f6,f7,f8,f9,f10,f15,f16,f17,f18,f20,f21,f23,f100,f103,f124';
   const url = `https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&fields=${fields}&secids=${encodeURIComponent(secid)}`;
   const res = await fetch(url);
   if (!res.ok) return null;
@@ -975,6 +975,7 @@ export async function fetchStockSnapshot(secid) {
     totalMvYi: yi(row.f20),
     floatMvYi: yi(row.f21),
     pb: n(row.f23),
+    updatedAt: row.f124 ? row.f124 * 1000 : Date.now(),
     industry: row.f100 || '',
     concepts: String(row.f103 || '')
       .split(',')
@@ -1018,6 +1019,38 @@ export async function fetchStockFlowDays(secid, limit = 8) {
     }
   }
   return [];
+}
+
+/**
+ * 腾讯行情，用来和东财对一下现价。只覆盖沪深京港。
+ * 时间字段是行情源自己的时间，不是本机点击时间。
+ */
+export async function fetchTencentStockQuote(item) {
+  const code = String(item?.code || '').trim();
+  const market = item?.market;
+  let symbol = '';
+  if (market === 'SH') symbol = `sh${code}`;
+  else if (market === 'SZ') symbol = `sz${code}`;
+  else if (market === 'BJ') symbol = `bj${code}`;
+  else if (market === 'HK') symbol = `hk${code.padStart(5, '0')}`;
+  else return null;
+  const text = await fetchTextGbk(`https://qt.gtimg.cn/q=${symbol}&_=${Date.now()}`);
+  const m = text.match(/="([^"]*)"/);
+  if (!m) return null;
+  const p = m[1].split('~');
+  const price = Number(p[3]);
+  if (!Number.isFinite(price) || price <= 0) return null;
+  const raw = String(p[30] || '');
+  const time = /^\d{14}$/.test(raw)
+    ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)} ${raw.slice(8, 10)}:${raw.slice(10, 12)}:${raw.slice(12, 14)}`
+    : '';
+  return {
+    price,
+    prevClose: Number(p[4]),
+    changePct: Number(p[32]),
+    time,
+    source: 'tencent',
+  };
 }
 
 /** 标题里带这只股票的近期资讯。 */

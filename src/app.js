@@ -29,6 +29,7 @@ import {
   fetchStockFlowDays,
   fetchStockHeadlines,
   fetchStockAnnouncements,
+  fetchTencentStockQuote,
   fetchTechLeaders,
   fetchMembersQuotes,
   fetchTopMovers,
@@ -552,6 +553,39 @@ function aiReportOf(item) {
   return state.settings?.aiReports?.[itemKey(item)] || null;
 }
 
+const positionDrafts = new Map();
+
+function parseUserPrice(raw) {
+  const s = String(raw ?? '').trim().replace(/,/g, '');
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 1000) / 1000 : null;
+}
+
+function shownPrice(item, field) {
+  const draft = positionDrafts.get(itemKey(item));
+  if (draft && Object.prototype.hasOwnProperty.call(draft, field)) return draft[field];
+  const stored = field === 'cost' ? item.cost : item.markPrice;
+  return stored == null || stored === '' ? '' : String(stored);
+}
+
+function costLineHtml(item, livePrice) {
+  if (item.kind === 'fund') return '';
+  const key = escAttr(itemKey(item));
+  const cost = parseUserPrice(shownPrice(item, 'cost'));
+  const live = Number(livePrice);
+  let pnl = '';
+  if (cost && live > 0) {
+    const pct = ((live - cost) / cost) * 100;
+    pnl = `<span class="pnl ${tone(pct)}">浮盈 ${fmtPct(pct)}</span>`;
+  }
+  return `<div class="cost-line" data-live="${Number.isFinite(live) ? live : ''}">
+    <label>成本<input data-cost="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownPrice(item, 'cost'))}" placeholder="成本价" /></label>
+    <label>价格<input data-mark="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownPrice(item, 'mark'))}" placeholder="自填价" /></label>
+    ${pnl}
+  </div>`;
+}
+
 function aiRowBtn(item) {
   if (item.kind === 'fund') return '';
   const key = itemKey(item);
@@ -621,6 +655,7 @@ function rowHtml(item) {
         <button data-pin="${escAttr(itemKey(item))}" class="rounded px-1 text-[10px] ring-soft" style="color:var(--muted)">${item.pinned ? '取消' : '顶'}</button>
         <button data-remove="${escAttr(itemKey(item))}" class="rounded px-1 text-[10px] ring-soft" style="color:var(--up)">删</button>
       </div>
+      ${costLineHtml(item, price)}
     </article>`;
 }
 
@@ -657,11 +692,32 @@ function renderList() {
   }
   els.empty.classList.add('hidden');
 
+  const active = document.activeElement;
+  const focusAttr = active?.hasAttribute?.('data-cost')
+    ? 'data-cost'
+    : active?.hasAttribute?.('data-mark')
+      ? 'data-mark'
+      : '';
+  const focusVal = focusAttr ? active.getAttribute(focusAttr) : '';
+  const caret = focusAttr ? active.selectionStart : null;
+
   // 「全部」扁平列表，不按主题分组；表头可点排序
   els.list.innerHTML = `
     ${listHeaderHtml()}
     <div class="grid gap-0.5">${rows.map(rowHtml).join('')}</div>`;
   bindListEvents();
+  if (focusAttr && focusVal) {
+    const el = els.list.querySelector(`input[${focusAttr}="${CSS.escape(focusVal)}"]`);
+    if (el) {
+      el.focus();
+      const pos = Math.min(caret ?? el.value.length, el.value.length);
+      try {
+        el.setSelectionRange(pos, pos);
+      } catch {
+        /* number-like inputs */
+      }
+    }
+  }
 }
 
 function bindListEvents() {
@@ -672,7 +728,7 @@ function bindListEvents() {
 
   els.list.querySelectorAll('[data-open]').forEach((row) => {
     row.addEventListener('click', (e) => {
-      if (e.target.closest('button')) return;
+      if (e.target.closest('button, input, .cost-line')) return;
       const item = state.list.find((x) => itemKey(x) === row.getAttribute('data-open'));
       if (item) openDetail(item);
     });
@@ -739,6 +795,51 @@ function bindListEvents() {
       if (item) await runDeepseekForItem(item);
     });
   });
+
+  const bindPriceInput = (el, field) => {
+    const attr = field === 'cost' ? 'data-cost' : 'data-mark';
+    el.addEventListener('click', (e) => e.stopPropagation());
+    el.addEventListener('input', () => {
+      const key = el.getAttribute(attr);
+      const prev = positionDrafts.get(key) || {};
+      positionDrafts.set(key, { ...prev, [field]: el.value });
+      if (field !== 'cost') return;
+      const line = el.closest('.cost-line');
+      const live = Number(line?.getAttribute('data-live'));
+      const cost = parseUserPrice(el.value);
+      let pnl = line?.querySelector('.pnl');
+      if (!line || !(cost > 0) || !(live > 0)) {
+        pnl?.remove();
+        return;
+      }
+      const pct = ((live - cost) / cost) * 100;
+      if (!pnl) {
+        pnl = document.createElement('span');
+        line.appendChild(pnl);
+      }
+      pnl.className = `pnl ${tone(pct)}`;
+      pnl.textContent = `浮盈 ${fmtPct(pct)}`;
+    });
+    el.addEventListener('blur', async () => {
+      const key = el.getAttribute(attr);
+      const item = state.list.find((x) => itemKey(x) === key);
+      if (!item) return;
+      const parsed = parseUserPrice(el.value);
+      el.value = parsed == null ? '' : String(parsed);
+      const draft = { ...(positionDrafts.get(key) || {}) };
+      delete draft[field];
+      if (draft.cost == null && draft.mark == null) positionDrafts.delete(key);
+      else positionDrafts.set(key, draft);
+      const prevVal = field === 'cost' ? (item.cost ?? null) : (item.markPrice ?? null);
+      if (prevVal === parsed) return;
+      const patch = field === 'cost' ? { cost: parsed } : { markPrice: parsed };
+      const idx = state.list.findIndex((x) => itemKey(x) === key);
+      if (idx >= 0) state.list[idx] = { ...state.list[idx], ...patch };
+      state.list = await updateItem(state.list[idx] || item, patch);
+    });
+  };
+  els.list.querySelectorAll('[data-cost]').forEach((el) => bindPriceInput(el, 'cost'));
+  els.list.querySelectorAll('[data-mark]').forEach((el) => bindPriceInput(el, 'mark'));
 }
 
 function renderSearchResults() {
@@ -976,6 +1077,17 @@ function confirmDialog(title, message) {
   });
 }
 
+function checksLine(report) {
+  const c = report?.checks;
+  if (!c) return '';
+  const em = c.emTime ? new Date(c.emTime).toLocaleString('zh-CN', { hour12: false }) : '—';
+  const diff = Number(c.diffPct);
+  const warn = Number.isFinite(diff) && Math.abs(diff) >= 0.3;
+  const tx = c.txPrice ? ` · 腾讯 ${esc(String(c.txPrice))}${c.txTime ? ` ${esc(c.txTime)}` : ''}` : '';
+  const gap = Number.isFinite(diff) ? ` · 偏差 ${diff.toFixed(2)}%` : '';
+  return `<p class="mb-2 text-[10px] leading-snug" style="color:${warn ? 'var(--up)' : 'var(--muted)'}">东财 ${esc(String(c.emPrice ?? '—'))} · ${esc(em)}${tx}${gap}${warn ? ' · 两源不一致，以券商软件为准' : ''}</p>`;
+}
+
 function closeDetail() {
   state.detail = null;
   els.detailRoot.classList.add('hidden');
@@ -1000,7 +1112,7 @@ function renderDeepseekReport(report) {
   els.aiAdviceBody.innerHTML = `
     <div class="mb-2 flex flex-wrap items-end justify-between gap-2">
       <div>
-        <div class="text-[11px]" style="color:var(--muted)">DeepSeek · 主力 · 均线 · 个股消息</div>
+        <div class="text-[11px]" style="color:var(--muted)">DeepSeek Flash · 主力 · 成本 · 双源行情</div>
         <div class="text-lg font-semibold ${cls}">${esc(report.action || '继续等')}</div>
       </div>
       <div class="text-[10px]" style="color:var(--muted)">${esc(when)}</div>
@@ -1011,6 +1123,8 @@ function renderDeepseekReport(report) {
       <div class="rounded-lg px-1 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">不买</div><div class="text-sm font-semibold text-down">${report.avoidProb ?? 0}%</div></div>
     </div>
     <p class="mb-2 text-[13px] leading-relaxed">${esc(report.summary || '')}</p>
+    ${checksLine(report)}
+    ${block('持仓', report.position)}
     ${block('主力', report.mainForce)}
     ${block('量价', report.trend)}
     ${block('消息', report.news)}
@@ -1041,6 +1155,15 @@ async function runDeepseekForItem(item) {
   if (!item || item.kind === 'fund') return;
   const keyId = itemKey(item);
   if (state.aiRunning?.[keyId]) return;
+  const draft = positionDrafts.get(keyId);
+  if (draft && (draft.cost != null || draft.mark != null)) {
+    const patch = {};
+    if (draft.cost != null) patch.cost = parseUserPrice(draft.cost);
+    if (draft.mark != null) patch.markPrice = parseUserPrice(draft.mark);
+    state.list = await updateItem(item, patch);
+    positionDrafts.delete(keyId);
+  }
+  item = state.list.find((x) => itemKey(x) === keyId) || item;
   const apiKey = await ensureDeepseekKey();
   if (!apiKey) return;
   state.aiRunning = { ...state.aiRunning, [keyId]: true };
@@ -1055,7 +1178,7 @@ async function runDeepseekForItem(item) {
       state.quotes[quoteKey(item)]?.name,
       item.name,
     );
-    const [dayK, flow, flowDays, snapshot, headlines, announcements, news] = await Promise.all([
+    const [dayK, flow, flowDays, snapshot, headlines, announcements, news, tencent] = await Promise.all([
       fetchKline(secid, 101, 80).catch(() => null),
       fetchStockMoneyFlow(secid).catch(() => null),
       fetchStockFlowDays(secid, 8).catch(() => []),
@@ -1063,6 +1186,7 @@ async function runDeepseekForItem(item) {
       fetchStockHeadlines(displayName, 6).catch(() => []),
       fetchStockAnnouncements(item.code, 3).catch(() => []),
       state.insightNews?.length ? Promise.resolve(state.insightNews) : fetchMarketNews(4).catch(() => []),
+      fetchTencentStockQuote(item).catch(() => null),
     ]);
     if (!state.center?.overview) await loadDataCenter().catch(() => {});
     const q = { ...(state.quotes[quoteKey(item)] || {}), ...(snapshot || {}) };
@@ -1082,8 +1206,18 @@ async function runDeepseekForItem(item) {
       valuation,
       intent,
       center: state.center,
+      cross: tencent,
     });
     const report = await askDeepseekReport(apiKey, facts);
+    const emPrice = Number(q.price);
+    const txPrice = Number(tencent?.price);
+    report.checks = {
+      emPrice: Number.isFinite(emPrice) ? emPrice : null,
+      emTime: q.updatedAt || null,
+      txPrice: Number.isFinite(txPrice) && txPrice > 0 ? txPrice : null,
+      txTime: tencent?.time || '',
+      diffPct: emPrice > 0 && txPrice > 0 ? ((txPrice - emPrice) / emPrice) * 100 : null,
+    };
     const aiReports = { ...(state.settings?.aiReports || {}), [keyId]: report };
     const keys = Object.keys(aiReports);
     if (keys.length > 40) delete aiReports[keys[0]];

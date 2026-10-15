@@ -105,6 +105,7 @@ export function buildStockFacts({
   headlines,
   announcements,
   news,
+  cross,
   indices,
   valuation,
   intent,
@@ -112,6 +113,15 @@ export function buildStockFacts({
 }) {
   const name = quote?.name || snapshot?.name || item.name || '';
   const px = snapshot?.price ?? quote?.price;
+  const cost = Number(item?.cost);
+  const mark = Number(item?.markPrice);
+  const live = Number(px);
+  const emTime = quote?.updatedAt
+    ? new Date(quote.updatedAt).toLocaleString('zh-CN', { hour12: false })
+    : '未知';
+  const tx = Number(cross?.price);
+  const diffPct = live > 0 && tx > 0 ? ((tx - live) / live) * 100 : null;
+  const pnl = cost > 0 && live > 0 ? ((live - cost) / cost) * 100 : null;
   const pct = snapshot?.changePct ?? quote?.changePct;
   const s = flow?.summary || {};
   const days = flowDays || [];
@@ -148,7 +158,16 @@ export function buildStockFacts({
   return [
     `标的：${name} ${item.code} ${item.market || ''}`,
     snapshot?.industry ? `行业：${snapshot.industry}${concepts ? `；概念：${concepts}` : ''}` : '',
-    `现价 ${num(px)}，今日 ${signed(pct)}%，今高 ${num(snapshot?.high ?? quote?.high)} 今低 ${num(snapshot?.low ?? quote?.low)} 开 ${num(snapshot?.open ?? quote?.open)} 昨收 ${num(snapshot?.prevClose ?? quote?.prevClose)}`,
+    `东财现价 ${num(px)}（行情时间 ${emTime}），今日 ${signed(pct)}%，今高 ${num(snapshot?.high ?? quote?.high)} 今低 ${num(snapshot?.low ?? quote?.low)} 开 ${num(snapshot?.open ?? quote?.open)} 昨收 ${num(snapshot?.prevClose ?? quote?.prevClose)}`,
+    tx > 0
+      ? `腾讯现价 ${num(tx)}（${cross?.time || '时间未知'}），与东财相差 ${signed(diffPct)}%。以东财为准，不要把两个价平均。`
+      : '腾讯对照价：未取到。',
+    cost > 0
+      ? `用户成本 ${num(cost)}，相对东财现价浮盈 ${signed(pnl)}%。`
+      : '用户成本：未填。不要假设他已经持仓。',
+    mark > 0
+      ? `用户另外填写的价格 ${num(mark)}，与东财现价相差 ${live > 0 ? signed(((mark - live) / live) * 100) : '—'}%。这是他关心的价，不是行情。`
+      : '用户未另填价格。',
     `成交额 ${num(snapshot?.amountYi)} 亿，换手 ${num(snapshot?.turnover)}%，振幅 ${num(snapshot?.amplitude)}%，量比 ${num(snapshot?.volumeRatio)}`,
     `市盈率 ${num(snapshot?.pe)}，市净率 ${num(snapshot?.pb)}，总市值 ${num(snapshot?.totalMvYi, 0)} 亿，流通市值 ${num(snapshot?.floatMvYi, 0)} 亿`,
     `今日价位：${valuation?.label || '未知'}（${valuation?.tip || '无'}）`,
@@ -177,9 +196,12 @@ const SYSTEM = [
   '5. 资讯只分成利好、利空、无关。没有个股资讯就明确说没有，不要用板块故事代替。',
   '6. 非A股没有主力拆单时，不要假装有主力，只根据涨幅、均线和消息给继续等或不买，买入要更苛刻。',
   '7. 仓位建议单票不超过三成，必须写出放弃条件。禁止承诺收益。',
+  '8. 填了成本时：浮盈已经很大不要加仓；亏损且主力流出倾向减仓或不买；成本附近且是真买才允许小仓。没填成本就不要写他已经赚了或亏了。',
+  '9. 现价以东财为准。腾讯和东财相差超过0.3%时，在风险里写一句去券商软件核对，不要采用用户手填价格代替行情。',
   '输出严格 JSON：',
   '{"action":"买入|不买|继续等","buyProb":0到100整数,"waitProb":整数,"avoidProb":整数,',
   '"summary":"两句，先说结论再说最关键的一个理由",',
+  '"position":"相对用户成本：未持仓/持有/不加仓/考虑减仓，并写出浮盈",',
   '"mainForce":"今日与近5日主力，点明真买/诱多/真卖/不明显",',
   '"trend":"均线位置、区间涨幅、是否追高、量能",',
   '"news":"只根据给出的资讯和公告",',
@@ -191,24 +213,14 @@ const SYSTEM = [
   '三个概率加起来约等于100。',
 ].join('');
 
-export async function askDeepseekReport(apiKey, facts) {
-  const key = String(apiKey || '').trim();
-  if (!key) throw new Error('缺少 DeepSeek 密钥');
+async function postDeepseek(apiKey, body) {
   const res = await fetch(ENDPOINT, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${key}`,
+      Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({
-      model: 'deepseek-chat',
-      temperature: 0.2,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: SYSTEM },
-        { role: 'user', content: facts },
-      ],
-    }),
+    body: JSON.stringify(body),
   });
   const text = await res.text();
   if (!res.ok) {
@@ -218,9 +230,45 @@ export async function askDeepseekReport(apiKey, facts) {
     } catch {
       /* keep */
     }
-    throw new Error(msg || `DeepSeek ${res.status}`);
+    const err = new Error(msg || `DeepSeek ${res.status}`);
+    err.status = res.status;
+    throw err;
   }
-  const json = JSON.parse(text);
+  return JSON.parse(text);
+}
+
+export async function askDeepseekReport(apiKey, facts) {
+  const key = String(apiKey || '').trim();
+  if (!key) throw new Error('缺少 DeepSeek 密钥');
+  const messages = [
+    { role: 'system', content: SYSTEM },
+    { role: 'user', content: facts },
+  ];
+  const attempts = [
+    { model: 'deepseek-flash', thinking: { type: 'disabled' } },
+    { model: 'deepseek-chat' },
+  ];
+  let json = null;
+  let used = 'deepseek-flash';
+  let lastErr = null;
+  for (const attempt of attempts) {
+    try {
+      json = await postDeepseek(key, {
+        model: attempt.model,
+        temperature: 0.2,
+        response_format: { type: 'json_object' },
+        messages,
+        ...(attempt.thinking ? { thinking: attempt.thinking } : {}),
+      });
+      used = attempt.model;
+      break;
+    } catch (e) {
+      lastErr = e;
+      const msg = String(e?.message || '');
+      if (/401|invalid|api key|密钥/i.test(msg)) throw e;
+    }
+  }
+  if (!json) throw lastErr || new Error('DeepSeek 分析失败');
   const raw = json?.choices?.[0]?.message?.content || '{}';
   const report = JSON.parse(raw);
   const action = ['买入', '不买', '继续等'].includes(report.action) ? report.action : '继续等';
@@ -230,6 +278,7 @@ export async function askDeepseekReport(apiKey, facts) {
     waitProb: clampPct(report.waitProb),
     avoidProb: clampPct(report.avoidProb),
     summary: String(report.summary || '').slice(0, 400),
+    position: String(report.position || '').slice(0, 300),
     mainForce: String(report.mainForce || '').slice(0, 400),
     trend: String(report.trend || '').slice(0, 400),
     news: String(report.news || '').slice(0, 400),
@@ -239,7 +288,7 @@ export async function askDeepseekReport(apiKey, facts) {
     stop: String(report.stop || '').slice(0, 240),
     risk: String(report.risk || '').slice(0, 240),
     generatedAt: Date.now(),
-    source: 'deepseek',
+    source: used,
   };
 }
 
