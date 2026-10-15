@@ -330,19 +330,19 @@ export async function fetchQuotes(items) {
   const stocks = items.filter((x) => x.kind === 'stock');
   const funds = items.filter((x) => x.kind === 'fund');
   const [stockMap, fundMap] = await Promise.all([
-    fetchStockQuotes(stocks),
-    fetchFundQuotes(funds),
+    fetchStockQuotes(stocks).catch(() => ({})),
+    fetchFundQuotes(funds).catch(() => ({})),
   ]);
   return { ...stockMap, ...fundMap };
 }
 
-async function fetchStockQuotes(stocks) {
-  if (!stocks.length) return {};
+async function fetchEastStockQuotes(stocks) {
   const secids = stocks
     .map((s) => s.secid || toSecid(s.market, s.code, s.marketNo))
     .join(',');
   const url = `https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&fields=${STOCK_FIELDS}&secids=${encodeURIComponent(secids)}`;
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(7000) });
+  if (!res.ok) throw new Error('ulist');
   const json = await res.json();
   const diff = json?.data?.diff || [];
   const map = {};
@@ -408,6 +408,50 @@ async function fetchStockQuotes(stocks) {
     });
   }
 
+  return map;
+}
+
+let quoteListDownUntil = 0;
+
+function noteQuoteListDown() {
+  quoteListDownUntil = Date.now() + 2 * 60 * 1000;
+}
+
+function quoteListLikelyDown() {
+  return Date.now() < quoteListDownUntil;
+}
+
+async function fetchStockQuotes(stocks) {
+  if (!stocks.length) return {};
+  let map = {};
+  if (!quoteListLikelyDown()) {
+    try {
+      map = await fetchEastStockQuotes(stocks);
+    } catch {
+      noteQuoteListDown();
+      map = {};
+    }
+  }
+  if (!Object.values(map).some((row) => Number(row?.price) > 0) && stocks.length) noteQuoteListDown();
+  const missing = stocks.filter((s) => !(Number(map[`stock:${s.market}:${s.code}`]?.price) > 0));
+  if (!missing.length) return map;
+  const rows = await fetchTencentSnapshots(missing);
+  for (const row of rows) {
+    if (!(Number(row.price) > 0)) continue;
+    const payload = {
+      name: row.name || '',
+      price: row.price,
+      changePct: row.changePct,
+      change: row.change,
+      high: row.high,
+      low: row.low,
+      open: row.open,
+      prevClose: row.prevClose,
+      market: row.market,
+      updatedAt: row.updatedAt || Date.now(),
+    };
+    map[`stock:${row.market}:${row.code}`] = payload;
+  }
   return map;
 }
 
@@ -594,7 +638,7 @@ async function fetchFundQuotes(funds) {
         `https://fundmobapi.eastmoney.com/FundMNewApi/FundMNFInfo?pageIndex=1&pageSize=200` +
         `&plat=Android&appType=ttjj&product=EFund&Version=1&deviceid=genius-trader` +
         `&Fcodes=${chunk.join(',')}`;
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: AbortSignal.timeout(7000) });
       if (!res.ok) throw new Error(`FundMNFInfo ${res.status}`);
       const json = await res.json();
       const rows = json?.Datas || json?.Data || [];
@@ -857,17 +901,17 @@ export async function fetchMembersQuotes(members) {
   return out;
 }
 
-export async function fetchIndices(list) {
-  if (!list?.length) return [];
+async function fetchEastIndices(list) {
   const secids = list.map((x) => x.secid || toSecid(x.market, x.code, x.marketNo)).join(',');
   const url = `https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&fields=${STOCK_FIELDS}&secids=${encodeURIComponent(secids)}`;
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(7000) });
+  if (!res.ok) throw new Error('ulist');
   const json = await res.json();
   const diff = json?.data?.diff || [];
   return list.map((meta, i) => {
     const secid = meta.secid || toSecid(meta.market, meta.code, meta.marketNo);
     const row =
-      diff.find((d) => String(d.f12) === String(meta.code)) ||
+      diff.find((d) => String(d.f12).toUpperCase() === String(meta.code).toUpperCase()) ||
       diff[i] ||
       {};
     let price = Number(row.f2);
@@ -882,6 +926,31 @@ export async function fetchIndices(list) {
       change: Number(row.f4),
       prevClose: prev,
     };
+  });
+}
+
+export async function fetchIndices(list) {
+  if (!list?.length) return [];
+  let east = [];
+  if (!quoteListLikelyDown()) {
+    try {
+      east = await fetchEastIndices(list);
+    } catch {
+      noteQuoteListDown();
+      east = [];
+    }
+  }
+  const priced = east.filter((row) => Number(row.price) > 0).length;
+  if (!priced) noteQuoteListDown();
+  if (east.length === list.length && priced >= Math.ceil(list.length * 0.6)) return east;
+  const tx = await fetchTencentSnapshots(list);
+  const bySecid = new Map(tx.map((row) => [row.secid, row]));
+  const base = east.length === list.length ? east : list.map((meta) => ({ ...meta, secid: meta.secid || toSecid(meta.market, meta.code, meta.marketNo) }));
+  return base.map((row) => {
+    if (Number(row.price) > 0 && Number.isFinite(Number(row.changePct))) return row;
+    const alt = bySecid.get(row.secid);
+    if (!(Number(alt?.price) > 0)) return row;
+    return { ...row, ...alt, name: alt.name || row.name };
   });
 }
 
@@ -972,12 +1041,24 @@ function parseFlowKlines(klines) {
 
 /** 沪深大盘主力资金分时 */
 export async function fetchMarketMoneyFlow() {
-  const url =
+  const urls = [
     'https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?lmt=0&klt=1&secid=1.000001&secid2=0.399001' +
-    '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63';
-  const res = await fetch(url);
-  const json = await res.json();
-  return parseFlowKlines(json?.data?.klines);
+      '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63',
+    'https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get?lmt=0&klt=1&secid=1.000001&secid2=0.399001' +
+      '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63',
+  ];
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(7000) });
+      if (!res.ok) continue;
+      const json = await res.json();
+      const parsed = parseFlowKlines(json?.data?.klines);
+      if (parsed?.times?.length) return parsed;
+    } catch {
+      /* next host */
+    }
+  }
+  return null;
 }
 
 /**
@@ -1314,9 +1395,116 @@ function tencentSymbol(secid) {
   if (!code) return '';
   if (mk === '1') return `sh${code}`;
   if (mk === '0') return /^(8|4|92)/.test(code) ? `bj${code}` : `sz${code}`;
-  if (mk === '116' || mk === '100') return `hk${code}`;
+  if (mk === '116') return `hk${code.padStart(5, '0')}`;
   if (mk === '105' || mk === '106' || mk === '107') return `us${String(code).toUpperCase()}`;
+  if (mk === '100') {
+    const c = String(code).toUpperCase();
+    const direct = {
+      HSI: 'hkHSI',
+      HSTECH: 'hkHSTECH',
+      HSCEI: 'hkHSCEI',
+      NDX: 'usNDX',
+      DJIA: 'usDJI',
+      DJI: 'usDJI',
+      IXIC: 'usIXIC',
+      KS11: 'gzKS11',
+      KQ11: 'gzKOSDAQ',
+    };
+    return direct[c] || `gz${c}`;
+  }
+  if (mk === '177') return `kr${code}`;
   return '';
+}
+
+function parseTencentQuoteLine(line) {
+  const matched = line.match(/v_([a-z0-9_.]+)="([^"]*)"/i);
+  if (!matched) return null;
+  const parts = matched[2].split('~');
+  if (matched[1].toLowerCase().startsWith('gz')) {
+    const price = Number(parts[3]);
+    const change = Number(parts[4]);
+    const changePct = Number(parts[5]);
+    if (!(price > 0)) return null;
+    return {
+      symbol: matched[1].toLowerCase(),
+      name: parts[1] || '',
+      price,
+      prevClose: null,
+      open: null,
+      change: Number.isFinite(change) ? change : null,
+      changePct: Number.isFinite(changePct) ? changePct : null,
+      high: null,
+      low: null,
+      amount: null,
+    };
+  }
+  const price = Number(parts[3]);
+  const prev = Number(parts[4]);
+  if (!Number.isFinite(price) || price <= 0) return null;
+  const change = Number(parts[31]);
+  let changePct = Number(parts[32]);
+  if (!Number.isFinite(changePct) && prev > 0) changePct = ((price - prev) / prev) * 100;
+  return {
+    symbol: matched[1].toLowerCase(),
+    name: parts[1] || '',
+    price,
+    prevClose: Number.isFinite(prev) ? prev : null,
+    open: Number(parts[5]),
+    change: Number.isFinite(change) ? change : null,
+    changePct: Number.isFinite(changePct) ? changePct : null,
+    high: Number(parts[33]),
+    low: Number(parts[34]),
+    amount: tencentAmount(parts),
+  };
+}
+
+function tencentAmount(parts) {
+  for (const part of parts) {
+    const bits = String(part).split('/');
+    if (bits.length >= 3 && Number(bits[2]) > 0) return Number(bits[2]);
+  }
+  return null;
+}
+
+async function fetchTencentSnapshots(list) {
+  const metas = [];
+  for (const meta of list || []) {
+    const secid = meta.secid || toSecid(meta.market, meta.code, meta.marketNo);
+    const symbol = tencentSymbol(secid);
+    if (!symbol) continue;
+    metas.push({ meta, secid, symbol: symbol.toLowerCase(), query: symbol });
+  }
+  const bySymbol = new Map();
+  const queries = [...new Set(metas.map((row) => row.query))];
+  for (let i = 0; i < queries.length; i += 40) {
+    try {
+      const text = await fetchTextGbk(`https://qt.gtimg.cn/q=${queries.slice(i, i + 40).join(',')}`);
+      for (const line of text.split(';')) {
+        const row = parseTencentQuoteLine(line);
+        if (row) bySymbol.set(row.symbol, row);
+      }
+    } catch {
+      /* next chunk */
+    }
+  }
+  return metas.map(({ meta, secid, symbol }) => {
+    const row = bySymbol.get(symbol);
+    if (!row) return { ...meta, secid, price: null, changePct: null };
+    return {
+      ...meta,
+      secid,
+      name: row.name || meta.name,
+      price: row.price,
+      changePct: row.changePct,
+      change: row.change,
+      high: row.high,
+      low: row.low,
+      open: row.open,
+      prevClose: row.prevClose,
+      amount: row.amount,
+      updatedAt: Date.now(),
+    };
+  });
 }
 
 async function fetchEastKline(secid, klt, lmt) {
@@ -1418,55 +1606,111 @@ export async function fetchKline(secid, klt = 101, lmt = 80) {
   return { name: '', points: [] };
 }
 
-/** 沪深两市成交额等 */
+/** 沪深两市成交额等。东财列表不通时，用腾讯指数成交额。 */
 export async function fetchMarketOverview() {
-  const url =
-    'https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=1.000001,0.399001&fields=f1,f2,f3,f4,f6,f12,f13,f14,f104,f105,f106';
-  const res = await fetch(url);
-  const json = await res.json();
-  const diff = json?.data?.diff || [];
-  let amount = 0;
-  let up = 0;
-  let down = 0;
-  let flat = 0;
-  for (const row of diff) {
-    amount += Number(row.f6 || 0);
-    up += Number(row.f104 || 0);
-    down += Number(row.f105 || 0);
-    flat += Number(row.f106 || 0);
+  try {
+    const url =
+      'https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=1.000001,0.399001&fields=f1,f2,f3,f4,f6,f12,f13,f14,f104,f105,f106';
+    const res = await fetch(url, { signal: AbortSignal.timeout(7000) });
+    if (!res.ok) throw new Error('overview');
+    const json = await res.json();
+    const diff = json?.data?.diff || [];
+    if (diff.length) {
+      let amount = 0;
+      let up = 0;
+      let down = 0;
+      let flat = 0;
+      for (const row of diff) {
+        amount += Number(row.f6 || 0);
+        up += Number(row.f104 || 0);
+        down += Number(row.f105 || 0);
+        flat += Number(row.f106 || 0);
+      }
+      return {
+        amountYi: +(amount / 1e8).toFixed(2),
+        up,
+        down,
+        flat,
+        rows: diff,
+      };
+    }
+  } catch {
+    /* tencent */
   }
+  const rows = await fetchTencentSnapshots([
+    { name: '上证指数', code: '000001', market: 'SH', marketNo: 1, secid: '1.000001' },
+    { name: '深证成指', code: '399001', market: 'SZ', marketNo: 0, secid: '0.399001' },
+  ]);
+  const amount = rows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
   return {
-    amountYi: +(amount / 1e8).toFixed(2),
-    up,
-    down,
-    flat,
-    rows: diff,
+    amountYi: amount > 0 ? +(amount / 1e8).toFixed(2) : null,
+    up: null,
+    down: null,
+    flat: null,
+    rows,
   };
 }
 
 /** 涨跌 TOP：po=1 涨幅，po=0 跌幅 */
 export async function fetchTopMovers(direction = 'up', limit = 100) {
   const po = direction === 'up' ? 1 : 0;
-  const url =
-    `https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=${limit}&po=${po}&np=1` +
-    `&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f3` +
-    `&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048` +
-    `&fields=f12,f13,f14,f2,f3,f4,f6`;
-  const res = await fetch(url);
-  const json = await res.json();
-  return (json?.data?.diff || []).map((row) => ({
-    code: String(row.f12),
-    marketNo: Number(row.f13),
-    name: row.f14,
-    price: Number(row.f2),
-    changePct: Number(row.f3),
-    change: Number(row.f4),
-    amount: Number(row.f6),
-    market: Number(row.f13) === 1 ? 'SH' : 'SZ',
-    kind: 'stock',
-    secid: `${row.f13}.${row.f12}`,
-    label: Number(row.f13) === 1 ? '沪' : '深',
-  }));
+  try {
+    const url =
+      `https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=${limit}&po=${po}&np=1` +
+      `&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f3` +
+      `&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048` +
+      `&fields=f12,f13,f14,f2,f3,f4,f6`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(7000) });
+    if (!res.ok) throw new Error('clist');
+    const json = await res.json();
+    const rows = json?.data?.diff || [];
+    if (rows.length) {
+      return rows.map((row) => ({
+        code: String(row.f12),
+        marketNo: Number(row.f13),
+        name: row.f14,
+        price: Number(row.f2),
+        changePct: Number(row.f3),
+        change: Number(row.f4),
+        amount: Number(row.f6),
+        market: Number(row.f13) === 1 ? 'SH' : 'SZ',
+        kind: 'stock',
+        secid: `${row.f13}.${row.f12}`,
+        label: Number(row.f13) === 1 ? '沪' : '深',
+      }));
+    }
+  } catch {
+    /* sina */
+  }
+  const asc = direction === 'up' ? 0 : 1;
+  const sina =
+    `https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData` +
+    `?page=1&num=${Math.min(limit + 30, 120)}&sort=changepercent&asc=${asc}&node=hs_a`;
+  const res = await fetch(sina, { signal: AbortSignal.timeout(8000) });
+  if (!res.ok) return [];
+  const rows = await res.json();
+  return (Array.isArray(rows) ? rows : [])
+    .filter((row) => row?.name && !/^N/.test(String(row.name)))
+    .slice(0, limit)
+    .map((row) => {
+      const symbol = String(row.symbol || '');
+      const code = String(row.code || '');
+      const market = symbol.startsWith('sh') ? 'SH' : symbol.startsWith('bj') ? 'BJ' : 'SZ';
+      const marketNo = market === 'SH' ? 1 : 0;
+      return {
+        code,
+        marketNo,
+        name: row.name,
+        price: Number(row.trade),
+        changePct: Number(row.changepercent),
+        change: Number(row.pricechange),
+        amount: Number(row.amount) || null,
+        market,
+        kind: 'stock',
+        secid: `${marketNo}.${code}`,
+        label: market === 'SH' ? '沪' : market === 'BJ' ? '京' : '深',
+      };
+    });
 }
 
 function mapBoardRows(rows) {

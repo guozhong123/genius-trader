@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "天才交易员",
   "description": "自选股票与基金盯盘：A股 / 港股 / 美股 / 场外基金，净值、分时K线、主力资金与板块热力图。",
-  "version": "1.9.7",
+  "version": "1.9.8",
   "action": {
     "default_title": "天才交易员",
     "default_icon": {

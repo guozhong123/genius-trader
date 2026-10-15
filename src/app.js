@@ -49,6 +49,7 @@ import {
   US_PULSE_SECTORS,
   KR_PULSE_SECTORS,
   CN_PULSE_BOARDS,
+  CN_PULSE_PROXIES,
   buildSectorFromMembers,
   getMarketSession,
 } from './lib/market-pulse.js';
@@ -1124,12 +1125,17 @@ function renderPredictCard() {
 
 async function loadDataCenter() {
   try {
-    const [flow, updown, northbound, overview] = await Promise.all([
+    const settled = await Promise.allSettled([
       fetchMarketMoneyFlow(),
       fetchUpDownDistribution(),
       fetchNorthbound(),
       fetchMarketOverview(),
     ]);
+    const pick = (i) => (settled[i].status === 'fulfilled' ? settled[i].value : null);
+    const flow = pick(0);
+    const updown = pick(1);
+    const northbound = pick(2);
+    const overview = pick(3);
     state.center = { flow, updown, northbound, overview };
     renderFlowSummary();
     const axisOpts = { axisMode: chartAxisMode(), legendNames: flowLegendNames() };
@@ -1908,14 +1914,35 @@ async function loadCnPulse() {
       secid: b.secid,
       name: b.name,
     })),
-  );
+  ).catch(() => []);
   const byCode = new Map(quotes.map((q) => [String(q.code), q]));
-  return CN_PULSE_BOARDS.map((b) => {
+  const direct = CN_PULSE_BOARDS.map((b) => {
     const q = byCode.get(b.code);
     return {
       name: b.name,
       changePct: Number.isFinite(Number(q?.changePct)) ? Number(q.changePct) : null,
       code: b.code,
+    };
+  });
+  if (direct.filter((row) => Number.isFinite(row.changePct)).length >= 8) return direct;
+  const members = [];
+  for (const board of CN_PULSE_BOARDS) {
+    for (const code of CN_PULSE_PROXIES[board.name] || []) {
+      members.push({ code, marketNo: /^(6|9)/.test(code) ? 1 : 0, name: code });
+    }
+  }
+  const proxyQuotes = await fetchMembersQuotes(members).catch(() => []);
+  const byProxy = new Map(proxyQuotes.map((q) => [String(q.code), q]));
+  return CN_PULSE_BOARDS.map((board) => {
+    const hit = direct.find((row) => row.name === board.name);
+    if (Number.isFinite(hit?.changePct)) return hit;
+    const vals = (CN_PULSE_PROXIES[board.name] || [])
+      .map((code) => Number(byProxy.get(code)?.changePct))
+      .filter((n) => Number.isFinite(n));
+    return {
+      name: board.name,
+      code: board.code,
+      changePct: vals.length ? vals.reduce((sum, n) => sum + n, 0) / vals.length : null,
     };
   });
 }
