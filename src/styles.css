@@ -690,3 +690,46 @@
     }
   }
 }
+
+.login-root {
+  background-color: var(--bg-base);
+  background-image:
+    radial-gradient(900px 480px at 0% -10%, color-mix(in oklab, var(--bg-a) 45%, transparent), transparent 60%),
+    radial-gradient(800px 420px at 100% 0%, color-mix(in oklab, var(--bg-b) 40%, transparent), transparent 55%),
+    linear-gradient(180deg, var(--bg-c), var(--bg-base));
+}
+
+.login-card .font-display {
+  font-family: var(--font-display);
+}
+
+.ai-advice-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.ai-advice-pill {
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--panel-solid);
+  border: 1px solid color-mix(in oklab, var(--line) 90%, transparent);
+}
+
+.ai-advice-pill .label {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.ai-advice-pill .action {
+  margin-top: 2px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.ai-advice-pill .tip {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}

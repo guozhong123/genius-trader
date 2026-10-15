@@ -47,6 +47,8 @@ import { buildLevelMarkLines } from './lib/levels.js';
 import { normalizeGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
 import { calcValuationBias } from './lib/valuation.js';
+import { buildStockAiAdvice } from './lib/ai-advice.js';
+import { isLoggedIn, login, logout, currentUser } from './lib/auth.js';
 
 const REFRESH_MS = 15000;
 
@@ -98,6 +100,9 @@ const state = {
   dialogResolve: null,
   dialogSnapshot: null,
   dragKey: null,
+  aiAdvice: null,
+  aiAdviceKey: null,
+  timersStarted: false,
   briefOpen: false,
   briefTab: 'insight',
   insightOpen: false,
@@ -155,6 +160,15 @@ const els = {
   eventDismissBtn: $('event-dismiss-btn'),
   calendarBtn: $('calendar-btn'),
   valuationToggle: $('valuation-toggle'),
+  loginRoot: $('login-root'),
+  loginForm: $('login-form'),
+  loginUser: $('login-user'),
+  loginPass: $('login-pass'),
+  loginError: $('login-error'),
+  appFrame: $('app-frame'),
+  logoutBtn: $('logout-btn'),
+  aiAdviceBody: $('ai-advice-body'),
+  aiAdviceRefresh: $('ai-advice-refresh'),
   briefOpenBtn: $('brief-open-btn'),
   briefRoot: $('brief-root'),
   briefMask: $('brief-mask'),
@@ -916,6 +930,109 @@ function closeDetail() {
   els.detailRoot.classList.remove('flex');
   disposeChart(els.chartMain);
   disposeChart(els.chartStockFlow);
+  if (els.aiAdviceBody) {
+    els.aiAdviceBody.innerHTML = '打开个股后自动分析…';
+  }
+}
+
+function adviceActionClass(action) {
+  if (/买入/.test(action) && !/观望/.test(action)) return 'text-up';
+  if (/减仓|回避|偏空/.test(action)) return 'text-down';
+  return '';
+}
+
+function renderAiAdvice(advice) {
+  if (!els.aiAdviceBody || !advice) return;
+  const dayCls = adviceActionClass(advice.day.action);
+  const weekCls = adviceActionClass(advice.week.action);
+  const marketPct =
+    advice.marketView.avgPct == null
+      ? '—'
+      : `${advice.marketView.avgPct >= 0 ? '+' : ''}${advice.marketView.avgPct.toFixed(2)}%`;
+  els.aiAdviceBody.innerHTML = `
+    <div class="ai-advice-actions mb-2">
+      <div class="ai-advice-pill">
+        <div class="label">未来一天</div>
+        <div class="action ${dayCls}">${esc(advice.day.action)}</div>
+        <div class="tip">${esc(advice.day.tip)}</div>
+        <div class="mt-1 text-[10px]" style="color:var(--muted)">置信 ${(advice.day.confidence * 100).toFixed(0)}%</div>
+      </div>
+      <div class="ai-advice-pill">
+        <div class="label">未来一周</div>
+        <div class="action ${weekCls}">${esc(advice.week.action)}</div>
+        <div class="tip">${esc(advice.week.tip)}</div>
+        <div class="mt-1 text-[10px]" style="color:var(--muted)">置信 ${(advice.week.confidence * 100).toFixed(0)}%</div>
+      </div>
+    </div>
+    <div class="mb-2 rounded-lg px-2.5 py-2" style="background:var(--panel-solid);border:1px solid color-mix(in oklab,var(--line) 90%,transparent)">
+      <div class="text-[11px] font-semibold">大盘环境 · ${esc(advice.marketView.label)}（${marketPct}）</div>
+      <div class="mt-0.5 text-[11px]" style="color:var(--muted)">${esc(advice.marketView.text)}</div>
+    </div>
+    <ul class="mb-2 list-disc space-y-0.5 pl-4 text-[11px]" style="color:var(--ink)">
+      ${advice.bullets.map((b) => `<li>${esc(b)}</li>`).join('')}
+    </ul>
+    <p class="text-[10px] leading-snug" style="color:var(--muted)">${esc(advice.disclaimer)}</p>`;
+}
+
+async function loadDetailAiAdvice(force = false) {
+  const item = state.detail;
+  if (!item || item.kind === 'fund' || !els.aiAdviceBody) return;
+  if (!force && state.aiAdviceKey === itemKey(item) && state.aiAdvice) {
+    renderAiAdvice(state.aiAdvice);
+    return;
+  }
+  els.aiAdviceBody.innerHTML =
+    '<div class="text-[12px]" style="color:var(--muted)">正在综合历史走势、主力资金、新闻与大盘…</div>';
+  const secid = item.secid || toSecid(item.market, item.code, item.marketNo);
+  try {
+    const [dayK, flow, news] = await Promise.all([
+      fetchKline(secid, 101, 40).catch(() => null),
+      fetchStockMoneyFlow(secid).catch(() => null),
+      (state.insightNews?.length
+        ? Promise.resolve(state.insightNews)
+        : fetchMarketNews(8).catch(() => [])),
+    ]);
+    if (!state.indices?.length) {
+      try {
+        state.indices = await fetchIndices(state.settings?.indices || []);
+      } catch {
+        /* ignore */
+      }
+    }
+    const q = state.quotes[quoteKey(item)] || {};
+    const advice = buildStockAiAdvice({
+      name: preferDisplayName(q.name, item.name),
+      dayK,
+      flow,
+      news: news || state.insightNews || [],
+      indices: state.indices || [],
+      quote: q,
+    });
+    state.aiAdvice = advice;
+    state.aiAdviceKey = itemKey(item);
+    if (state.detail && itemKey(state.detail) === itemKey(item)) {
+      renderAiAdvice(advice);
+    }
+  } catch (e) {
+    console.error(e);
+    els.aiAdviceBody.innerHTML =
+      '<div class="text-[12px]" style="color:var(--muted)">AI 分析暂时不可用，请稍后重试。</div>';
+  }
+}
+
+function showAppAfterLogin() {
+  els.loginRoot?.classList.add('hidden');
+  els.appFrame?.classList.remove('hidden');
+}
+
+function showLoginGate() {
+  els.appFrame?.classList.add('hidden');
+  els.loginRoot?.classList.remove('hidden');
+  if (els.loginError) {
+    els.loginError.classList.add('hidden');
+    els.loginError.textContent = '';
+  }
+  els.loginUser?.focus?.();
 }
 
 async function openDetail(item) {
@@ -967,9 +1084,13 @@ async function openDetail(item) {
     '<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">加载中…</div>';
   els.chartStockFlow.innerHTML =
     '<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">加载中…</div>';
+  if (els.aiAdviceBody) {
+    els.aiAdviceBody.innerHTML =
+      '<div class="text-[12px]" style="color:var(--muted)">正在综合历史走势、主力资金、新闻与大盘…</div>';
+  }
   // 等弹窗完成布局后再画图，避免首次空白
   await waitFrames(3);
-  await refreshDetailCharts();
+  await Promise.all([refreshDetailCharts(), loadDetailAiAdvice(true)]);
   await waitFrames(1);
   resizeAllCharts();
 }
@@ -1916,7 +2037,41 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
+els.loginForm?.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const result = login(els.loginUser?.value, els.loginPass?.value);
+  if (!result.ok) {
+    if (els.loginError) {
+      els.loginError.textContent = result.message || '登录失败';
+      els.loginError.classList.remove('hidden');
+    }
+    return;
+  }
+  showAppAfterLogin();
+  bootApp();
+});
+
+els.logoutBtn?.addEventListener('click', async () => {
+  const ok = await confirmDialog('退出登录', '确定退出当前账号吗？');
+  if (!ok) return;
+  logout();
+  closeDetail();
+  closeBrief();
+  showLoginGate();
+});
+
+els.aiAdviceRefresh?.addEventListener('click', () => loadDetailAiAdvice(true));
+
 async function boot() {
+  if (!isLoggedIn()) {
+    showLoginGate();
+    return;
+  }
+  showAppAfterLogin();
+  await bootApp();
+}
+
+async function bootApp() {
   state.settings = await getSettings();
   if (state.settings.theme !== 'light' && state.settings.theme !== 'dark') {
     state.settings = await saveSettings({ theme: 'light' });
@@ -1976,9 +2131,13 @@ async function boot() {
   syncBriefUnreadUi();
   renderEventBanner();
   if (added > 0) els.statusText.textContent = `已导入神器自选 ${added} 只`;
+  else if (currentUser()) els.statusText.textContent = `你好，${currentUser()}`;
   await Promise.all([refreshAll(), refreshMajorNews(false)]);
-  setInterval(refreshAll, REFRESH_MS);
-  setInterval(() => refreshMajorNews(false), NEWS_REFRESH_MS);
+  if (!state.timersStarted) {
+    state.timersStarted = true;
+    setInterval(refreshAll, REFRESH_MS);
+    setInterval(() => refreshMajorNews(false), NEWS_REFRESH_MS);
+  }
 }
 
 boot();
