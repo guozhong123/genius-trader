@@ -1106,6 +1106,67 @@ export async function fetchStockAnnouncements(code, limit = 3) {
   })).filter((r) => r.title);
 }
 
+/** 行业板块今天的涨跌。名称对不上时返回 null。 */
+export async function fetchIndustryMove(name) {
+  const q = String(name || '').trim();
+  if (q.length < 2) return null;
+  const searchUrl =
+    `https://search-codetable.eastmoney.com/codetable/search/web?client=web&keyword=${encodeURIComponent(q)}` +
+    '&pageNumber=1&pageSize=6';
+  const res = await fetch(searchUrl);
+  if (!res.ok) return null;
+  const rows = (await res.json())?.result || [];
+  const hit =
+    rows.find((r) => Number(r.market) === 90 && String(r.shortName || '') === q) ||
+    rows.find((r) => Number(r.market) === 90);
+  if (!hit?.code) return null;
+  const quoteUrl =
+    `https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&fields=f12,f14,f3&secids=${encodeURIComponent(`90.${hit.code}`)}`;
+  const row = (await (await fetch(quoteUrl)).json())?.data?.diff?.[0];
+  if (!row) return null;
+  const changePct = Number(row.f3);
+  return {
+    name: row.f14 || hit.shortName || q,
+    code: String(hit.code),
+    changePct: Number.isFinite(changePct) ? changePct : null,
+  };
+}
+
+/**
+ * 近几次龙虎榜。45 日内没有则 recent 为空，note 说明上次日期。
+ * 净额单位：亿元。
+ */
+export async function fetchDragonTiger(code) {
+  const c = String(code || '').replace(/\D/g, '');
+  if (!/^\d{6}$/.test(c)) return { recent: [], note: '非A股无龙虎榜' };
+  const url =
+    'https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_DAILYBILLBOARD_DETAILSNEW' +
+    '&columns=TRADE_DATE,EXPLAIN,CHANGE_RATE,BILLBOARD_NET_AMT,EXPLANATION' +
+    `&filter=(SECURITY_CODE=%22${c}%22)&pageNumber=1&pageSize=12&sortColumns=TRADE_DATE&sortTypes=-1`;
+  const res = await fetch(url);
+  if (!res.ok) return { recent: [], note: '龙虎榜未取到' };
+  const rows = (await res.json())?.result?.data || [];
+  const seen = new Set();
+  const all = [];
+  for (const r of rows) {
+    const date = String(r.TRADE_DATE || '').slice(0, 10);
+    if (!date || seen.has(date)) continue;
+    seen.add(date);
+    all.push({
+      date,
+      changePct: Number(r.CHANGE_RATE),
+      netYi: +(Number(r.BILLBOARD_NET_AMT || 0) / 1e8).toFixed(2),
+      reason: String(r.EXPLANATION || '').trim(),
+      seats: String(r.EXPLAIN || '').trim(),
+    });
+  }
+  const cutoff = Date.now() - 45 * 86400000;
+  const recent = all.filter((x) => new Date(`${x.date}T00:00:00`).getTime() >= cutoff).slice(0, 3);
+  if (recent.length) return { recent, note: '' };
+  if (all[0]) return { recent: [], note: `近45日未上龙虎榜，上次是 ${all[0].date}` };
+  return { recent: [], note: '没有龙虎榜记录' };
+}
+
 /** 个股主力资金分时 */
 export async function fetchStockMoneyFlow(secid) {
   const q =

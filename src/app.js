@@ -30,6 +30,8 @@ import {
   fetchStockHeadlines,
   fetchStockAnnouncements,
   fetchTencentStockQuote,
+  fetchIndustryMove,
+  fetchDragonTiger,
   fetchTechLeaders,
   fetchMembersQuotes,
   fetchTopMovers,
@@ -60,7 +62,7 @@ import { buildLevelMarkLines } from './lib/levels.js';
 import { normalizeGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
 import { calcValuationBias } from './lib/valuation.js';
-import { askDeepseekReport, buildStockFacts } from './lib/deepseek.js';
+import { askDeepseekReport, buildStockFacts, disciplineStop } from './lib/deepseek.js';
 import { isLoggedIn, login, logout, currentUser } from './lib/auth.js';
 
 const REFRESH_MS = 15000;
@@ -579,10 +581,16 @@ function costLineHtml(item, livePrice) {
     const pct = ((live - cost) / cost) * 100;
     pnl = `<span class="pnl ${tone(pct)}">浮盈 ${fmtPct(pct)}</span>`;
   }
+  const stop = disciplineStop(item, cost);
+  const broken = stop && live > 0 && live <= stop.price;
+  const stopHtml = stop
+    ? `<span class="stop-tag ${broken ? 'text-down' : ''}" title="成本下方 ${(stop.gap * 100).toFixed(0)}%">止损 ${stop.price.toFixed(2)}${broken ? ' 已破' : ''}</span>`
+    : '';
   return `<div class="cost-line" data-live="${Number.isFinite(live) ? live : ''}">
     <label>成本<input data-cost="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownPrice(item, 'cost'))}" placeholder="成本价" /></label>
     <label>价格<input data-mark="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownPrice(item, 'mark'))}" placeholder="自填价" /></label>
     ${pnl}
+    ${stopHtml}
   </div>`;
 }
 
@@ -805,20 +813,38 @@ function bindListEvents() {
       positionDrafts.set(key, { ...prev, [field]: el.value });
       if (field !== 'cost') return;
       const line = el.closest('.cost-line');
-      const live = Number(line?.getAttribute('data-live'));
+      if (!line) return;
+      const live = Number(line.getAttribute('data-live'));
       const cost = parseUserPrice(el.value);
-      let pnl = line?.querySelector('.pnl');
-      if (!line || !(cost > 0) || !(live > 0)) {
-        pnl?.remove();
+      let pnl = line.querySelector('.pnl');
+      if (!(cost > 0) || !(live > 0)) pnl?.remove();
+      else {
+        const pct = ((live - cost) / cost) * 100;
+        if (!pnl) {
+          pnl = document.createElement('span');
+          const stopEl = line.querySelector('.stop-tag');
+          if (stopEl) line.insertBefore(pnl, stopEl);
+          else line.appendChild(pnl);
+        }
+        pnl.className = `pnl ${tone(pct)}`;
+        pnl.textContent = `浮盈 ${fmtPct(pct)}`;
+      }
+      const item = state.list.find((x) => itemKey(x) === key);
+      const stop = disciplineStop(item, cost);
+      let tag = line.querySelector('.stop-tag');
+      if (!stop) {
+        tag?.remove();
         return;
       }
-      const pct = ((live - cost) / cost) * 100;
-      if (!pnl) {
-        pnl = document.createElement('span');
-        line.appendChild(pnl);
+      if (!tag) {
+        tag = document.createElement('span');
+        tag.className = 'stop-tag';
+        line.appendChild(tag);
       }
-      pnl.className = `pnl ${tone(pct)}`;
-      pnl.textContent = `浮盈 ${fmtPct(pct)}`;
+      const broken = live > 0 && live <= stop.price;
+      tag.className = `stop-tag ${broken ? 'text-down' : ''}`;
+      tag.title = `成本下方 ${(stop.gap * 100).toFixed(0)}%`;
+      tag.textContent = `止损 ${stop.price.toFixed(2)}${broken ? ' 已破' : ''}`;
     });
     el.addEventListener('blur', async () => {
       const key = el.getAttribute(attr);
@@ -932,6 +958,40 @@ function renderFlowSummary() {
     $('zd-summary').innerHTML = `涨 <span class="text-up font-semibold">${zd.up}</span> / 跌 <span class="text-down font-semibold">${zd.down}</span>`;
   }
   if (nb) $('nb-summary').innerHTML = `净流入 <span class="font-semibold ${tone(nb.last)}">${fmtYi(nb.last)} 亿</span>`;
+  renderMarketTone();
+}
+
+function judgeTape(center) {
+  const zd = center?.updown;
+  const up = Number(zd?.up);
+  const down = Number(zd?.down);
+  if (!Number.isFinite(up) || !Number.isFinite(down) || up + down < 100) return null;
+  const main = Number(center?.flow?.summary?.main);
+  const lu = Number(zd.limitUp) || 0;
+  const ld = Number(zd.limitDown) || 0;
+  const detail = `涨${up} 跌${down} 涨停${lu} 跌停${ld}`;
+  if (down >= up * 1.45 || (Number.isFinite(main) && main <= -80) || (ld >= 20 && ld > lu)) {
+    return { label: '宜等', detail, tip: '跌家明显多，或主力、跌停偏空。少开新仓。' };
+  }
+  if (up >= down * 1.15 && (!Number.isFinite(main) || main >= -20) && lu >= ld) {
+    return { label: '可找买点', detail, tip: '涨家占优。仍然只做主力真买、没追高的票。' };
+  }
+  return { label: '只做最强', detail, tip: '环境一般。没有板块共振和真买，就继续等。' };
+}
+
+function renderMarketTone() {
+  const el = $('market-tone');
+  if (!el) return;
+  const tape = judgeTape(state.center);
+  if (!tape) {
+    el.classList.add('hidden');
+    el.textContent = '';
+    return;
+  }
+  el.classList.remove('hidden');
+  el.textContent = `今天${tape.label} · ${tape.detail}`;
+  el.title = tape.tip;
+  el.style.color = tape.label === '宜等' ? 'var(--down)' : tape.label === '可找买点' ? 'var(--up)' : 'var(--muted)';
 }
 
 function renderPredictCard() {
@@ -1112,7 +1172,7 @@ function renderDeepseekReport(report) {
   els.aiAdviceBody.innerHTML = `
     <div class="mb-2 flex flex-wrap items-end justify-between gap-2">
       <div>
-        <div class="text-[11px]" style="color:var(--muted)">DeepSeek Flash · 主力 · 成本 · 双源行情</div>
+        <div class="text-[11px]" style="color:var(--muted)">${esc(report.source || 'DeepSeek')} · 主力 · 止损 · 龙虎榜</div>
         <div class="text-lg font-semibold ${cls}">${esc(report.action || '继续等')}</div>
       </div>
       <div class="text-[10px]" style="color:var(--muted)">${esc(when)}</div>
@@ -1136,19 +1196,35 @@ function renderDeepseekReport(report) {
     <p class="text-[10px] leading-snug" style="color:var(--muted)">概率是模型对当前公开数据的判断，不是胜率承诺。A股跟主力也要防诱多，单票仓位宜轻，先定止损再谈买入。</p>`;
 }
 
+async function openModelSettings() {
+  const cur = state.settings?.aiModel === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash';
+  const has = !!String(state.settings?.deepseekApiKey || '').trim();
+  const ok = await openDialog({
+    title: '分析模型',
+    bodyHtml: `<p class="mb-2 text-[12px] leading-relaxed" style="color:var(--muted)">同一把 DeepSeek 密钥可以换模型。Flash 快、一次大约不到一分；Pro 更细，大约贵 4 倍。密钥只留在这台设备，导出备份也不含它。</p>
+      <label class="mb-1 block text-[11px]" style="color:var(--muted)">模型</label>
+      <select id="dlg-ai-model" class="mb-3 w-full rounded-lg px-3 py-2 text-sm outline-none" style="background:var(--panel);border:1px solid var(--line)">
+        <option value="deepseek-flash" ${cur === 'deepseek-flash' ? 'selected' : ''}>Flash · 推荐</option>
+        <option value="deepseek-v4-pro" ${cur === 'deepseek-v4-pro' ? 'selected' : ''}>Pro · 更细</option>
+      </select>
+      <label class="mb-1 block text-[11px]" style="color:var(--muted)">API Key</label>
+      <input id="dlg-ds-key" type="password" autocomplete="off" placeholder="${has ? '已保存，留空则不修改' : 'sk-...'}" class="w-full rounded-lg px-3 py-2 text-sm outline-none" style="background:var(--panel);border:1px solid var(--line)" />
+      <p class="mt-2 text-[11px]" style="color:var(--muted)">在 <a class="text-accent underline" href="https://platform.deepseek.com/api_keys" target="_blank" rel="noreferrer">platform.deepseek.com</a> 创建。不要把密钥发到聊天或提交到代码里。</p>`,
+  });
+  if (!ok) return String(state.settings?.deepseekApiKey || '').trim();
+  const snap = state.dialogSnapshot || {};
+  const model = snap['dlg-ai-model'] === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash';
+  const typed = String(snap['dlg-ds-key'] || '').trim();
+  const patch = { aiModel: model };
+  if (typed) patch.deepseekApiKey = typed;
+  state.settings = await saveSettings(patch);
+  return String(state.settings?.deepseekApiKey || '').trim();
+}
+
 async function ensureDeepseekKey() {
   const saved = String(state.settings?.deepseekApiKey || '').trim();
   if (saved) return saved;
-  const ok = await openDialog({
-    title: '接入 DeepSeek',
-    bodyHtml: `<p class="mb-2 text-[12px] leading-relaxed" style="color:var(--muted)">在 <a class="text-accent underline" href="https://platform.deepseek.com/api_keys" target="_blank" rel="noreferrer">platform.deepseek.com</a> 创建密钥。只存在本机，用来分析你点过的股票。</p>
-      <input id="dlg-ds-key" type="password" autocomplete="off" placeholder="sk-..." class="w-full rounded-lg px-3 py-2 text-sm outline-none" style="background:var(--panel);border:1px solid var(--line)" />`,
-  });
-  if (!ok) return '';
-  const key = String(state.dialogSnapshot?.['dlg-ds-key'] || '').trim();
-  if (!key) return '';
-  state.settings = await saveSettings({ deepseekApiKey: key });
-  return key;
+  return openModelSettings();
 }
 
 async function runDeepseekForItem(item) {
@@ -1178,7 +1254,7 @@ async function runDeepseekForItem(item) {
       state.quotes[quoteKey(item)]?.name,
       item.name,
     );
-    const [dayK, flow, flowDays, snapshot, headlines, announcements, news, tencent] = await Promise.all([
+    const [dayK, flow, flowDays, snapshot, headlines, announcements, news, tencent, lhb] = await Promise.all([
       fetchKline(secid, 101, 80).catch(() => null),
       fetchStockMoneyFlow(secid).catch(() => null),
       fetchStockFlowDays(secid, 8).catch(() => []),
@@ -1187,7 +1263,9 @@ async function runDeepseekForItem(item) {
       fetchStockAnnouncements(item.code, 3).catch(() => []),
       state.insightNews?.length ? Promise.resolve(state.insightNews) : fetchMarketNews(4).catch(() => []),
       fetchTencentStockQuote(item).catch(() => null),
+      fetchDragonTiger(item.code).catch(() => ({ recent: [], note: '龙虎榜未取到' })),
     ]);
+    const industry = await fetchIndustryMove(snapshot?.industry).catch(() => null);
     if (!state.center?.overview) await loadDataCenter().catch(() => {});
     const q = { ...(state.quotes[quoteKey(item)] || {}), ...(snapshot || {}) };
     const valuation = calcValuationBias(q);
@@ -1207,8 +1285,11 @@ async function runDeepseekForItem(item) {
       intent,
       center: state.center,
       cross: tencent,
+      industry,
+      lhb,
+      tape: judgeTape(state.center)?.label || '',
     });
-    const report = await askDeepseekReport(apiKey, facts);
+    const report = await askDeepseekReport(apiKey, facts, state.settings?.aiModel);
     const emPrice = Number(q.price);
     const txPrice = Number(tencent?.price);
     report.checks = {
@@ -2299,6 +2380,7 @@ $('theme-toggle')?.addEventListener('click', async () => {
 });
 
 els.exportBtn?.addEventListener('click', () => exportWatchlistJson());
+$('model-btn')?.addEventListener('click', () => openModelSettings());
 
 els.predictToggle?.addEventListener('click', async () => {
   const curOpen = state.settings?.predictOpen !== false;
@@ -2544,7 +2626,7 @@ async function bootApp() {
   state.pulseMarket = pickDefaultPulseMarket();
   state.pulseBoards = pulseSectorSkeleton(state.pulseMarket);
   renderPulseBoards();
-  await Promise.all([refreshAll(), refreshMajorNews(false)]);
+  await Promise.all([refreshAll(), refreshMajorNews(false), loadDataCenter()]);
   if (!state.timersStarted) {
     state.timersStarted = true;
     setInterval(refreshAll, REFRESH_MS);

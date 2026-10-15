@@ -34,6 +34,21 @@ function limitBand(item, name) {
   return null;
 }
 
+/** A股纪律止损：主板成本下方 7%，创业板/科创 10%，北交 12%，ST 5%。 */
+export function disciplineStop(item, cost) {
+  const c = Number(cost);
+  if (!(c > 0)) return null;
+  const code = String(item?.code || '');
+  const name = item?.name || '';
+  let gap = null;
+  if (/ST/i.test(name)) gap = 0.05;
+  else if (item?.market === 'BJ' || /^[48]/.test(code)) gap = 0.12;
+  else if (/^(300|301|688|689)/.test(code)) gap = 0.1;
+  else if (item?.market === 'SH' || item?.market === 'SZ') gap = 0.07;
+  if (!gap) return null;
+  return { gap, price: +(c * (1 - gap)).toFixed(2) };
+}
+
 function streak(points) {
   if (!points.length) return '—';
   const last = Number(points.at(-1).changePct);
@@ -95,6 +110,18 @@ function describeTrend(dayK, band) {
   return lines;
 }
 
+function formatLhb(lhb) {
+  const rows = lhb?.recent || [];
+  if (rows.length) {
+    const lines = rows.map(
+      (r) =>
+        `- ${r.date} 涨跌${signed(r.changePct)}% 龙虎榜净额${signed(r.netYi)}亿 ${r.reason || ''} ${r.seats || ''}`,
+    );
+    return `近45日龙虎榜：\n${lines.join('\n')}`;
+  }
+  return `龙虎榜：${lhb?.note || '未提供'}`;
+}
+
 export function buildStockFacts({
   item,
   quote,
@@ -110,6 +137,9 @@ export function buildStockFacts({
   valuation,
   intent,
   center,
+  industry,
+  lhb,
+  tape,
 }) {
   const name = quote?.name || snapshot?.name || item.name || '';
   const px = snapshot?.price ?? quote?.price;
@@ -122,6 +152,7 @@ export function buildStockFacts({
   const tx = Number(cross?.price);
   const diffPct = live > 0 && tx > 0 ? ((tx - live) / live) * 100 : null;
   const pnl = cost > 0 && live > 0 ? ((live - cost) / cost) * 100 : null;
+  const stop = disciplineStop(item, cost);
   const pct = snapshot?.changePct ?? quote?.changePct;
   const s = flow?.summary || {};
   const days = flowDays || [];
@@ -158,13 +189,18 @@ export function buildStockFacts({
   return [
     `标的：${name} ${item.code} ${item.market || ''}`,
     snapshot?.industry ? `行业：${snapshot.industry}${concepts ? `；概念：${concepts}` : ''}` : '',
+    industry?.changePct != null ? `所属行业今日涨跌 ${signed(industry.changePct)}%（${industry.name || snapshot?.industry || ''}）` : '所属行业今日涨跌：未取到',
     `东财现价 ${num(px)}（行情时间 ${emTime}），今日 ${signed(pct)}%，今高 ${num(snapshot?.high ?? quote?.high)} 今低 ${num(snapshot?.low ?? quote?.low)} 开 ${num(snapshot?.open ?? quote?.open)} 昨收 ${num(snapshot?.prevClose ?? quote?.prevClose)}`,
     tx > 0
       ? `腾讯现价 ${num(tx)}（${cross?.time || '时间未知'}），与东财相差 ${signed(diffPct)}%。以东财为准，不要把两个价平均。`
       : '腾讯对照价：未取到。',
     cost > 0
-      ? `用户成本 ${num(cost)}，相对东财现价浮盈 ${signed(pnl)}%。`
-      : '用户成本：未填。不要假设他已经持仓。',
+      ? `用户成本 ${num(cost)}，相对东财现价浮盈 ${signed(pnl)}%。${
+          stop
+            ? `纪律止损价 ${num(stop.price)}（成本下方 ${(stop.gap * 100).toFixed(0)}%）。${live > 0 && live <= stop.price ? '现价已跌破止损，action 只能是不买。' : '还没跌破止损。'}`
+            : ''
+        }`
+      : '用户成本：未填。不要假设他已经持仓，也不要编造止损价。',
     mark > 0
       ? `用户另外填写的价格 ${num(mark)}，与东财现价相差 ${live > 0 ? signed(((mark - live) / live) * 100) : '—'}%。这是他关心的价，不是行情。`
       : '用户未另填价格。',
@@ -177,6 +213,8 @@ export function buildStockFacts({
     days.length ? `近5日主力合计 ${signed(main5)} 亿。逐日：\n${dayLines}` : '近几日主力拆单：未提供（港美韩或接口无数据时不要编造）',
     `大盘：${idx || '暂无'}`,
     `两市成交 ${num(ov?.amountYi)} 亿，涨 ${zd?.up ?? '—'} 家，跌 ${zd?.down ?? '—'} 家，涨停 ${zd?.limitUp ?? '—'}，跌停 ${zd?.limitDown ?? '—'}，北向 ${signed(nb?.last)} 亿，两市主力 ${signed(mktFlow?.main)} 亿`,
+    tape ? `今天环境：${tape}` : '',
+    formatLhb(lhb),
     related ? `个股相关资讯（只许引用这些）：\n${related}` : '个股相关资讯：未检索到。不要用常识补新闻。',
     anns ? `近期公告：\n${anns}` : '近期公告：未提供。',
     macro ? `市场快讯（宏观，不一定与该股有关）：\n${macro}` : '',
@@ -198,6 +236,10 @@ const SYSTEM = [
   '7. 仓位建议单票不超过三成，必须写出放弃条件。禁止承诺收益。',
   '8. 填了成本时：浮盈已经很大不要加仓；亏损且主力流出倾向减仓或不买；成本附近且是真买才允许小仓。没填成本就不要写他已经赚了或亏了。',
   '9. 现价以东财为准。腾讯和东财相差超过0.3%时，在风险里写一句去券商软件核对，不要采用用户手填价格代替行情。',
+  '10. 今天环境是「宜等」时，买入概率不要超过25。',
+  '11. 行业今日跌超过2%时，压低买入概率，板块在跌就不要因为个股强而追。',
+  '12. 近45日龙虎榜净额为负，或说明里有机构卖出，倾向不买。没上榜就写没上榜，禁止编座席位。',
+  '13. 现价已经跌破纪律止损价时，action 只能是不买。',
   '输出严格 JSON：',
   '{"action":"买入|不买|继续等","buyProb":0到100整数,"waitProb":整数,"avoidProb":整数,',
   '"summary":"两句，先说结论再说最关键的一个理由",',
@@ -237,17 +279,25 @@ async function postDeepseek(apiKey, body) {
   return JSON.parse(text);
 }
 
-export async function askDeepseekReport(apiKey, facts) {
+export async function askDeepseekReport(apiKey, facts, modelPref) {
   const key = String(apiKey || '').trim();
   if (!key) throw new Error('缺少 DeepSeek 密钥');
   const messages = [
     { role: 'system', content: SYSTEM },
     { role: 'user', content: facts },
   ];
-  const attempts = [
-    { model: 'deepseek-flash', thinking: { type: 'disabled' } },
-    { model: 'deepseek-chat' },
-  ];
+  const preferred = modelPref === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash';
+  const attempts =
+    preferred === 'deepseek-v4-pro'
+      ? [
+          { model: 'deepseek-v4-pro', thinking: { type: 'disabled' } },
+          { model: 'deepseek-flash', thinking: { type: 'disabled' } },
+          { model: 'deepseek-chat' },
+        ]
+      : [
+          { model: 'deepseek-flash', thinking: { type: 'disabled' } },
+          { model: 'deepseek-chat' },
+        ];
   let json = null;
   let used = 'deepseek-flash';
   let lastErr = null;

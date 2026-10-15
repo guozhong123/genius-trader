@@ -69,8 +69,10 @@ export const DEFAULT_SETTINGS = {
   cachedNews: [],
   eventBannerDismissDate: '',
   stopBannerDismissed: false,
-  /** DeepSeek 密钥，仅本机 */
+  /** DeepSeek 密钥，仅本机，不随导出、不进仓库 */
   deepseekApiKey: '',
+  /** deepseek-flash | deepseek-v4-pro */
+  aiModel: 'deepseek-flash',
   /** itemKey -> 报告 */
   aiReports: {},
   /** 移动端分组条是否展开；默认折叠 */

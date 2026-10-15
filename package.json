@@ -1,6 +1,6 @@
 {
   "name": "genius-trader",
-  "version": "1.8.1",
+  "version": "1.9.0",
   "private": true,
   "description": "天才交易员 - 股票基金盯盘 Chrome 扩展",
   "scripts": {
