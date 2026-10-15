@@ -125,9 +125,8 @@ const state = {
   insightNews: [],
   techLeaders: [],
   eventPanelOpen: false,
-  pulseMarket: 'US',
-  pulseBoards: [],
-  pulseSession: { key: 'open', label: '—' },
+  pulseBoards: { CN: [], US: [], KR: [] },
+  pulseSort: { CN: 'desc', US: 'desc', KR: 'desc' },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -586,11 +585,10 @@ function costLineHtml(item, livePrice) {
   const stopHtml = stop
     ? `<span class="stop-tag ${broken ? 'text-down' : ''}" title="成本下方 ${(stop.gap * 100).toFixed(0)}%">止损 ${stop.price.toFixed(2)}${broken ? ' 已破' : ''}</span>`
     : '';
-  return `<div class="cost-line" data-live="${Number.isFinite(live) ? live : ''}">
-    <label>成本<input data-cost="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownPrice(item, 'cost'))}" placeholder="成本价" /></label>
-    <label>价格<input data-mark="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownPrice(item, 'mark'))}" placeholder="自填价" /></label>
-    ${pnl}
-    ${stopHtml}
+  return `<div class="pos-fields" data-live="${Number.isFinite(live) ? live : ''}">
+    <label class="pos-field">成本<input data-cost="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownPrice(item, 'cost'))}" placeholder="成本" /></label>
+    <label class="pos-field">价格<input data-mark="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownPrice(item, 'mark'))}" placeholder="价格" /></label>
+    <div class="pos-pnl">${pnl}${stopHtml}</div>
   </div>`;
 }
 
@@ -643,7 +641,7 @@ function rowHtml(item) {
     : fmtPrice(price, item.market);
   return `
     <article data-open="${escAttr(itemKey(item))}" draggable="${state.settings.sortBy === 'manual'}"
-      class="list-row row-compact glass group cursor-pointer rounded-lg">
+      class="list-row row-compact glass group cursor-pointer rounded-lg${isFund ? '' : ' has-pos'}">
       <div class="col-name-block">
         <div class="meta min-w-0 overflow-hidden">
         <div class="flex min-w-0 items-center gap-1">
@@ -658,27 +656,29 @@ function rowHtml(item) {
         ${aiRowBtn(item)}
       </div>
       <div class="col-num text-[13px] font-semibold leading-none">${priceLabel}</div>
+      ${isFund ? '' : costLineHtml(item, price)}
       <div class="col-actions">
         <button data-move-group="${escAttr(itemKey(item))}" class="rounded px-1 text-[10px] ring-soft" style="color:var(--muted)" title="改分组">组</button>
         <button data-pin="${escAttr(itemKey(item))}" class="rounded px-1 text-[10px] ring-soft" style="color:var(--muted)">${item.pinned ? '取消' : '顶'}</button>
         <button data-remove="${escAttr(itemKey(item))}" class="rounded px-1 text-[10px] ring-soft" style="color:var(--up)">删</button>
       </div>
-      ${costLineHtml(item, price)}
     </article>`;
 }
 
 function listHeaderHtml() {
   const sortBy = state.settings?.sortBy || 'manual';
+  const stock = state.primaryKind === 'stock';
   return `
-    <div class="list-head mb-0.5">
+    <div class="list-head mb-0.5${stock ? ' has-pos' : ''}">
       <div class="col-name">
         <span>名称</span>
         <span class="col-sort">
           <button type="button" data-sort-cycle class="active" title="点击切换：不排 → 涨↓ → 跌↑">${sortCycleLabel(sortBy)}</button>
         </span>
       </div>
-      <div class="col-num">${state.primaryKind === 'fund' ? '净值/估值' : '现价'}</div>
-      <div class="text-right text-[11px]" style="color:var(--muted)">操作</div>
+      <div class="col-num">${stock ? '现价' : '净值/估值'}</div>
+      ${stock ? '<div class="col-num">成本</div><div class="col-num">价格</div><div class="pos-pnl">盈亏</div>' : ''}
+      <div class="col-actions text-right text-[11px]" style="color:var(--muted)">操作</div>
     </div>`;
 }
 
@@ -736,7 +736,7 @@ function bindListEvents() {
 
   els.list.querySelectorAll('[data-open]').forEach((row) => {
     row.addEventListener('click', (e) => {
-      if (e.target.closest('button, input, .cost-line')) return;
+      if (e.target.closest('button, input, .pos-fields')) return;
       const item = state.list.find((x) => itemKey(x) === row.getAttribute('data-open'));
       if (item) openDetail(item);
     });
@@ -812,26 +812,27 @@ function bindListEvents() {
       const prev = positionDrafts.get(key) || {};
       positionDrafts.set(key, { ...prev, [field]: el.value });
       if (field !== 'cost') return;
-      const line = el.closest('.cost-line');
+      const line = el.closest('.pos-fields');
       if (!line) return;
       const live = Number(line.getAttribute('data-live'));
       const cost = parseUserPrice(el.value);
-      let pnl = line.querySelector('.pnl');
+      const box = line.querySelector('.pos-pnl') || line;
+      let pnl = box.querySelector('.pnl');
       if (!(cost > 0) || !(live > 0)) pnl?.remove();
       else {
         const pct = ((live - cost) / cost) * 100;
         if (!pnl) {
           pnl = document.createElement('span');
-          const stopEl = line.querySelector('.stop-tag');
-          if (stopEl) line.insertBefore(pnl, stopEl);
-          else line.appendChild(pnl);
+          const stopEl = box.querySelector('.stop-tag');
+          if (stopEl) box.insertBefore(pnl, stopEl);
+          else box.appendChild(pnl);
         }
         pnl.className = `pnl ${tone(pct)}`;
         pnl.textContent = `浮盈 ${fmtPct(pct)}`;
       }
       const item = state.list.find((x) => itemKey(x) === key);
       const stop = disciplineStop(item, cost);
-      let tag = line.querySelector('.stop-tag');
+      let tag = box.querySelector('.stop-tag');
       if (!stop) {
         tag?.remove();
         return;
@@ -839,7 +840,7 @@ function bindListEvents() {
       if (!tag) {
         tag = document.createElement('span');
         tag.className = 'stop-tag';
-        line.appendChild(tag);
+        box.appendChild(tag);
       }
       const broken = live > 0 && live <= stop.price;
       tag.className = `stop-tag ${broken ? 'text-down' : ''}`;
@@ -1537,14 +1538,11 @@ async function refreshIndices() {
   renderIndices();
 }
 
-function syncPulseMarketButtons() {
-  document.querySelectorAll('.pulse-market-btn').forEach((btn) => {
-    const on = btn.dataset.pulseMarket === state.pulseMarket;
-    btn.classList.toggle('bg-accent', on);
-    btn.classList.toggle('text-white', on);
-    btn.style.color = on ? '#fff' : 'var(--muted)';
-  });
-}
+const PULSE_MARKETS = [
+  { id: 'CN', title: '大A', hint: '东财板块' },
+  { id: 'US', title: '美股', hint: '成分等权' },
+  { id: 'KR', title: '韩股', hint: '成分等权' },
+];
 
 function pulseSectorSkeleton(market) {
   if (market === 'CN') return CN_PULSE_BOARDS.map((b) => ({ name: b.name, changePct: null }));
@@ -1552,84 +1550,122 @@ function pulseSectorSkeleton(market) {
   return sectors.map((s) => ({ name: s.name, changePct: null }));
 }
 
-function renderPulseBoards() {
-  syncPulseMarketButtons();
-  const session = getMarketSession(state.pulseMarket);
-  state.pulseSession = session;
-  if (els.pulseSession) {
-    els.pulseSession.textContent = session.label;
-  }
-  const hintMap = {
-    CN: '东财板块涨跌',
-    US: '成分等权 · 类市场魔方',
-    KR: '韩股主题成分等权',
-  };
-  if (els.pulseHint) els.pulseHint.textContent = hintMap[state.pulseMarket] || '';
+function nextPulseSort(mode) {
+  if (mode === 'desc') return 'asc';
+  if (mode === 'asc') return 'default';
+  return 'desc';
+}
 
-  const boards =
-    state.pulseBoards?.length > 0
-      ? state.pulseBoards
-      : pulseSectorSkeleton(state.pulseMarket || 'US');
+function pulseSortLabel(mode) {
+  if (mode === 'asc') return '涨↑';
+  if (mode === 'default') return '默认';
+  return '涨↓';
+}
+
+function orderedPulseBoards(market) {
+  const list = state.pulseBoards?.[market]?.length ? state.pulseBoards[market] : pulseSectorSkeleton(market);
+  const mode = state.pulseSort?.[market] || 'desc';
+  if (mode === 'default') return list;
+  return [...list].sort((a, b) => {
+    const av = Number(a.changePct);
+    const bv = Number(b.changePct);
+    const aOk = Number.isFinite(av);
+    const bOk = Number.isFinite(bv);
+    if (!aOk && !bOk) return 0;
+    if (!aOk) return 1;
+    if (!bOk) return -1;
+    return mode === 'asc' ? av - bv : bv - av;
+  });
+}
+
+function pulseChipHtml(b) {
+  const pct = Number(b.changePct);
+  const ok = Number.isFinite(pct);
+  const bg = !ok
+    ? ''
+    : pct > 0
+      ? 'background:color-mix(in oklab,var(--up) 12%,transparent)'
+      : pct < 0
+        ? 'background:color-mix(in oklab,var(--down) 12%,transparent)'
+        : '';
+  return `<div class="pulse-chip" style="${bg}">
+    <div class="pulse-chip-name">${esc(b.name)}</div>
+    <div class="pulse-chip-pct tabular-nums ${ok ? tone(pct) : ''}">${ok ? fmtPct(pct) : '…'}</div>
+  </div>`;
+}
+
+function renderPulseBoards() {
   if (!els.pulseBoardsEl) return;
-  els.pulseBoardsEl.innerHTML = boards
-    .map((b) => {
-      const pct = Number(b.changePct);
-      const ok = Number.isFinite(pct);
-      const bg = !ok
-        ? ''
-        : pct > 0
-          ? 'background:color-mix(in oklab,var(--up) 12%,transparent)'
-          : pct < 0
-            ? 'background:color-mix(in oklab,var(--down) 12%,transparent)'
-            : '';
-      return `<div class="pulse-chip" style="${bg}">
-        <div class="pulse-chip-name">${esc(b.name)}</div>
-        <div class="pulse-chip-pct tabular-nums ${ok ? tone(pct) : ''}">${ok ? fmtPct(pct) : '…'}</div>
-      </div>`;
-    })
-    .join('');
+  els.pulseBoardsEl.innerHTML = PULSE_MARKETS.map((m) => {
+    const session = getMarketSession(m.id);
+    const mode = state.pulseSort?.[m.id] || 'desc';
+    const boards = orderedPulseBoards(m.id);
+    return `<section class="pulse-market-block">
+      <div class="pulse-market-head">
+        <span class="text-sm font-semibold">${m.title}</span>
+        <span class="rounded-md px-2 py-0.5 text-[11px] font-semibold ring-soft" style="color:var(--accent)">${esc(session.label)}</span>
+        <span class="text-[11px]" style="color:var(--muted)">${m.hint}</span>
+        <button type="button" data-pulse-sort="${m.id}" class="pulse-sort-btn" title="涨幅排序">${pulseSortLabel(mode)}</button>
+      </div>
+      <div class="pulse-boards">${boards.map(pulseChipHtml).join('')}</div>
+    </section>`;
+  }).join('');
+  els.pulseBoardsEl.querySelectorAll('[data-pulse-sort]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-pulse-sort');
+      state.pulseSort = { ...state.pulseSort, [id]: nextPulseSort(state.pulseSort?.[id] || 'desc') };
+      renderPulseBoards();
+    });
+  });
+}
+
+async function loadMemberPulse(sectors) {
+  const members = sectors.flatMap((s) => s.members);
+  const quotes = await fetchMembersQuotes(members);
+  const bySecid = new Map(quotes.map((q) => [q.secid, q]));
+  return sectors.map((s) => {
+    const built = buildSectorFromMembers(s, bySecid);
+    return { name: s.name, changePct: built.changePct, count: built.count };
+  });
+}
+
+async function loadCnPulse() {
+  const quotes = await fetchMembersQuotes(
+    CN_PULSE_BOARDS.map((b) => ({
+      code: b.code,
+      marketNo: b.marketNo,
+      secid: b.secid,
+      name: b.name,
+    })),
+  );
+  const byCode = new Map(quotes.map((q) => [String(q.code), q]));
+  return CN_PULSE_BOARDS.map((b) => {
+    const q = byCode.get(b.code);
+    return {
+      name: b.name,
+      changePct: Number.isFinite(Number(q?.changePct)) ? Number(q.changePct) : null,
+      code: b.code,
+    };
+  });
 }
 
 async function refreshPulse() {
-  const market = state.pulseMarket || 'US';
-  // 先画出板块名，避免空白
-  if (!state.pulseBoards?.length) {
-    state.pulseBoards = pulseSectorSkeleton(market);
+  const empty = !state.pulseBoards?.CN?.length && !state.pulseBoards?.US?.length;
+  if (empty) {
+    state.pulseBoards = {
+      CN: pulseSectorSkeleton('CN'),
+      US: pulseSectorSkeleton('US'),
+      KR: pulseSectorSkeleton('KR'),
+    };
     renderPulseBoards();
   }
   try {
-    if (market === 'CN') {
-      const quotes = await fetchMembersQuotes(
-        CN_PULSE_BOARDS.map((b) => ({
-          code: b.code,
-          marketNo: b.marketNo,
-          secid: b.secid,
-          name: b.name,
-        })),
-      );
-      const byCode = new Map(quotes.map((q) => [String(q.code), q]));
-      state.pulseBoards = CN_PULSE_BOARDS.map((b) => {
-        const q = byCode.get(b.code);
-        return {
-          name: b.name,
-          changePct: Number.isFinite(Number(q?.changePct)) ? Number(q.changePct) : null,
-          code: b.code,
-        };
-      });
-    } else {
-      const sectors = market === 'KR' ? KR_PULSE_SECTORS : US_PULSE_SECTORS;
-      const members = sectors.flatMap((s) => s.members);
-      const quotes = await fetchMembersQuotes(members);
-      const bySecid = new Map(quotes.map((q) => [q.secid, q]));
-      state.pulseBoards = sectors.map((s) => {
-        const built = buildSectorFromMembers(s, bySecid);
-        return {
-          name: s.name,
-          changePct: built.changePct,
-          count: built.count,
-        };
-      });
-    }
+    const [cn, us, kr] = await Promise.all([
+      loadCnPulse(),
+      loadMemberPulse(US_PULSE_SECTORS),
+      loadMemberPulse(KR_PULSE_SECTORS),
+    ]);
+    state.pulseBoards = { CN: cn, US: us, KR: kr };
   } catch (e) {
     console.error(e);
   }
@@ -1770,16 +1806,6 @@ function renderEventPanel() {
     state.eventPanelOpen = false;
     renderEventPanel();
   });
-}
-
-function pickDefaultPulseMarket() {
-  const us = getMarketSession('US');
-  if (us.key === 'pre' || us.key === 'open' || us.key === 'post') return 'US';
-  const kr = getMarketSession('KR');
-  if (kr.key === 'pre' || kr.key === 'open' || kr.key === 'post') return 'KR';
-  const cn = getMarketSession('CN');
-  if (cn.key === 'pre' || cn.key === 'open' || cn.key === 'post') return 'CN';
-  return 'US';
 }
 
 async function refreshAll() {
@@ -1945,11 +1971,11 @@ async function pickIndicesDialog() {
     (state.settings.indices || []).map((x) => x.secid || toSecid(x.market, x.code, x.marketNo)),
   );
   const groups = [
-    { title: 'A股宽基', test: (p) => ['沪', '深', '京'].includes(p.label) },
+    { title: 'A股宽基', test: (p) => ['沪', '深', '京'].includes(p.label) && p.code !== '518880' },
     { title: '港股', test: (p) => p.label === '港' },
     { title: '美股', test: (p) => p.label === '美' },
     { title: '亚太', test: (p) => p.label === '日' || p.label === '韩' },
-    { title: '商品', test: (p) => p.label === '期' || p.code === '518880' },
+    { title: '商品', test: (p) => p.label === '期' },
   ];
   const body = groups
     .map((g) => {
@@ -1978,9 +2004,13 @@ async function pickIndicesDialog() {
   });
   if (!ok) return;
   const next = [];
+  const seen = new Set();
   els.dialogBody.querySelectorAll('input[data-secid]').forEach((input) => {
     if (!input.checked) return;
-    const preset = INDEX_PRESETS.find((p) => p.secid === input.getAttribute('data-secid'));
+    const sid = input.getAttribute('data-secid');
+    if (!sid || seen.has(sid)) return;
+    seen.add(sid);
+    const preset = INDEX_PRESETS.find((p) => p.secid === sid);
     if (preset) next.push({ ...preset });
   });
   const order = (state.settings.indices || []).map(
@@ -1994,7 +2024,7 @@ async function pickIndicesDialog() {
     if (bi < 0) return -1;
     return ai - bi;
   });
-  state.settings = await saveSettings({ indices: next.length ? next : [INDEX_PRESETS[0]] });
+  state.settings = await saveSettings({ indices: next });
   await refreshIndices();
 }
 
@@ -2362,15 +2392,6 @@ els.newsCloseBtn?.addEventListener('click', () => closeBrief());
 els.calendarBtn?.addEventListener('click', () => openBrief('calendar'));
 els.eventCalendarBtn?.addEventListener('click', () => openBrief('calendar'));
 
-document.querySelectorAll('[data-pulse-market]').forEach((btn) => {
-  btn.addEventListener('click', async () => {
-    state.pulseMarket = btn.dataset.pulseMarket || 'US';
-    state.pulseBoards = pulseSectorSkeleton(state.pulseMarket);
-    renderPulseBoards();
-    await refreshPulse();
-  });
-});
-
 $('theme-toggle')?.addEventListener('click', async () => {
   const cur = state.settings?.theme || 'light';
   const next = cur === 'dark' ? 'light' : 'dark';
@@ -2623,8 +2644,11 @@ async function bootApp() {
   renderEventBanner();
   if (added > 0) els.statusText.textContent = `已导入神器自选 ${added} 只`;
   else if (currentUser()) els.statusText.textContent = `你好，${currentUser()}`;
-  state.pulseMarket = pickDefaultPulseMarket();
-  state.pulseBoards = pulseSectorSkeleton(state.pulseMarket);
+  state.pulseBoards = {
+    CN: pulseSectorSkeleton('CN'),
+    US: pulseSectorSkeleton('US'),
+    KR: pulseSectorSkeleton('KR'),
+  };
   renderPulseBoards();
   await Promise.all([refreshAll(), refreshMajorNews(false), loadDataCenter()]);
   if (!state.timersStarted) {

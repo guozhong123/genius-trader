@@ -44,9 +44,8 @@ export const INDEX_PRESETS = [
   // 亚太
   { name: '日经225', code: 'N225', market: 'JP', marketNo: 100, secid: '100.N225', kind: 'stock', label: '日' },
   { name: '韩国KOSPI', code: 'KS11', market: 'KR', marketNo: 100, secid: '100.KS11', kind: 'stock', label: '韩' },
-  // 商品
+  // 商品。只留一个黄金，避免和沪市黄金ETF重复
   { name: 'COMEX黄金', code: 'GC00Y', market: 'US', marketNo: 101, secid: '101.GC00Y', kind: 'stock', label: '期' },
-  { name: '黄金ETF', code: '518880', market: 'SH', marketNo: 1, secid: '1.518880', kind: 'stock', label: '沪' },
 ];
 
 export const DEFAULT_SETTINGS = {
@@ -88,9 +87,29 @@ export async function setWatchlist(list) {
   await chrome.storage.local.set({ [KEYS.watchlist]: list });
 }
 
+function uniqueIndices(list) {
+  const seen = new Set();
+  const out = [];
+  for (const x of list || []) {
+    const sid = x?.secid || '';
+    if (!sid || sid === '1.518880' || x.code === '518880') continue;
+    if (seen.has(sid)) continue;
+    seen.add(sid);
+    out.push(x);
+  }
+  return out;
+}
+
 export async function getSettings() {
   const data = await chrome.storage.local.get(KEYS.settings);
-  return { ...DEFAULT_SETTINGS, ...(data[KEYS.settings] || {}), groups: data[KEYS.settings]?.groups?.length ? data[KEYS.settings].groups : DEFAULT_SETTINGS.groups, indices: data[KEYS.settings]?.indices?.length ? data[KEYS.settings].indices : DEFAULT_SETTINGS.indices };
+  const saved = data[KEYS.settings] || {};
+  const indices = Array.isArray(saved.indices) ? uniqueIndices(saved.indices) : DEFAULT_INDICES;
+  return {
+    ...DEFAULT_SETTINGS,
+    ...saved,
+    groups: saved.groups?.length ? saved.groups : DEFAULT_SETTINGS.groups,
+    indices,
+  };
 }
 
 export async function saveSettings(partial) {
