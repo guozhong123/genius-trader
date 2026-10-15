@@ -187,7 +187,17 @@ export function buildStockFacts({
     )
     .join('\n');
 
+  const bjNow = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date());
   return [
+    `当前北京时间 ${bjNow}。文中的「今天」就是这一天，不要改成含糊的明天。`,
     `标的：${name} ${item.code} ${item.market || ''}`,
     snapshot?.industry ? `行业：${snapshot.industry}${concepts ? `；概念：${concepts}` : ''}` : '',
     industry?.changePct != null ? `所属行业今日涨跌 ${signed(industry.changePct)}%（${industry.name || snapshot?.industry || ''}）` : '所属行业今日涨跌：未取到',
@@ -244,6 +254,8 @@ const SYSTEM = [
   '13. 现价已经跌破纪律止损价时，action 只能是不买。',
   '14. 用户做当日短线：当天分析、当天决定，默认不拿隔夜。today 要写清今天的买点、什么情况盘中走、尾盘还留不留。',
   '15. 若给出了前几天的报告，consistency 说明结论有没有变。变了就写今天的数据哪里不同。没有历史就写「无更早报告」。',
+  '16. 事实里的北京时间就是「今天」。不要只写明天、隔夜，要写成给出的具体日期。',
+  '17. hold 只写这只票的持仓或准备买的仓怎么处理，一句。follow 只写跟不跟这只的主力，一句。这两句是用户最后扫一眼的结论。',
   '输出严格 JSON：',
   '{"action":"买入|不买|继续等","buyProb":0到100整数,"waitProb":整数,"avoidProb":整数,',
   '"summary":"四到六句：今天做不做、为什么、最关键的一个条件",',
@@ -259,7 +271,9 @@ const SYSTEM = [
   '"exit":"当天怎么走：冲高走、跌破走、还是尾盘走",',
   '"stop":"放弃条件",',
   '"risk":"今天最大的一个风险",',
-  '"consistency":"和前几天报告比，结论变了没有"}',
+  '"consistency":"和前几天报告比，结论变了没有",',
+  '"hold":"这只票的持仓：拿着、减一点、今天走，或还没买就写买不买，一句",',
+  '"follow":"跟不跟这只的主力，一句"}',
   '三个概率加起来约等于100。',
 ].join('');
 
@@ -349,6 +363,8 @@ export async function askDeepseekReport(apiKey, facts, modelPref) {
     stop: clip(report.stop, 300),
     risk: clip(report.risk, 300),
     consistency: clip(report.consistency, 400),
+    hold: clip(report.hold, 180),
+    follow: clip(report.follow, 180),
     generatedAt: Date.now(),
     source: used,
   };
@@ -360,16 +376,20 @@ const MARKET_SYSTEM = [
   '短线要跟当天最强、主力还在进的方向，已经大涨的板块写明是接力还是不宜再追。',
   '环境差时 action 用「今天不做」。环境一般用「只做最强」。环境好且有明确主线才用「做多」。',
   '若有前几天的大盘报告，consistency 说明主线有没有切换。',
+  '事实里的北京时间和「下一交易日」日期必须原样使用。不要只写明天、隔夜。',
+  'hold 是手里的票今天整体怎么处理，一句。follow 是跟着主力做哪一个方向、不跟哪些，一句。这是用户最后要看的。',
   '禁止承诺收益。输出严格 JSON：',
   '{"action":"做多|只做最强|今天不做","summary":"今天短线总判断，四到六句",',
   '"leaders":"2到4个今天更可能有短线溢价的板块，每个写今日涨跌和理由",',
   '"avoid":"今天不要碰的板块",',
   '"rhythm":"早盘和午后怎么做，做还是等",',
   '"risk":"今天最大的风险",',
-  '"consistency":"和前几天的大盘结论比"}',
+  '"consistency":"和前几天的大盘结论比",',
+  '"hold":"手里的票这一天整体怎么处理，一句",',
+  '"follow":"跟主力做哪个方向，一句"}',
 ].join('');
 
-export function buildMarketFacts({ indices, center, boards, tape, prior, sheet }) {
+export function buildMarketFacts({ indices, center, boards, tape, prior, sheet, clock }) {
   const idx = (indices || [])
     .slice(0, 8)
     .map((x) => `${x.name || x.code} ${signed(x.changePct)}%`)
@@ -390,6 +410,7 @@ export function buildMarketFacts({ indices, center, boards, tape, prior, sheet }
     bottom ? `大A板块涨幅靠后：${bottom}` : '',
     prior ? `近5日大盘报告（对照，以今天板块涨跌为准）：\n${prior}` : '近5日没有大盘报告。',
     sheet ? `顺势纸（外盘只是线索，跌家占优时降权；已经大涨的写不宜再追）：\n${sheet}` : '',
+    clock || '',
   ]
     .filter(Boolean)
     .join('\n');
@@ -445,6 +466,8 @@ export async function askMarketReport(apiKey, facts, modelPref) {
     rhythm: clip(report.rhythm, 500),
     risk: clip(report.risk, 300),
     consistency: clip(report.consistency, 400),
+    hold: clip(report.hold, 180),
+    follow: clip(report.follow, 180),
     generatedAt: Date.now(),
     source: used,
   };

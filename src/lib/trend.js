@@ -32,6 +32,71 @@ export const OVERNIGHT_LINKS = [
   { from: 'AI应用', to: ['人工智能'] },
 ];
 
+function shParts(now) {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    weekday: 'short',
+  });
+  const parts = Object.fromEntries(fmt.formatToParts(now).map((p) => [p.type, p.value]));
+  const hour = Number(parts.hour === '24' ? 0 : parts.hour);
+  return {
+    ymd: `${parts.year}-${parts.month}-${parts.day}`,
+    hm: `${String(hour).padStart(2, '0')}:${parts.minute}`,
+    weekday: parts.weekday,
+    mins: hour * 60 + Number(parts.minute),
+  };
+}
+
+function addDays(ymd, n) {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + n));
+  return dt.toISOString().slice(0, 10);
+}
+
+function weekdayOf(ymd) {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+
+/** 大A下一交易日。收盘后和周末都往后推，不含节假日。 */
+export function nextAshareDate(now = new Date()) {
+  const sh = shParts(now);
+  let ymd = sh.ymd;
+  const closed = sh.weekday === 'Sat' || sh.weekday === 'Sun' || sh.mins >= 15 * 60;
+  if (closed) ymd = addDays(ymd, 1);
+  while (weekdayOf(ymd) === 0 || weekdayOf(ymd) === 6) ymd = addDays(ymd, 1);
+  return ymd;
+}
+
+export function marketClock(now = new Date()) {
+  const sh = shParts(now);
+  const et = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+    .format(now)
+    .replace(',', '');
+  const next = nextAshareDate(now);
+  return {
+    beijing: `${sh.ymd} ${sh.hm}`,
+    today: sh.ymd,
+    eastern: et,
+    next,
+    line: `北京时间 ${sh.ymd} ${sh.hm}。大A下一交易日 ${next}。美股这一时段的美东时间 ${et}。说「明天」「隔夜」「下一交易日」时都用这些日期。`,
+  };
+}
+
 export function shYmd(ts = Date.now()) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(ts);
 }

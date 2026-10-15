@@ -2,6 +2,7 @@
  * Public quote helpers (East Money / Tiantian Fund / Tencent suggest).
  * Data is unofficial and for personal reference only.
  */
+import { TENCENT_BOARDS } from './tencent-boards.js';
 
 // f15高 f16低 f17开 f18昨收；用于列表估值高低判断
 const STOCK_FIELDS = 'f12,f13,f14,f2,f3,f4,f15,f16,f17,f18,f124';
@@ -631,20 +632,32 @@ const MACRO_RE =
   /美国?\s*CPI|核心CPI|PCE|非农|失业率|美联储|降息|加息|点阵图|FOMC|通胀|就业报告|关税|制裁|鲍威尔/;
 /** 科技板块利好/利空 */
 const TECH_RE =
-  /英伟达|NVIDIA|NVDA|海力士|台积电|TSMC|ASML|阿斯麦|费城半导体|半导体|芯片|GPU|HBM|AI\s*芯片|算力|苹果|微软|AMD|存储\s*板块|纳指/;
+  /英伟达|NVIDIA|NVDA|海力士|台积电|TSMC|ASML|阿斯麦|费城半导体|半导体|芯片|GPU|HBM|AI\s*芯片|算力|苹果公司|苹果股价|微软|AMD|存储\s*板块|纳指/;
+
+const ASHERE_RE =
+  /证监会|央行|降准|MLF|LPR|社融|国常会|政治局|国务院|人民币|汇率|沪指|深成指|创业板|科创|北向|南向|两市成交|涨停|跌停|原油|黄金|美股|道指|标普|纳指|恒指|日经|战争|停火|制裁/;
+
+function newsBucket(title) {
+  const t = String(title || '');
+  if (/CPI|PPI|PCE|非农|美联储|FOMC|央行|降准|降息|加息|MLF|LPR|国常会|国务院|证监会|财政部|社融|潘功胜/.test(t)) return 'macro';
+  if (/沪指|深成指|创业板|科创|北向|南向|成交额|涨停|跌停|A股|两市|复盘/.test(t)) return 'ashare';
+  if (/美股|道指|标普|纳指|恒指|日经|韩国|欧洲|原油|黄金|铜|期货|天然气|人民币|汇率|日元|国债/.test(t)) return 'global';
+  if (/战争|袭击|制裁|停火|导弹|冲突|空袭/.test(t)) return 'geo';
+  if (TECH_RE.test(t)) return 'tech';
+  return 'other';
+}
 
 function scoreMajorNews(title) {
   const t = String(title || '');
-  let score = 0;
-  if (/美国?\s*CPI|核心CPI|非农|美联储|FOMC|PCE/.test(t)) score += 6;
-  else if (MACRO_RE.test(t)) score += 5;
-  if (TECH_RE.test(t)) score += 4;
-  if (/高于预期|低于预期|暴涨|暴跌|大跌|跳水|直线|重磅|突发|利好|利空|翻倍|概率/.test(t))
-    score += 2;
-  if (/费城半导体|纳指|存储/.test(t)) score += 2;
-  if (/盘前|盘后|开盘/.test(t) && TECH_RE.test(t)) score += 1;
-  // 过滤日常噪音
-  if (/会见|调研|座谈会|一财社论|国考|医改|拟发行|拟定增|股份：/.test(t)) score -= 6;
+  const bucket = newsBucket(t);
+  let score = bucket === 'other' ? 0 : 2;
+  if (bucket === 'macro') score += 5;
+  else if (bucket === 'ashare' || bucket === 'global') score += 4;
+  else if (bucket === 'geo') score += 3;
+  else if (bucket === 'tech') score += 2;
+  if (MACRO_RE.test(t) || ASHERE_RE.test(t)) score += 1;
+  if (/高于预期|低于预期|暴涨|暴跌|大跌|跳水|重磅|突发/.test(t)) score += 2;
+  if (/公司互动|会见|调研|座谈会|拟发行|拟定增|复牌|中标|签署战略|这些公司/.test(t)) score -= 6;
   return score;
 }
 
@@ -659,14 +672,17 @@ function parseKuaixun(text) {
 }
 
 /**
- * 重大消息：只保留宏观（CPI/非农/美联储）与科技龙头相关，少而精
- * @param {number} limit 默认 5
+ * 重大消息：宏观、大A、外盘、产业都收，按重要程度排，不限于科技。
+ * @param {number} limit
  */
-export async function fetchMarketNews(limit = 6) {
+export async function fetchMarketNews(limit = 12) {
   const feeds = [
     'https://newsapi.eastmoney.com/kuaixun/v1/getlist_100_ajaxResult_50_1_.html',
     'https://newsapi.eastmoney.com/kuaixun/v1/getlist_101_ajaxResult_50_1_.html',
     'https://newsapi.eastmoney.com/kuaixun/v1/getlist_102_ajaxResult_50_1_.html',
+    'https://newsapi.eastmoney.com/kuaixun/v1/getlist_105_ajaxResult_50_1_.html',
+    'https://newsapi.eastmoney.com/kuaixun/v1/getlist_106_ajaxResult_50_1_.html',
+    'https://newsapi.eastmoney.com/kuaixun/v1/getlist_107_ajaxResult_50_1_.html',
   ];
   const items = [];
   await Promise.all(
@@ -677,7 +693,7 @@ export async function fetchMarketNews(limit = 6) {
           const title = String(row.title || row.digest || '').trim();
           if (!title) continue;
           const score = scoreMajorNews(title);
-          if (score < 4) continue;
+          if (score < 3) continue;
           const id = String(row.newsid || row.id || row.sort || title.slice(0, 40));
           items.push({
             id,
@@ -685,6 +701,7 @@ export async function fetchMarketNews(limit = 6) {
             time: row.showtime || row.time || '',
             url: row.url_w || row.url_unique || row.url_m || '',
             score,
+            bucket: newsBucket(title),
             source: 'flash',
             tone: /利空|跌|跳水|低于|加息|制裁|关税|失望/.test(title)
               ? 'down'
@@ -700,15 +717,34 @@ export async function fetchMarketNews(limit = 6) {
   );
 
   const seen = new Set();
-  return items
+  const unique = items
     .sort((a, b) => b.score - a.score)
     .filter((x) => {
-      if (seen.has(x.id) || seen.has(x.title.slice(0, 20))) return false;
+      const key = x.title.slice(0, 18);
+      if (seen.has(x.id) || seen.has(key)) return false;
       seen.add(x.id);
-      seen.add(x.title.slice(0, 20));
+      seen.add(key);
       return true;
-    })
-    .slice(0, limit);
+    });
+  const buckets = { macro: [], ashare: [], global: [], geo: [], tech: [], other: [] };
+  for (const row of unique) (buckets[row.bucket] || buckets.other).push(row);
+  const order = ['macro', 'ashare', 'global', 'geo', 'tech', 'other'];
+  const picked = [];
+  let guard = 0;
+  while (picked.length < limit && guard < 80) {
+    let moved = false;
+    for (const key of order) {
+      if (key === 'tech' && picked.filter((row) => row.bucket === 'tech').length >= 2) continue;
+      const row = buckets[key].shift();
+      if (!row) continue;
+      picked.push(row);
+      moved = true;
+      if (picked.length >= limit) break;
+    }
+    if (!moved) break;
+    guard += 1;
+  }
+  return picked;
 }
 
 /** 把科技龙头大涨跌 / 当日宏观日历合成补充重大消息 */
@@ -730,10 +766,13 @@ export function mergeMajorAlerts(news, { techLeaders = [], todayEvents = [] } = 
     });
   }
 
+  let techSlots = 0;
   for (const t of techLeaders) {
+    if (techSlots >= 1) break;
     const pct = Number(t.changePct);
-    if (!Number.isFinite(pct)) continue;
-    if (pct <= -2.5) {
+    if (!Number.isFinite(pct) || Math.abs(pct) < 4) continue;
+    techSlots += 1;
+    if (pct <= -4) {
       extra.push({
         id: `tech-down-${t.code}`,
         title: `科技龙头大跌：${t.name} ${pct.toFixed(2)}%`,
@@ -744,7 +783,7 @@ export function mergeMajorAlerts(news, { techLeaders = [], todayEvents = [] } = 
         tone: 'down',
         impact: '龙头承压时，相关主题基金/ETF 与 A 股映射标的易跟跌，注意仓位与止损。',
       });
-    } else if (pct >= 3) {
+    } else if (pct >= 4) {
       extra.push({
         id: `tech-up-${t.code}`,
         title: `科技龙头大涨：${t.name} +${pct.toFixed(2)}%`,
@@ -1248,31 +1287,134 @@ export async function fetchNorthbound() {
   };
 }
 
-/** 日/周/月/年 K：klt 101/102/103/106 */
-export async function fetchKline(secid, klt = 101, lmt = 80) {
-  const url =
-    `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${encodeURIComponent(secid)}` +
-    `&klt=${klt}&fqt=1&lmt=${lmt}&end=20500101&iscca=1` +
-    `&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57,f59&forcect=1`;
-  const res = await fetch(url);
-  const json = await res.json();
-  const lines = json?.data?.klines || [];
-  return {
-    name: json?.data?.name || '',
-    points: lines.map((line) => {
-      const p = String(line).split(',');
+function pointsFromOhlc(rows) {
+  const points = [];
+  let prev = null;
+  for (const row of rows) {
+    const close = Number(row.close);
+    const changePct = prev > 0 ? ((close - prev) / prev) * 100 : Number(row.changePct);
+    points.push({
+      date: row.date,
+      open: Number(row.open),
+      close,
+      high: Number(row.high),
+      low: Number(row.low),
+      volume: Number(row.volume) || 0,
+      amount: Number(row.amount) || 0,
+      changePct: Number.isFinite(Number(row.changePct)) ? Number(row.changePct) : changePct,
+    });
+    if (close > 0) prev = close;
+  }
+  return points;
+}
+
+function tencentSymbol(secid) {
+  const [mk, code] = String(secid || '').split('.');
+  if (!code) return '';
+  if (mk === '1') return `sh${code}`;
+  if (mk === '0') return /^(8|4|92)/.test(code) ? `bj${code}` : `sz${code}`;
+  if (mk === '116' || mk === '100') return `hk${code}`;
+  if (mk === '105' || mk === '106' || mk === '107') return `us${String(code).toUpperCase()}`;
+  return '';
+}
+
+async function fetchEastKline(secid, klt, lmt) {
+  const hosts = ['https://push2his.eastmoney.com', 'https://push2.eastmoney.com'];
+  for (const host of hosts) {
+    try {
+      const url =
+        `${host}/api/qt/stock/kline/get?secid=${encodeURIComponent(secid)}` +
+        `&klt=${klt}&fqt=1&lmt=${lmt}&end=20500101&iscca=1` +
+        `&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57,f59&forcect=1`;
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const json = await res.json();
+      const lines = json?.data?.klines || [];
+      if (!lines.length) continue;
       return {
-        date: p[0],
-        open: Number(p[1]),
-        close: Number(p[2]),
-        high: Number(p[3]),
-        low: Number(p[4]),
-        volume: Number(p[5]),
-        amount: Number(p[6]),
-        changePct: Number(p[7]),
+        name: json?.data?.name || '',
+        points: lines.map((line) => {
+          const p = String(line).split(',');
+          return {
+            date: p[0],
+            open: Number(p[1]),
+            close: Number(p[2]),
+            high: Number(p[3]),
+            low: Number(p[4]),
+            volume: Number(p[5]),
+            amount: Number(p[6]),
+            changePct: Number(p[7]),
+          };
+        }),
       };
-    }),
+    } catch {
+      /* next host */
+    }
+  }
+  return null;
+}
+
+async function fetchTencentKline(secid, klt, lmt) {
+  const sym = tencentSymbol(secid);
+  if (!sym) return null;
+  const period = { 101: 'day', 102: 'week', 103: 'month', 106: 'year' }[klt] || 'day';
+  const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${sym},${period},,,${lmt},qfq`;
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  const json = await res.json();
+  const bag = json?.data?.[sym] || {};
+  const rows = bag[`qfq${period}`] || bag[period] || [];
+  if (!rows.length) return null;
+  return {
+    name: '',
+    points: pointsFromOhlc(
+      rows.map((row) => ({
+        date: row[0],
+        open: row[1],
+        close: row[2],
+        high: row[3],
+        low: row[4],
+        volume: row[5],
+      })),
+    ),
   };
+}
+
+async function fetchSinaKline(secid, klt, lmt) {
+  if (klt !== 101) return null;
+  const sym = tencentSymbol(secid);
+  if (!sym || sym.startsWith('us') || sym.startsWith('hk')) return null;
+  const url =
+    `https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData` +
+    `?symbol=${sym}&scale=240&ma=no&datalen=${lmt}`;
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  const rows = await res.json();
+  if (!Array.isArray(rows) || !rows.length) return null;
+  return {
+    name: '',
+    points: pointsFromOhlc(
+      rows.map((row) => ({
+        date: row.day,
+        open: row.open,
+        close: row.close,
+        high: row.high,
+        low: row.low,
+        volume: row.volume,
+      })),
+    ),
+  };
+}
+
+/** 日/周/月/年 K：klt 101/102/103/106。东财不通时改走腾讯，日K再不行走新浪。 */
+export async function fetchKline(secid, klt = 101, lmt = 80) {
+  const east = await fetchEastKline(secid, klt, lmt);
+  if (east?.points?.length) return east;
+  const tx = await fetchTencentKline(secid, klt, lmt).catch(() => null);
+  if (tx?.points?.length) return tx;
+  const sina = await fetchSinaKline(secid, klt, lmt).catch(() => null);
+  if (sina?.points?.length) return sina;
+  return { name: '', points: [] };
 }
 
 /** 沪深两市成交额等 */
@@ -1326,28 +1468,102 @@ export async function fetchTopMovers(direction = 'up', limit = 100) {
   }));
 }
 
-/** 板块涨跌：industry / concept / region */
-export async function fetchBoards(type = 'industry') {
-  const fs =
-    type === 'concept' ? 'm:90+t:3' : type === 'region' ? 'm:90+t:1' : 'm:90+t:2';
-  const url =
-    `https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=80&po=1&np=1` +
-    `&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f3&fs=${fs}` +
-    `&fields=f12,f14,f2,f3,f62,f66,f184`;
-  const res = await fetch(url);
-  const json = await res.json();
-  return (json?.data?.diff || []).map((row) => ({
-    code: String(row.f12),
-    name: row.f14,
-    price: Number(row.f2),
-    changePct: Number(row.f3),
-    mainFlow: Number(row.f62 || 0) / 1e8,
-    secid: `90.${row.f12}`,
+function mapBoardRows(rows) {
+  return rows.map((row) => ({
+    code: String(row.code || row.f12 || ''),
+    name: row.name || row.f14,
+    price: Number(row.price ?? row.f2),
+    changePct: Number(row.changePct ?? row.f3),
+    mainFlow: row.f62 == null && row.mainFlow == null ? null : Number(row.mainFlow ?? row.f62 ?? 0) / (row.f62 == null ? 1 : 1e8),
+    secid: row.secid || (row.f12 ? `90.${row.f12}` : ''),
     kind: 'stock',
     market: 'BK',
     marketNo: 90,
     label: '板块',
   }));
+}
+
+async function fetchEastBoards(type) {
+  const fs = type === 'concept' ? 'm:90+t:3' : type === 'region' ? 'm:90+t:1' : 'm:90+t:2';
+  const url =
+    `https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=80&po=1&np=1` +
+    `&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f3&fs=${fs}` +
+    `&fields=f12,f14,f2,f3,f62,f66,f184`;
+  const res = await fetch(url);
+  if (!res.ok) return [];
+  const json = await res.json();
+  return mapBoardRows(json?.data?.diff || []);
+}
+
+async function fetchSinaBoards(type) {
+  const url =
+    type === 'concept'
+      ? 'https://money.finance.sina.com.cn/q/view/newFLJK.php?param=class'
+      : type === 'region'
+        ? 'https://money.finance.sina.com.cn/q/view/newFLJK.php?param=area'
+        : 'https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php';
+  const text = await fetchTextGbk(url);
+  const matched = text.match(/=\s*(\{[\s\S]*\})\s*;?\s*$/);
+  if (!matched) return [];
+  const obj = JSON.parse(matched[1]);
+  const rows = Object.values(obj)
+    .map((line) => {
+      const p = String(line).split(',');
+      return {
+        code: p[0],
+        name: p[1],
+        price: Number(p[3]),
+        changePct: Number(p[5]),
+        mainFlow: null,
+        secid: '',
+      };
+    })
+    .filter((row) => row.name && Number.isFinite(row.changePct))
+    .sort((a, b) => b.changePct - a.changePct)
+    .slice(0, 80);
+  return mapBoardRows(rows);
+}
+
+async function fetchTencentBoardQuotes(type) {
+  const list = TENCENT_BOARDS[type] || TENCENT_BOARDS.industry || [];
+  const rows = [];
+  for (let i = 0; i < list.length; i += 40) {
+    const chunk = list.slice(i, i + 40);
+    const text = await fetchTextGbk(`https://qt.gtimg.cn/q=${chunk.map((b) => `s_${b.code}`).join(',')}`);
+    for (const line of text.split(';')) {
+      const matched = line.match(/="([^"]*)"/);
+      if (!matched) continue;
+      const p = matched[1].split('~');
+      const changePct = Number(p[5]);
+      if (!p[1] || !Number.isFinite(changePct)) continue;
+      rows.push({
+        code: p[2] || '',
+        name: p[1],
+        price: Number(p[3]),
+        changePct,
+        mainFlow: null,
+        secid: '',
+      });
+    }
+  }
+  return mapBoardRows(rows.sort((a, b) => b.changePct - a.changePct));
+}
+
+/** 板块涨跌：industry / concept / region。东财、新浪不通时用腾讯板块行情。 */
+export async function fetchBoards(type = 'industry') {
+  try {
+    const rows = await fetchEastBoards(type);
+    if (rows.length) return rows;
+  } catch {
+    /* next */
+  }
+  try {
+    const sina = await fetchSinaBoards(type);
+    if (sina.length) return sina;
+  } catch {
+    /* next */
+  }
+  return fetchTencentBoardQuotes(type);
 }
 
 function shTradeDates(count = 4) {

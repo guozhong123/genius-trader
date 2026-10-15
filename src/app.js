@@ -67,7 +67,7 @@ import { normalizeGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
 import { calcValuationBias } from './lib/valuation.js';
 import { askDeepseekReport, askMarketReport, buildMarketFacts, buildStockFacts, disciplineStop } from './lib/deepseek.js';
-import { OVERNIGHT_LINKS, buildOvernight, moodLabel, planText, reviewCalls, scoreMainLines, shYmd, sheetBrief } from './lib/trend.js';
+import { OVERNIGHT_LINKS, buildOvernight, marketClock, moodLabel, planText, reviewCalls, scoreMainLines, shYmd, sheetBrief } from './lib/trend.js';
 import { isLoggedIn, login, logout, currentUser } from './lib/auth.js';
 
 const REFRESH_MS = 15000;
@@ -1295,23 +1295,39 @@ function reportArticleHtml(report) {
     report.kind === 'market'
       ? `${reportBlock('今天做哪些', report.leaders)}${reportBlock('今天避开', report.avoid)}${reportBlock('当天节奏', report.rhythm)}${reportBlock('风险', report.risk)}${reportBlock('和前几天比', report.consistency)}`
       : `${checksLine(report)}${reportBlock('今天怎么做', report.today)}${reportBlock('板块', report.sector)}${reportBlock('持仓', report.position)}${reportBlock('主力', report.mainForce)}${reportBlock('量价', report.trend)}${reportBlock('消息', report.news)}${reportBlock('估值与涨幅', report.valuation)}${reportBlock('大盘', report.market)}${reportBlock('仓位', report.plan)}${reportBlock('当天离场', report.exit)}${reportBlock('放弃条件', report.stop)}${reportBlock('风险', report.risk)}${reportBlock('和前几天比', report.consistency)}`;
+  const intro =
+    report.kind === 'market'
+      ? 'AI盘 / 顺势结论：只有点按钮才会生成。它告诉你这一天手里的票整体怎么处理，以及主力方向跟哪一段、哪一段不跟。'
+      : '个股报告：点「分析」才会生成。看的是这只票跟不跟主力，以及你填的成本这一天怎么处理。';
+  const hold = report.hold || (report.kind === 'market' ? '' : report.position || '');
+  const follow = report.follow || '';
+  const quick =
+    hold || follow
+      ? `<div class="trend-final">
+      <div class="trend-label">先看这里</div>
+      ${hold ? `<div><b>持仓</b> ${esc(hold)}</div>` : ''}
+      ${follow ? `<div class="mt-1"><b>跟主力</b> ${esc(follow)}</div>` : ''}
+    </div>`
+      : '';
   return `
+    <p class="mb-2 text-[11px] leading-relaxed" style="color:var(--muted)">${esc(intro)}</p>
     <div class="mb-2 flex flex-wrap items-end justify-between gap-2">
       <div>
-        <div class="text-[11px]" style="color:var(--muted)">${esc(report.title || (report.kind === 'market' ? '今日大盘' : '个股'))} · ${esc(report.source || 'DeepSeek')} · 当日短线</div>
+        <div class="text-[11px]" style="color:var(--muted)">${esc(report.title || (report.kind === 'market' ? '今日大盘' : '个股'))} · ${esc(report.source || 'DeepSeek')} · 当日短线 · ${esc(when)}</div>
         <div class="text-lg font-semibold ${cls}">${esc(report.action || '继续等')}</div>
       </div>
-      <div class="text-[10px]" style="color:var(--muted)">${esc(when)}</div>
     </div>
     ${probs}
     <p class="mb-2 text-[13px] leading-relaxed">${esc(report.summary || '')}</p>
     ${body}
-    <p class="text-[10px] leading-snug" style="color:var(--muted)">按当天公开数据做的短线判断，默认当天处理。概率不是胜率，也不承诺赚钱。先看止损，再决定做不做。</p>`;
+    ${quick}
+    <p class="text-[10px] leading-snug" style="color:var(--muted)">按给出的那个北京日期做短线判断。概率不是胜率，也不承诺赚钱。先看最下面两句，再决定做不做。</p>`;
 }
 
 function renderDeepseekReport(report) {
   if (!els.aiAdviceBody || !report) return;
   els.aiAdviceBody.innerHTML = reportArticleHtml(report);
+  if (els.aiAdviceRefresh) els.aiAdviceRefresh.textContent = '重新分析';
 }
 
 function visibleReports() {
@@ -1530,7 +1546,8 @@ async function loadDetailAiAdvice(force = false) {
     return;
   }
   els.aiAdviceBody.innerHTML =
-    '<div class="text-[12px] leading-relaxed" style="color:var(--muted)">还没有这份当日报告。点重新分析，或回到列表点这只股票旁边的 AI。生成后会留在右上角「报告」里。</div>';
+    '<div class="text-[12px] leading-relaxed" style="color:var(--muted)">还没有这份报告。点「分析」才会调用 DeepSeek。看的是持仓怎么处理，以及跟不跟主力。</div>';
+  if (els.aiAdviceRefresh) els.aiAdviceRefresh.textContent = '分析';
 }
 
 async function runMarketAi() {
@@ -1555,6 +1572,7 @@ async function runMarketAi() {
         tape: judgeTape(state.center)?.label || '',
         prior: priorContext((r) => r.kind === 'market'),
         sheet: state.trend?.brief || '',
+        clock: marketClock().line,
       }),
       state.settings?.aiModel,
     );
@@ -1646,8 +1664,13 @@ async function openDetail(item) {
   els.chartStockFlow.innerHTML =
     '<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">加载中…</div>';
   if (els.aiAdviceBody) {
-    els.aiAdviceBody.innerHTML =
-      '<div class="text-[12px]" style="color:var(--muted)">正在综合历史走势、主力资金、新闻与大盘…</div>';
+    const saved = aiReportOf(item);
+    if (saved) renderDeepseekReport(saved);
+    else {
+      els.aiAdviceBody.innerHTML =
+        '<div class="text-[12px] leading-relaxed" style="color:var(--muted)">点右上角「分析」才会调用 DeepSeek。这里看两件事：你这只票的持仓怎么处理，以及跟不跟它的主力。</div>';
+      if (els.aiAdviceRefresh) els.aiAdviceRefresh.textContent = '分析';
+    }
   }
   // 等弹窗完成布局后再画图，避免首次空白
   await waitFrames(3);
@@ -1950,6 +1973,7 @@ function renderTrend() {
     els.trendSheet.innerHTML = '<div class="text-[12px]" style="color:var(--muted)">顺势数据还没取到，点右上角刷新再试。</div>';
     return;
   }
+  const clock = marketClock();
   const mood = sheet.mood || '—';
   const s = sheet.sentiment;
   const moodCls = mood === '主升' ? 'text-up' : mood === '退潮' ? 'text-down' : '';
@@ -1996,25 +2020,85 @@ function renderTrend() {
         `<span class="trend-chip">${esc(row.name)} ${esc(row.action)} ${pctText(row.changePct)} <b class="${tagCls(row.verdict)}">${esc(row.verdict)}</b></span>`,
     )
     .join('');
+  const advice = state.trendAdvice;
+  const adviceHtml = state.trendAiRunning
+    ? '<div class="text-[12px]" style="color:var(--muted)">正在调用模型，只根据上面这张纸…</div>'
+    : state.trendAiError
+      ? `<div class="text-[12px]" style="color:var(--up)">${esc(state.trendAiError)}</div>`
+      : advice
+        ? reportArticleHtml(advice)
+        : '<div class="text-[12px]" style="color:var(--muted)">还没有模型结论。上面是行情和规则粗判，不会自动调用。</div>';
   els.trendSheet.innerHTML = `
     <div class="mb-1 flex flex-wrap items-baseline gap-2">
       <div class="text-sm font-semibold">顺势</div>
       <span class="text-[11px] font-semibold ${moodCls}">${esc(mood)}</span>
       ${sheet.tapeWeak ? '<span class="text-[11px]" style="color:var(--down)">跌家占优，外盘降权</span>' : ''}
     </div>
-    <p class="mb-2 text-[12px] leading-relaxed">${esc(sheet.plan || '')}</p>
+    <p class="mb-2 text-[11px] leading-relaxed" style="color:var(--muted)">数据时间：北京 ${esc(clock.beijing)}。大A下一交易日 <b>${esc(clock.next)}</b>。美股这一时段的美东时间 ${esc(clock.eastern)}。下面说的隔夜，指的就是这个美股时段，对应大A的 ${esc(clock.next)}。</p>
+    <p class="mb-2 text-[12px] leading-relaxed"><span class="text-[10px]" style="color:var(--muted)">规则粗判，不是模型。</span> ${esc(sheet.plan || '')}</p>
     <div class="trend-metrics">
-      <div><span>高度</span><b>${s?.height ?? '—'}板</b></div>
-      <div><span>炸板率</span><b>${s?.zbRate == null ? '—' : `${Math.round(s.zbRate * 100)}%`}</b></div>
-      <div><span>昨涨停溢价</span><b class="${tone(s?.premium)}">${s?.premium == null ? '—' : pctText(s.premium)}</b></div>
-      <div><span>首板晋级</span><b>${s?.promoRate == null ? '—' : `${Math.round(s.promoRate * 100)}%`}</b></div>
+      <div><span title="今天涨停股票里，最多连续几天涨停">高度</span><b>${s?.height ?? '—'}板</b></div>
+      <div><span title="摸到涨停又打开的数量，除以涨停加炸板">炸板率</span><b>${s?.zbRate == null ? '—' : `${Math.round(s.zbRate * 100)}%`}</b></div>
+      <div><span title="上一个A股交易日涨停的股票，今天的平均涨跌">昨涨停溢价</span><b class="${tone(s?.premium)}">${s?.premium == null ? '—' : pctText(s.premium)}</b></div>
+      <div><span title="昨天第一天涨停的票里，今天再次涨停的比例">首板晋级</span><b>${s?.promoRate == null ? '—' : `${Math.round(s.promoRate * 100)}%`}</b></div>
     </div>
-    <div class="trend-block"><div class="trend-label">隔夜映射</div>${overnight || '<div style="color:var(--muted)">外盘没有明显强于 1% 的方向。</div>'}</div>
+    <p class="text-[10px] leading-relaxed" style="color:var(--muted)">高度是连板有多高。炸板率高，说明涨停封不住。昨涨停溢价为负，说明昨天的板今天在亏。首板晋级低，说明接力差，不宜去追新板。</p>
+    <div class="trend-block"><div class="trend-label">隔夜映射 · 美东 ${esc(clock.eastern)} → 大A ${esc(clock.next)}</div><p class="mb-1 text-[10px] leading-relaxed" style="color:var(--muted)">外盘这一时段涨了，对照大A ${esc(clock.next)} 可能被带着看的板块，并看 A 股这边是不是已经大涨。已经大涨就标不宜再追。跌家占优时，这条只是线索。</p>${overnight || '<div style="color:var(--muted)">外盘没有明显强于 1% 的方向。</div>'}</div>
     <div class="trend-block"><div class="trend-label">主线</div>${mains || '<div style="color:var(--muted)">没有还在进的主题。资金和价格都没有形成可以跟的主线。</div>'}</div>
     <div class="trend-block"><div class="trend-label">主题资金</div><div class="mb-1 text-[11px]" style="color:var(--muted)">净流入</div><div class="trend-chips">${flowLine(inflow) || '—'}</div><div class="mb-1 mt-1 text-[11px]" style="color:var(--muted)">净流出</div><div class="trend-chips">${flowLine(outflow) || '—'}</div></div>
-    <div class="trend-block"><div class="trend-label">龙虎榜席位${sheet.seatDate ? ` · ${esc(sheet.seatDate)}` : ''}</div>${seats || '<div style="color:var(--muted)">这天的席位还没出来。</div>'}</div>
-    <div class="trend-block"><div class="trend-label">昨天的报告，今天对一下</div><p class="mb-1">${esc(sheet.review?.summary || '')}</p><div class="trend-chips">${reviewRows}</div></div>
+    <div class="trend-block"><div class="trend-label">龙虎榜席位${sheet.seatDate ? ` · ${esc(sheet.seatDate)}` : ''}</div><p class="mb-1 text-[10px] leading-relaxed" style="color:var(--muted)">龙虎榜是交易所公布的异动股买卖前五营业部。能看到机构专用、沪股通深股通、以及常见游资席位有没有净买。这不是他们的全部持仓。</p>${seats || '<div style="color:var(--muted)">这天的席位还没出来。</div>'}</div>
+    <div class="trend-block"><div class="trend-label">报告对照 · ${esc(sheet.review?.day || '还没有')} 的结论，对 ${esc(clock.today)} 的涨跌</div><p class="mb-1">${esc(sheet.review?.summary || '')}</p><div class="trend-chips">${reviewRows}</div></div>
+    <div class="trend-block">
+      <div class="mb-1 flex items-center justify-between gap-2">
+        <div class="trend-label">最终建议</div>
+        <button type="button" data-trend-ai class="rounded-md bg-accent px-2 py-1 text-[11px] font-semibold text-white" ${state.trendAiRunning ? 'disabled' : ''}>${state.trendAiRunning ? '分析中' : '用 AI 出结论'}</button>
+      </div>
+      <p class="mb-1 text-[10px] leading-relaxed" style="color:var(--muted)">点这个按钮才调用 DeepSeek。结论对着大A ${esc(clock.next)}，并写成持仓怎么处理、跟哪段主力。</p>
+      ${adviceHtml}
+    </div>
     <p class="text-[10px] leading-snug" style="color:var(--muted)">外盘、连板和席位是公开数据的粗判，不是机构底仓。已经大涨的方向写成不宜再追。不构成买卖承诺。</p>`;
+}
+
+async function runTrendAi() {
+  if (state.trendAiRunning) return;
+  const apiKey = await ensureDeepseekKey();
+  if (!apiKey) return;
+  if (!state.trend) await loadTrendSheet();
+  state.trendAiRunning = true;
+  state.trendAiError = '';
+  renderTrend();
+  try {
+    const clock = marketClock();
+    const report = await askMarketReport(
+      apiKey,
+      buildMarketFacts({
+        indices: state.indices || [],
+        center: state.center,
+        boards: (state.pulseBoards?.CN || []).filter((b) => Number.isFinite(Number(b.changePct))),
+        tape: judgeTape(state.center)?.label || '',
+        prior: priorContext((r) => r.kind === 'market'),
+        sheet: state.trend?.brief || '',
+        clock: clock.line,
+      }),
+      state.settings?.aiModel,
+    );
+    state.trendAdvice = await pushReport({
+      ...report,
+      kind: 'market',
+      title: `顺势 ${clock.next}`,
+      itemKey: '',
+      code: '',
+    });
+  } catch (e) {
+    console.error(e);
+    state.trendAiError = String(e?.message || e || '分析失败');
+    if (/401|invalid|api key|密钥/i.test(state.trendAiError)) {
+      state.settings = await saveSettings({ deepseekApiKey: '' });
+    }
+  } finally {
+    state.trendAiRunning = false;
+    renderTrend();
+  }
 }
 
 async function mapPool(items, limit, fn) {
@@ -2786,7 +2870,7 @@ async function refreshMajorNews(force = false) {
     return state.insightNews;
   }
   try {
-    const [raw, tech] = await Promise.all([fetchMarketNews(6), fetchTechLeaders()]);
+    const [raw, tech] = await Promise.all([fetchMarketNews(12), fetchTechLeaders()]);
     state.techLeaders = tech || [];
     const news = mergeMajorAlerts(raw, {
       techLeaders: tech || [],
@@ -2811,6 +2895,9 @@ document.querySelectorAll('.view-tab').forEach((tab) => {
   tab.addEventListener('click', () => setView(tab.dataset.view));
 });
 els.trendStrip?.addEventListener('click', () => setView('pulse'));
+els.trendSheet?.addEventListener('click', (e) => {
+  if (e.target.closest?.('[data-trend-ai]')) runTrendAi();
+});
 
 document.querySelectorAll('.primary-tab').forEach((tab) => {
   tab.addEventListener('click', () => {
