@@ -306,7 +306,35 @@ export function reviewCalls(history, changes) {
   return { day, rows: rows.slice(0, 8), summary: bits.join('') };
 }
 
-export function sheetBrief({ tapeWeak, mood, overnight, mains, sentiment, flows }) {
+/** 期货席位增减的粗读。多空一起加，不当成单边看多。 */
+export function seatStance(longAdd, shortAdd) {
+  const L = Number.isFinite(Number(longAdd)) ? Number(longAdd) : 0;
+  const S = Number.isFinite(Number(shortAdd)) ? Number(shortAdd) : 0;
+  const bothUp = L >= 400 && S >= 400;
+  if (bothUp && Math.min(L, S) >= Math.max(L, S) * 0.45) return '多空一起加，像对冲';
+  if (bothUp && L > S) return '多单加得更多';
+  if (bothUp) return '空单加得更多';
+  if (L >= 400 && S <= 80) return '偏多';
+  if (S >= 400 && L <= 80) return '偏空';
+  if (L <= -400 && S <= -400) return '多空都在减';
+  if (L <= -400) return '多单在减';
+  if (S <= -400) return '空单在减';
+  return '变化不大';
+}
+
+export function futuresBrief(seats) {
+  const rows = [...(seats?.indexRows || []), ...(seats?.commodityRows || [])].slice(0, 8);
+  if (!rows.length) return '';
+  const line = rows
+    .map(
+      (row) =>
+        `${row.house}${row.client ? '代客' : ''} ${row.productName} ${row.contract} 多${row.longAdd ?? '—'} 空${row.shortAdd ?? '—'} ${row.stance}`,
+    )
+    .join('；');
+  return `期货席位（${seats.date} 收盘，手）：${line}。`;
+}
+
+export function sheetBrief({ tapeWeak, mood, overnight, mains, sentiment, flows, seats }) {
   const industry = (flows?.themes || flows?.industry || [])
     .filter((row) => Number(row.mainFlow) > 0)
     .slice(0, 4)
@@ -318,6 +346,7 @@ export function sheetBrief({ tapeWeak, mood, overnight, mains, sentiment, flows 
       ? `情绪${mood || '—'}，高度${sentiment.height || 0}板，炸板率${sentiment.zbRate == null ? '—' : `${Math.round(sentiment.zbRate * 100)}%`}，昨涨停溢价${sentiment.premium == null ? '—' : sentiment.premium.toFixed(2)}%，首板晋级${sentiment.promoRate == null ? '—' : `${Math.round(sentiment.promoRate * 100)}%`}。`
       : '',
     industry ? `主题主力净流入靠前：${industry}。` : '',
+    futuresBrief(seats),
     tapeWeak ? '两市跌家明显偏多，上面的外盘方向只作线索。' : '',
   ]
     .filter(Boolean)

@@ -473,6 +473,93 @@ export async function askMarketReport(apiKey, facts, modelPref) {
   };
 }
 
+const SEAT_SYSTEM = [
+  '你是个人A股短线参谋。用户给你的是期货交易所公布的会员持仓增减，单位是手，不是股票股数。',
+  '加多单的意思：这家期货公司当天的多头持仓比上一交易日多了这么多手。加空单是空头持仓增加。',
+  '名字里带「代客」的是客户的单，不是期货公司拿自有资金在押方向。不带代客的商品席位，常常是会员合计，同样不是它的自营底仓。',
+  '多空一起大增时，写成对冲、套保或客户两边都有。禁止把这种情况说成这家公司单边看多。',
+  '只有多头明显增加、空头不动或减少，才写成偏多。只有空头明显增加，才写成偏空。',
+  '股指（沪深300、上证50、中证500、中证1000）只说明指数情绪，不要写成去买某一只股票。',
+  '商品席位只对应同名板块，例如铜对应有色、原油对应油气。不要推到无关板块。',
+  '事实里的日期必须原样使用。hold 是手里的股票这一天怎么处理，一句。follow 是跟不跟这些席位、跟的话跟哪一段，一句。',
+  '禁止编造没有列出的席位和手数。禁止承诺收益。输出严格 JSON：',
+  '{"action":"跟|不跟|只观察","summary":"用四到六句说明这些席位整体在做什么",',
+  '"read":"按席位写：谁在偏多，谁在偏空，谁是多空一起加所以像对冲",',
+  '"risk":"最容易看错的地方",',
+  '"hold":"手里的票这一天怎么处理，一句",',
+  '"follow":"跟不跟这些席位，一句"}',
+].join('');
+
+export function buildSeatFacts({ seats, clock }) {
+  const rows = [...(seats?.indexRows || []), ...(seats?.commodityRows || [])];
+  const lines = rows.map((row) => {
+    const who = `${row.house}${row.client ? '（代客，客户的单）' : ''}`;
+    return `${seats?.date || ''} ${row.productName} ${row.contract} ${row.hint || ''} ${who} 多单${row.longPos ?? '—'}手 增减${row.longAdd ?? '—'} 空单${row.shortPos ?? '—'}手 增减${row.shortAdd ?? '—'} 页面粗读：${row.stance}`;
+  });
+  return [
+    clock || '',
+    seats?.date ? `持仓公布日 ${seats.date}。这是该日收盘后的增减。` : '席位日期未提供。',
+    '下面每一行都要单独判断是偏多、偏空，还是多空一起加。',
+    lines.join('\n') || '没有席位数据。不要编造。',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+export async function askSeatReport(apiKey, facts, modelPref) {
+  const key = String(apiKey || '').trim();
+  if (!key) throw new Error('缺少 DeepSeek 密钥');
+  const messages = [
+    { role: 'system', content: SEAT_SYSTEM },
+    { role: 'user', content: facts },
+  ];
+  const preferred = modelPref === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash';
+  const attempts =
+    preferred === 'deepseek-v4-pro'
+      ? [
+          { model: 'deepseek-v4-pro', thinking: { type: 'disabled' } },
+          { model: 'deepseek-flash', thinking: { type: 'disabled' } },
+          { model: 'deepseek-chat' },
+        ]
+      : [
+          { model: 'deepseek-flash', thinking: { type: 'disabled' } },
+          { model: 'deepseek-chat' },
+        ];
+  let json = null;
+  let used = 'deepseek-flash';
+  let lastErr = null;
+  for (const attempt of attempts) {
+    try {
+      json = await postDeepseek(key, {
+        model: attempt.model,
+        temperature: 0.2,
+        response_format: { type: 'json_object' },
+        messages,
+        ...(attempt.thinking ? { thinking: attempt.thinking } : {}),
+      });
+      used = attempt.model;
+      break;
+    } catch (e) {
+      lastErr = e;
+      if (/401|invalid|api key|密钥/i.test(String(e?.message || ''))) throw e;
+    }
+  }
+  if (!json) throw lastErr || new Error('DeepSeek 分析失败');
+  const report = JSON.parse(json?.choices?.[0]?.message?.content || '{}');
+  const action = ['跟', '不跟', '只观察'].includes(report.action) ? report.action : '只观察';
+  return {
+    kind: 'seat',
+    action,
+    summary: clip(report.summary, 700),
+    read: clip(report.read, 800),
+    risk: clip(report.risk, 300),
+    hold: clip(report.hold, 180),
+    follow: clip(report.follow, 180),
+    generatedAt: Date.now(),
+    source: used,
+  };
+}
+
 function clip(value, max) {
   return String(value || '').slice(0, max);
 }

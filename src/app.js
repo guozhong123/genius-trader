@@ -36,6 +36,7 @@ import {
   fetchTrackedFlows,
   fetchBoardLeaders,
   fetchSeatHighlights,
+  fetchFuturesSeatMoves,
   fetchTechLeaders,
   fetchMembersQuotes,
   fetchTopMovers,
@@ -66,7 +67,7 @@ import { buildLevelMarkLines } from './lib/levels.js';
 import { normalizeGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
 import { calcValuationBias } from './lib/valuation.js';
-import { askDeepseekReport, askMarketReport, buildMarketFacts, buildStockFacts, disciplineStop } from './lib/deepseek.js';
+import { askDeepseekReport, askMarketReport, askSeatReport, buildMarketFacts, buildSeatFacts, buildStockFacts, disciplineStop } from './lib/deepseek.js';
 import { OVERNIGHT_LINKS, buildOvernight, marketClock, moodLabel, planText, reviewCalls, scoreMainLines, shYmd, sheetBrief } from './lib/trend.js';
 import { isLoggedIn, login, logout, currentUser } from './lib/auth.js';
 
@@ -1262,13 +1263,13 @@ function closeDetail() {
   disposeChart(els.chartMain);
   disposeChart(els.chartStockFlow);
   if (els.aiAdviceBody) {
-    els.aiAdviceBody.innerHTML = '打开个股后自动分析…';
+    els.aiAdviceBody.innerHTML = '点「分析」才会调用 DeepSeek。';
   }
 }
 
 function actionClass(action) {
-  if (action === '买入' || action === '做多') return 'text-up';
-  if (action === '不买' || action === '今天不做') return 'text-down';
+  if (action === '买入' || action === '做多' || action === '跟') return 'text-up';
+  if (action === '不买' || action === '今天不做' || action === '不跟') return 'text-down';
   return '';
 }
 
@@ -1294,11 +1295,15 @@ function reportArticleHtml(report) {
   const body =
     report.kind === 'market'
       ? `${reportBlock('今天做哪些', report.leaders)}${reportBlock('今天避开', report.avoid)}${reportBlock('当天节奏', report.rhythm)}${reportBlock('风险', report.risk)}${reportBlock('和前几天比', report.consistency)}`
-      : `${checksLine(report)}${reportBlock('今天怎么做', report.today)}${reportBlock('板块', report.sector)}${reportBlock('持仓', report.position)}${reportBlock('主力', report.mainForce)}${reportBlock('量价', report.trend)}${reportBlock('消息', report.news)}${reportBlock('估值与涨幅', report.valuation)}${reportBlock('大盘', report.market)}${reportBlock('仓位', report.plan)}${reportBlock('当天离场', report.exit)}${reportBlock('放弃条件', report.stop)}${reportBlock('风险', report.risk)}${reportBlock('和前几天比', report.consistency)}`;
+      : report.kind === 'seat'
+        ? `${reportBlock('这些席位在干什么', report.read)}${reportBlock('容易看错的地方', report.risk)}`
+        : `${checksLine(report)}${reportBlock('今天怎么做', report.today)}${reportBlock('板块', report.sector)}${reportBlock('持仓', report.position)}${reportBlock('主力', report.mainForce)}${reportBlock('量价', report.trend)}${reportBlock('消息', report.news)}${reportBlock('估值与涨幅', report.valuation)}${reportBlock('大盘', report.market)}${reportBlock('仓位', report.plan)}${reportBlock('当天离场', report.exit)}${reportBlock('放弃条件', report.stop)}${reportBlock('风险', report.risk)}${reportBlock('和前几天比', report.consistency)}`;
   const intro =
     report.kind === 'market'
       ? 'AI盘 / 顺势结论：只有点按钮才会生成。它告诉你这一天手里的票整体怎么处理，以及主力方向跟哪一段、哪一段不跟。'
-      : '个股报告：点「分析」才会生成。看的是这只票跟不跟主力，以及你填的成本这一天怎么处理。';
+      : report.kind === 'seat'
+        ? '期货席位：点了才生成。它说明中信和其他机构是在偏多、偏空，还是多空一起加、更像对冲。最后看你的持仓，以及跟不跟这一段。'
+        : '个股报告：点「分析」才会生成。看的是这只票跟不跟主力，以及你填的成本这一天怎么处理。';
   const hold = report.hold || (report.kind === 'market' ? '' : report.position || '');
   const follow = report.follow || '';
   const quick =
@@ -1313,7 +1318,7 @@ function reportArticleHtml(report) {
     <p class="mb-2 text-[11px] leading-relaxed" style="color:var(--muted)">${esc(intro)}</p>
     <div class="mb-2 flex flex-wrap items-end justify-between gap-2">
       <div>
-        <div class="text-[11px]" style="color:var(--muted)">${esc(report.title || (report.kind === 'market' ? '今日大盘' : '个股'))} · ${esc(report.source || 'DeepSeek')} · 当日短线 · ${esc(when)}</div>
+        <div class="text-[11px]" style="color:var(--muted)">${esc(report.title || (report.kind === 'market' ? '今日大盘' : report.kind === 'seat' ? '期货席位' : '个股'))} · ${esc(report.source || 'DeepSeek')} · 当日短线 · ${esc(when)}</div>
         <div class="text-lg font-semibold ${cls}">${esc(report.action || '继续等')}</div>
       </div>
     </div>
@@ -1380,7 +1385,7 @@ function renderReportDrawer() {
             <span class="min-w-0 truncate text-[13px] font-semibold">${esc(r.title || r.code || '报告')}</span>
             <span class="shrink-0 text-[12px] font-semibold ${actionClass(r.action)}">${esc(r.action || '')}</span>
           </div>
-          <div class="mt-0.5 text-[10px]" style="color:var(--muted)">${esc(when)} · ${r.kind === 'market' ? '大盘' : '个股'}</div>
+          <div class="mt-0.5 text-[10px]" style="color:var(--muted)">${esc(when)} · ${r.kind === 'market' ? '大盘' : r.kind === 'seat' ? '席位' : '个股'}</div>
           <div class="mt-1 line-clamp-2 text-left text-[12px] leading-snug" style="color:var(--muted)">${esc(r.summary || '')}</div>
         </button>`;
       })
@@ -2020,6 +2025,25 @@ function renderTrend() {
         `<span class="trend-chip">${esc(row.name)} ${esc(row.action)} ${pctText(row.changePct)} <b class="${tagCls(row.verdict)}">${esc(row.verdict)}</b></span>`,
     )
     .join('');
+  const fut = sheet.futures;
+  const hand = (n, signed = false) => {
+    if (n == null || !Number.isFinite(Number(n))) return '—';
+    const v = Math.round(Number(n));
+    return signed ? `${v > 0 ? '+' : ''}${v}` : String(v);
+  };
+  const futCls = (stance) =>
+    /偏多|多单加得更多/.test(stance) ? 'text-up' : /偏空|空单加得更多|多单在减/.test(stance) ? 'text-down' : '';
+  const futLine = (row) =>
+    `<div class="trend-row"><span class="font-semibold">${esc(row.house)}${row.client ? ' · 代客' : ''} ${esc(row.productName)} ${esc(row.contract)}</span><span>多 ${hand(row.longPos)} 手（${hand(row.longAdd, true)}）空 ${hand(row.shortPos)} 手（${hand(row.shortAdd, true)}） <b class="${futCls(row.stance)}">${esc(row.stance)}</b>${row.hint ? `<span style="color:var(--muted)"> · ${esc(row.hint)}</span>` : ''}</span></div>`;
+  const futRows = [...(fut?.indexRows || []), ...(fut?.commodityRows || [])];
+  const futHtml = futRows.map(futLine).join('');
+  const futAdviceHtml = state.futAiRunning
+    ? '<div class="text-[12px]" style="color:var(--muted)">正在看这些席位是偏多、偏空，还是对冲…</div>'
+    : state.futAiError
+      ? `<div class="text-[12px]" style="color:var(--up)">${esc(state.futAiError)}</div>`
+      : state.futAdvice
+        ? reportArticleHtml(state.futAdvice)
+        : '<div class="text-[12px]" style="color:var(--muted)">还没有席位结论。上面的粗读不会调用模型。</div>';
   const advice = state.trendAdvice;
   const adviceHtml = state.trendAiRunning
     ? '<div class="text-[12px]" style="color:var(--muted)">正在调用模型，只根据上面这张纸…</div>'
@@ -2047,6 +2071,16 @@ function renderTrend() {
     <div class="trend-block"><div class="trend-label">主线</div>${mains || '<div style="color:var(--muted)">没有还在进的主题。资金和价格都没有形成可以跟的主线。</div>'}</div>
     <div class="trend-block"><div class="trend-label">主题资金</div><div class="mb-1 text-[11px]" style="color:var(--muted)">净流入</div><div class="trend-chips">${flowLine(inflow) || '—'}</div><div class="mb-1 mt-1 text-[11px]" style="color:var(--muted)">净流出</div><div class="trend-chips">${flowLine(outflow) || '—'}</div></div>
     <div class="trend-block"><div class="trend-label">龙虎榜席位${sheet.seatDate ? ` · ${esc(sheet.seatDate)}` : ''}</div><p class="mb-1 text-[10px] leading-relaxed" style="color:var(--muted)">龙虎榜是交易所公布的异动股买卖前五营业部。能看到机构专用、沪股通深股通、以及常见游资席位有没有净买。这不是他们的全部持仓。</p>${seats || '<div style="color:var(--muted)">这天的席位还没出来。</div>'}</div>
+    <div class="trend-block">
+      <div class="mb-1 flex items-center justify-between gap-2">
+        <div class="trend-label">期货席位${fut?.date ? ` · 持仓日 ${esc(fut.date)}` : ''}</div>
+        <button type="button" data-fut-ai class="rounded-md bg-accent px-2 py-1 text-[11px] font-semibold text-white" ${state.futAiRunning ? 'disabled' : ''}>${state.futAiRunning ? '分析中' : '分析这些席位'}</button>
+      </div>
+      <p class="mb-1 text-[10px] leading-relaxed" style="color:var(--muted)">加多单，是这家期货公司当天多头持仓比上一交易日多了多少手。加空单是空头增加。括号里的数字是增减，前面是持仓手数。带「代客」的是客户的单，不是期货公司自己的钱。多空一起加，更像对冲或客户两边都有，不要当成它在单边看涨。这是交易所公布的前 20 名会员，不是全部持仓，也不是股票账户。持仓日是 ${esc(fut?.date || '—')}，用来看大A ${esc(clock.next)}。</p>
+      ${futHtml || '<div style="color:var(--muted)">这天的期货席位还没出来。</div>'}
+      <p class="mb-1 mt-2 text-[10px] leading-relaxed" style="color:var(--muted)">点这个按钮才调用 DeepSeek。它会逐条说是偏多、偏空还是对冲，并写成持仓怎么处理、跟不跟这一段。</p>
+      ${futAdviceHtml}
+    </div>
     <div class="trend-block"><div class="trend-label">报告对照 · ${esc(sheet.review?.day || '还没有')} 的结论，对 ${esc(clock.today)} 的涨跌</div><p class="mb-1">${esc(sheet.review?.summary || '')}</p><div class="trend-chips">${reviewRows}</div></div>
     <div class="trend-block">
       <div class="mb-1 flex items-center justify-between gap-2">
@@ -2101,6 +2135,45 @@ async function runTrendAi() {
   }
 }
 
+async function runFuturesAi() {
+  if (state.futAiRunning) return;
+  const seats = state.trend?.futures;
+  const rows = [...(seats?.indexRows || []), ...(seats?.commodityRows || [])];
+  if (!rows.length) {
+    state.futAiError = '席位还没取到，先点右上角刷新。';
+    renderTrend();
+    return;
+  }
+  const apiKey = await ensureDeepseekKey();
+  if (!apiKey) return;
+  state.futAiRunning = true;
+  state.futAiError = '';
+  renderTrend();
+  try {
+    const clock = marketClock();
+    const report = await askSeatReport(
+      apiKey,
+      buildSeatFacts({ seats, clock: clock.line }),
+      state.settings?.aiModel,
+    );
+    state.futAdvice = await pushReport({
+      ...report,
+      title: `期货席位 ${seats.date || clock.today}`,
+      itemKey: '',
+      code: '',
+    });
+  } catch (e) {
+    console.error(e);
+    state.futAiError = String(e?.message || e || '分析失败');
+    if (/401|invalid|api key|密钥/i.test(state.futAiError)) {
+      state.settings = await saveSettings({ deepseekApiKey: '' });
+    }
+  } finally {
+    state.futAiRunning = false;
+    renderTrend();
+  }
+}
+
 async function mapPool(items, limit, fn) {
   const out = new Array(items.length);
   let cursor = 0;
@@ -2127,10 +2200,11 @@ async function loadTrendSheet(force = false) {
   try {
     const alive = (list) => (list || []).some((b) => Math.abs(Number(b.changePct)) >= 0.05);
     if (!alive(state.pulseBoards?.CN) || !alive(state.pulseBoards?.US)) await refreshPulse();
-    const [sentiment, themes, seats] = await Promise.all([
+    const [sentiment, themes, seats, futures] = await Promise.all([
       fetchLimitSentiment().catch(() => null),
       fetchTrackedFlows(CN_PULSE_BOARDS).catch(() => []),
       fetchSeatHighlights(6).catch(() => ({ date: '', rows: [] })),
+      fetchFuturesSeatMoves().catch(() => ({ date: '', indexRows: [], commodityRows: [] })),
     ]);
     const cnByName = new Map((state.pulseBoards?.CN || []).filter((b) => b.code).map((b) => [b.name, b]));
     const today = shYmd();
@@ -2188,9 +2262,10 @@ async function loadTrendSheet(force = false) {
       flows,
       seats: seats.rows,
       seatDate: seats.date,
+      futures,
       review,
       plan,
-      brief: sheetBrief({ tapeWeak, mood, overnight, mains, sentiment, flows }),
+      brief: sheetBrief({ tapeWeak, mood, overnight, mains, sentiment, flows, seats: futures }),
     };
     state.trendAt = Date.now();
   } catch (e) {
@@ -2897,6 +2972,7 @@ document.querySelectorAll('.view-tab').forEach((tab) => {
 els.trendStrip?.addEventListener('click', () => setView('pulse'));
 els.trendSheet?.addEventListener('click', (e) => {
   if (e.target.closest?.('[data-trend-ai]')) runTrendAi();
+  if (e.target.closest?.('[data-fut-ai]')) runFuturesAi();
 });
 
 document.querySelectorAll('.primary-tab').forEach((tab) => {

@@ -3,6 +3,7 @@
  * Data is unofficial and for personal reference only.
  */
 import { TENCENT_BOARDS } from './tencent-boards.js';
+import { seatStance } from './trend.js';
 
 // f15高 f16低 f17开 f18昨收；用于列表估值高低判断
 const STOCK_FIELDS = 'f12,f13,f14,f2,f3,f4,f15,f16,f17,f18,f124';
@@ -1734,6 +1735,149 @@ export async function fetchSeatHighlights(limit = 6) {
     return { date, rows: picked };
   }
   return { date: '', rows: [] };
+}
+
+const FUT_PRODUCT = {
+  IF: '沪深300股指',
+  IH: '上证50股指',
+  IC: '中证500股指',
+  IM: '中证1000股指',
+  AU: '黄金',
+  AG: '白银',
+  CU: '铜',
+  AL: '铝',
+  ZN: '锌',
+  PB: '铅',
+  NI: '镍',
+  SN: '锡',
+  RB: '螺纹钢',
+  HC: '热卷',
+  SS: '不锈钢',
+  I: '铁矿',
+  JM: '焦煤',
+  J: '焦炭',
+  SC: '原油',
+  FU: '燃油',
+  BU: '沥青',
+  LU: '低硫燃油',
+  PG: '液化气',
+  LC: '碳酸锂',
+  SI: '工业硅',
+  SA: '纯碱',
+  FG: '玻璃',
+  MA: '甲醇',
+  TA: 'PTA',
+  RU: '橡胶',
+  M: '豆粕',
+  RM: '菜粕',
+  C: '玉米',
+  P: '棕榈',
+  Y: '豆油',
+  PP: '聚丙烯',
+  V: 'PVC',
+  SR: '白糖',
+};
+
+function futHint(code) {
+  if (['IF', 'IH', 'IC', 'IM'].includes(code)) return '对应大A指数，不是某一只股票';
+  if (['AU', 'AG'].includes(code)) return '对应黄金、白银';
+  if (['CU', 'AL', 'ZN', 'PB', 'NI', 'SN'].includes(code)) return '对应有色';
+  if (['RB', 'HC', 'SS', 'I', 'JM', 'J'].includes(code)) return '对应钢铁、煤焦';
+  if (['SC', 'FU', 'BU', 'LU', 'PG'].includes(code)) return '对应油气';
+  if (code === 'LC') return '对应锂电';
+  if (code === 'SI') return '对应工业硅';
+  if (['SA', 'FG'].includes(code)) return '对应玻璃、纯碱';
+  if (['M', 'RM', 'C', 'P', 'Y'].includes(code)) return '对应养殖、油脂';
+  return '';
+}
+
+function mapFutRow(row) {
+  const product = String(row.TRADE_CODE || '').toUpperCase();
+  const raw = String(row.MEMBER_NAME_ABBR || '').trim();
+  const client = /代客/.test(raw);
+  const house = raw.replace(/[（(]代客[）)]/g, '').trim() || raw;
+  const longAdd = Number(row.LP_CHANGE);
+  const shortAdd = Number(row.SP_CHANGE);
+  const longPos = Number(row.LONG_POSITION);
+  const shortPos = Number(row.SHORT_POSITION);
+  return {
+    product,
+    productName: FUT_PRODUCT[product] || product,
+    hint: futHint(product),
+    contract: String(row.SECURITY_CODE || ''),
+    house,
+    client,
+    longPos: Number.isFinite(longPos) ? longPos : null,
+    longAdd: Number.isFinite(longAdd) ? longAdd : null,
+    shortPos: Number.isFinite(shortPos) ? shortPos : null,
+    shortAdd: Number.isFinite(shortAdd) ? shortAdd : null,
+    stance: seatStance(longAdd, shortAdd),
+    index: ['IF', 'IH', 'IC', 'IM'].includes(product),
+  };
+}
+
+async function fetchFutRank(date, filter, sort, pageSize) {
+  const url =
+    'https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_FUTU_DAILYPOSITION' +
+    '&columns=SECURITY_CODE,MEMBER_NAME_ABBR,LONG_POSITION,LP_CHANGE,SHORT_POSITION,SP_CHANGE,TRADE_CODE,TRADE_DATE' +
+    `&pageSize=${pageSize}&pageNumber=1&sortColumns=${sort}&sortTypes=-1` +
+    `&filter=${encodeURIComponent(`(TRADE_DATE='${date}')${filter}`)}`;
+  const res = await fetch(url);
+  if (!res.ok) return [];
+  const json = await res.json();
+  return (json?.result?.data || []).map(mapFutRow).filter((row) => row.house && row.contract);
+}
+
+function pickMainContract(rows) {
+  const by = new Map();
+  for (const row of rows) {
+    const bag = by.get(row.contract) || { score: 0, rows: [] };
+    bag.score += Math.abs(row.longAdd || 0) + Math.abs(row.shortAdd || 0);
+    bag.rows.push(row);
+    by.set(row.contract, bag);
+  }
+  const best = [...by.values()].sort((a, b) => b.score - a.score)[0];
+  if (!best) return [];
+  const sorted = [...best.rows].sort(
+    (a, b) =>
+      Math.abs(b.longAdd || 0) + Math.abs(b.shortAdd || 0) - (Math.abs(a.longAdd || 0) + Math.abs(a.shortAdd || 0)),
+  );
+  const picked = [];
+  const citic = sorted.find((row) => row.house.includes('中信'));
+  if (citic) picked.push(citic);
+  for (const row of sorted) {
+    if (picked.length >= 3) break;
+    if (picked.includes(row)) continue;
+    picked.push(row);
+  }
+  return picked;
+}
+
+/** 期货会员持仓增减。中信等加多单、加空单，用来区分偏多和对冲。 */
+export async function fetchFuturesSeatMoves() {
+  for (const date of shTradeDates(4)) {
+    const [indexes, longs, shorts] = await Promise.all([
+      Promise.all(
+        ['IF', 'IH', 'IC', 'IM'].map((code) =>
+          fetchFutRank(date, `(TRADE_CODE="${code}")(TYPE="0")(LP_CHANGE>200)`, 'LP_CHANGE', 25).catch(() => []),
+        ),
+      ),
+      fetchFutRank(date, `(TYPE="0")(LP_CHANGE>1500)`, 'LP_CHANGE', 12).catch(() => []),
+      fetchFutRank(date, `(TYPE="0")(SP_CHANGE>4000)`, 'SP_CHANGE', 8).catch(() => []),
+    ]);
+    const indexRows = indexes.flatMap((rows) => pickMainContract(rows));
+    const seen = new Set(indexRows.map((row) => `${row.contract}|${row.house}`));
+    const commodityRows = [];
+    for (const row of [...longs, ...shorts]) {
+      const key = `${row.contract}|${row.house}`;
+      if (row.index || seen.has(key)) continue;
+      if (commodityRows.length >= 6) break;
+      seen.add(key);
+      commodityRows.push(row);
+    }
+    if (indexRows.length || commodityRows.length) return { date, indexRows, commodityRows };
+  }
+  return { date: '', indexRows: [], commodityRows: [] };
 }
 
 export { marketLabel };
