@@ -100,10 +100,15 @@ export async function searchSymbols(keyword) {
   const q = keyword.trim();
   if (!q) return [];
 
-  const [stockHits, fundHits] = await Promise.all([searchStocks(q), searchFunds(q)]);
+  // 网页端东财搜索常无 CORS；腾讯 smartbox 用 script 注入最稳
+  const [tencentHits, emHits, fundHits] = await Promise.all([
+    searchViaTencent(q),
+    searchStocksEastmoney(q),
+    searchFunds(q),
+  ]);
   const merged = [];
   const seen = new Set();
-  for (const item of [...stockHits, ...fundHits]) {
+  for (const item of [...tencentHits, ...emHits, ...fundHits, ...directCodeHits(q)]) {
     const key = `${item.kind}:${item.market}:${item.code}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -112,17 +117,44 @@ export async function searchSymbols(keyword) {
   return merged.slice(0, 20);
 }
 
-async function searchStocks(q) {
+/** 6 位代码兜底：即使搜索接口全挂也能添加 */
+function directCodeHits(q) {
+  if (!/^\d{6}$/.test(q)) return [];
+  const stockMarket = detectAShareMarket(q);
+  const marketNo = stockMarket === 'SH' ? 1 : 0;
+  return [
+    {
+      kind: 'stock',
+      code: q,
+      name: q,
+      market: stockMarket,
+      marketNo,
+      secid: toSecid(stockMarket, q, marketNo),
+      label: marketLabel(stockMarket),
+    },
+    {
+      kind: 'fund',
+      code: q,
+      name: q,
+      market: 'FUND',
+      secid: null,
+      label: '基金',
+    },
+  ];
+}
+
+async function searchStocksEastmoney(q) {
   try {
     const url = `https://search-codetable.eastmoney.com/codetable/search/web?client=web&keyword=${encodeURIComponent(q)}&pageNumber=1&pageSize=12`;
     const res = await fetch(url);
+    if (!res.ok) return [];
     const json = await res.json();
     const rows = json?.result || [];
     return (Array.isArray(rows) ? rows : [])
       .map(normalizeEastMoneySearch)
       .filter(Boolean);
   } catch {
-    return searchStocksViaTencent(q);
+    return [];
   }
 }
 
@@ -169,18 +201,38 @@ function normalizeEastMoneySearch(row) {
   };
 }
 
-async function searchStocksViaTencent(q) {
-  const url = `https://smartbox.gtimg.cn/s3/?v=2&q=${encodeURIComponent(q)}`;
-  // 部分环境仍返回 GBK
-  const text = await fetchTextGbk(url);
-  const m = text.match(/v_hint="([^"]*)"/);
-  if (!m) return [];
+function decodeTencentName(raw) {
+  const s = String(raw || '');
+  try {
+    // smartbox 常返回 \uXXXX 转义
+    return JSON.parse(`"${s.replace(/"/g, '\\"')}"`);
+  } catch {
+    return s;
+  }
+}
+
+/** 通过 <script> 加载腾讯联想（无 CORS）；也会尝试 fetch */
+async function searchViaTencent(q) {
+  const url = `https://smartbox.gtimg.cn/s3/?v=2&t=all&q=${encodeURIComponent(q)}`;
+  let payload = '';
+  try {
+    // 扩展 / 少数环境 fetch 可用
+    payload = await fetchTextGbk(url);
+  } catch {
+    payload = '';
+  }
+  if (!payload.includes('v_hint=') && typeof document !== 'undefined') {
+    payload = await loadTencentHintScript(url);
+  }
+  const m = String(payload).match(/v_hint="([^"]*)"/);
+  if (!m || !m[1] || m[1] === 'N') return [];
   return m[1]
     .split('^')
     .filter(Boolean)
     .slice(0, 12)
     .map((line) => {
-      const [marketTag, code, name] = line.split('~');
+      const [marketTag, code, rawName] = line.split('~');
+      const name = decodeTencentName(rawName);
       if (!code || !name) return null;
       let market = 'SZ';
       let kind = 'stock';
@@ -200,10 +252,12 @@ async function searchStocksViaTencent(q) {
       } else if (marketTag === 'jj' || marketTag === 'of') {
         kind = 'fund';
         market = 'FUND';
+      } else {
+        return null;
       }
       return {
         kind,
-        code,
+        code: kind === 'fund' ? String(code).padStart(6, '0') : code,
         name,
         market,
         marketNo,
@@ -212,6 +266,40 @@ async function searchStocksViaTencent(q) {
       };
     })
     .filter(Boolean);
+}
+
+function loadTencentHintScript(url) {
+  return new Promise((resolve) => {
+    if (typeof document === 'undefined') {
+      resolve('');
+      return;
+    }
+    const prev = window.v_hint;
+    const script = document.createElement('script');
+    let settled = false;
+    const finish = (val) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        script.remove();
+      } catch {
+        /* ignore */
+      }
+      window.v_hint = prev;
+      resolve(val != null && val !== '' && val !== 'N' ? `v_hint="${val}"` : '');
+    };
+    const timer = setTimeout(() => finish(window.v_hint), 3500);
+    script.onload = () => finish(window.v_hint);
+    script.onerror = () => finish('');
+    try {
+      delete window.v_hint;
+    } catch {
+      window.v_hint = undefined;
+    }
+    script.src = `${url}${url.includes('?') ? '&' : '?'}_=${Date.now()}`;
+    document.head.appendChild(script);
+  });
 }
 
 async function searchFunds(q) {

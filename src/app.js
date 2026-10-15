@@ -683,9 +683,9 @@ function renderSearchResults() {
   }
   els.searchResults.classList.remove('hidden');
   els.searchResults.innerHTML = state.searchResults
-    .map((item) => {
+    .map((item, idx) => {
       const exists = state.list.some((x) => itemKey(x) === itemKey(item));
-      return `<button data-add='${escAttr(JSON.stringify(item))}' class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-sm ${exists ? 'opacity-40' : ''}" ${exists ? 'disabled' : ''}>
+      return `<button type="button" data-add-idx="${idx}" class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-sm ${exists ? 'opacity-40' : ''}" ${exists ? 'disabled' : ''}>
         <span class="rounded px-1 text-[10px]" style="background:color-mix(in oklab,var(--muted) 12%,transparent);color:var(--muted)">${esc(item.label || marketLabel(item.market))}</span>
         <span class="min-w-0 flex-1 truncate font-medium">${esc(item.name)}</span>
         <span class="font-mono text-[11px]" style="color:var(--muted)">${esc(item.code)}</span>
@@ -694,22 +694,33 @@ function renderSearchResults() {
     })
     .join('');
 
-  els.searchResults.querySelectorAll('[data-add]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const item = JSON.parse(btn.getAttribute('data-add'));
+  els.searchResults.querySelectorAll('[data-add-idx]').forEach((btn) => {
+    btn.addEventListener('mousedown', (e) => e.preventDefault());
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const idx = Number(btn.getAttribute('data-add-idx'));
+      const item = state.searchResults[idx];
+      if (!item || btn.disabled) return;
       const groupId =
         state.secondaryGroup !== 'all'
           ? state.secondaryGroup
           : state.primaryKind === 'fund'
             ? groupsForPrimary()[0]?.id || 'other'
             : 'other';
-      state.list = await addItem({ ...item, groupId });
-      if (item.kind === 'stock' || item.kind === 'fund') state.primaryKind = item.kind;
-      setView('watch');
-      renderPrimaryTabs();
-      renderGroupTabs();
-      renderList();
-      refreshQuotes();
+      try {
+        state.list = await addItem({ ...item, groupId });
+        if (item.kind === 'stock' || item.kind === 'fund') state.primaryKind = item.kind;
+        setView('watch');
+        renderPrimaryTabs();
+        renderGroupTabs();
+        renderList();
+        refreshQuotes();
+        els.statusText.textContent = `已添加 ${item.name}（${item.code}）`;
+      } catch (err) {
+        console.error(err);
+        els.statusText.textContent = '添加失败，请重试';
+      }
       state.searchResults = [];
       els.searchInput.value = '';
       renderSearchResults();
@@ -1866,10 +1877,10 @@ els.searchInput.addEventListener('input', () => {
 });
 
 document.addEventListener('click', (e) => {
-  if (!e.target.closest('#search-wrap')) {
-    state.searchResults = [];
-    renderSearchResults();
-  }
+  if (e.target.closest('#search-wrap') || e.target.closest('[data-add-idx]')) return;
+  if (!state.searchResults.length) return;
+  state.searchResults = [];
+  renderSearchResults();
 });
 
 els.refreshBtn.addEventListener('click', () => refreshAll());
