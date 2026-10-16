@@ -948,6 +948,12 @@
     opacity: 0.55;
   }
 
+  .scan-btn.on,
+  .ai-sort.on {
+    color: #fff;
+    background: var(--accent);
+  }
+
   .scan-hint {
     font-size: 11px;
     color: var(--muted);
@@ -979,9 +985,15 @@
     color: var(--down);
   }
 
-  .list-head .ai-probs {
+  .list-head .ai-probs,
+  .ai-sort {
     font-size: 11px;
     font-weight: 600;
+  }
+
+  button.ai-sort {
+    border-radius: 6px;
+    padding: 2px 4px;
   }
 
   .pos-clear,
