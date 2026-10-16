@@ -292,16 +292,66 @@ export function renderIntradayChart(
   return chart;
 }
 
-export function renderKlineChart(el, points, { markLine } = {}) {
+function movingAverage(closes, n) {
+  return closes.map((_, i) => {
+    if (i < n - 1) return null;
+    let sum = 0;
+    for (let j = i - n + 1; j <= i; j += 1) sum += closes[j];
+    return +(sum / n).toFixed(3);
+  });
+}
+
+function ohlcTuple(raw) {
+  const arr = Array.isArray(raw) ? raw : [];
+  if (arr.length >= 5 && typeof arr[0] === 'number' && arr[0] === Math.floor(arr[0]) && arr[0] < arr.length + 5) {
+    return arr.slice(-4);
+  }
+  return arr.slice(0, 4);
+}
+
+export function renderKlineChart(el, points, { markLine, title = '日K' } = {}) {
   if (!el || !points?.length) return;
   const chart = getChart(el);
   const mute = axisMute();
   const dates = points.map((p) => p.date);
   const ohlc = points.map((p) => [p.open, p.close, p.low, p.high]);
+  const closes = points.map((p) => Number(p.close));
+  const ma = [
+    ['5日均线', movingAverage(closes, 5), '#f59e0b'],
+    ['10日均线', movingAverage(closes, 10), '#0ea5e9'],
+    ['20日均线', movingAverage(closes, 20), '#a78bfa'],
+  ];
   chart.setOption({
     animationDuration: 280,
-    grid: { left: 48, right: 16, top: 24, bottom: 48 },
-    tooltip: { trigger: 'axis' },
+    legend: {
+      top: 0,
+      itemWidth: 12,
+      itemHeight: 8,
+      textStyle: { color: mute, fontSize: 11 },
+      data: [title, ...ma.map((row) => row[0])],
+    },
+    grid: { left: 48, right: 16, top: 32, bottom: 48 },
+    tooltip: {
+      trigger: 'axis',
+      formatter(params) {
+        if (!params?.length) return '';
+        const head = params[0].axisValueLabel || params[0].name || '';
+        const lines = [head];
+        for (const p of params) {
+          if (p.seriesType === 'candlestick') {
+            const [open, close, low, high] = ohlcTuple(p.value);
+            const fmt = (v) => (v == null || Number.isNaN(Number(v)) ? '—' : Number(v).toFixed(2));
+            lines.push(`开盘 ${fmt(open)}`);
+            lines.push(`收盘 ${fmt(close)}`);
+            lines.push(`最低 ${fmt(low)}`);
+            lines.push(`最高 ${fmt(high)}`);
+          } else if (p.value != null && p.value !== '-') {
+            lines.push(`${p.marker || ''}${p.seriesName} ${Number(p.value).toFixed(2)}`);
+          }
+        }
+        return lines.join('<br/>');
+      },
+    },
     dataZoom: [{ type: 'inside' }, { type: 'slider', height: 18, bottom: 8 }],
     xAxis: {
       type: 'category',
@@ -317,6 +367,7 @@ export function renderKlineChart(el, points, { markLine } = {}) {
     },
     series: [
       {
+        name: title,
         type: 'candlestick',
         data: ohlc,
         itemStyle: {
@@ -327,6 +378,15 @@ export function renderKlineChart(el, points, { markLine } = {}) {
         },
         markLine: markLine,
       },
+      ...ma.map(([name, data, color]) => ({
+        name,
+        type: 'line',
+        data,
+        showSymbol: false,
+        connectNulls: false,
+        lineStyle: { width: 1.1, color },
+        itemStyle: { color },
+      })),
     ],
   });
   return chart;

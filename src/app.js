@@ -64,10 +64,10 @@ import {
   resizeAllCharts,
 } from './lib/charts.js';
 import { getTodayEvents, getUpcomingEvents, getMajorUpcomingEvents, marketCalendarFacts } from './lib/calendar.js';
-import { buildLevelMarkLines } from './lib/levels.js';
+import { buildLevelMarkLines, calcAutoLevels } from './lib/levels.js';
 import { normalizeGroups, repairStockGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
-import { askDeepseekReport, askMarketReport, askSeatReport, buildMarketFacts, buildSeatFacts, buildStockFacts, disciplineStop } from './lib/deepseek.js';
+import { askDeepseekReport, askHoldingsReport, askMarketReport, askSeatReport, buildHoldingsFacts, buildMarketFacts, buildSeatFacts, buildStockFacts, disciplineStop } from './lib/deepseek.js';
 import { OVERNIGHT_LINKS, buildOvernight, marketClock, moodLabel, planText, reviewCalls, scoreMainLines, shYmd, sheetBrief, tradingSlot } from './lib/trend.js';
 import { isLoggedIn, login, logout, currentUser } from './lib/auth.js';
 
@@ -358,9 +358,17 @@ function renderThemePicker() {
   renderThemeToggle();
 }
 
+function scrollPageTop() {
+  window.scrollTo(0, 0);
+  const root = document.scrollingElement || document.documentElement;
+  if (root) root.scrollTop = 0;
+  document.querySelector('.page-shell')?.scrollTo?.(0, 0);
+}
+
 function setView(view) {
   state.view = view;
-  ['watch', 'pulse', 'data', 'etf'].forEach((v) => {
+  scrollPageTop();
+  ['watch', 'pulse', 'data', 'etf', 'picks'].forEach((v) => {
     const el = $(`view-${v}`);
     if (!el) return;
     const on = v === view;
@@ -389,13 +397,14 @@ function setView(view) {
     refreshPulse();
     loadTrendSheet();
   }
+  if (view === 'picks') renderPicks();
   requestAnimationFrame(() => resizeAllCharts());
   rememberPlace();
 }
 
 function rememberPlace() {
   if (!state.settings) return;
-  const lastView = ['watch', 'pulse', 'data', 'etf'].includes(state.view) ? state.view : 'watch';
+  const lastView = ['watch', 'pulse', 'data', 'etf', 'picks'].includes(state.view) ? state.view : 'watch';
   const lastPrimary = state.primaryKind === 'fund' ? 'fund' : 'stock';
   const lastGroup = state.secondaryGroup || 'all';
   if (
@@ -509,6 +518,7 @@ function renderGroupTabs() {
       state.secondaryGroup = btn.dataset.group;
       renderGroupTabs();
       renderList();
+      scrollPageTop();
       rememberPlace();
     });
     btn.addEventListener('dblclick', async (e) => {
@@ -1756,10 +1766,6 @@ async function openDetail(item) {
   resizeAllCharts();
 }
 
-function currentMarkLine(preClose) {
-  return buildLevelMarkLines({ preClose });
-}
-
 async function ensureFundQuote(item) {
   if (state.quotes[quoteKey(item)]?.nav != null || state.quotes[quoteKey(item)]?.price != null) return;
   try {
@@ -1785,11 +1791,11 @@ async function refreshDetailCharts() {
   const secid = item.secid || toSecid(item.market, item.code, item.marketNo);
   try {
     const period = state.period;
-    const kltMap = { day: 101, week: 102, month: 103, year: 106 };
+    const kltMap = { day: 101, week: 102, month: 103 };
     const [mainRes, flowRes] = await Promise.allSettled([
       period === 'intraday'
         ? fetchIntraday(secid)
-        : fetchKline(secid, kltMap[period] || 101, period === 'year' ? 40 : 90),
+        : fetchKline(secid, kltMap[period] || 101, period === 'month' ? 60 : 90),
       fetchStockMoneyFlow(secid),
     ]);
     const mainData = mainRes.status === 'fulfilled' ? mainRes.value : null;
@@ -1798,7 +1804,15 @@ async function refreshDetailCharts() {
     if (flowRes.status === 'rejected') console.error(flowRes.reason);
 
     const axisMode = chartAxisMode();
-    const markLine = currentMarkLine(mainData?.preClose);
+    const prices = mainData?.points?.map((p) => p.price ?? p.high) || [];
+    const intraHi = prices.reduce((m, v) => (Number(v) > m ? Number(v) : m), -Infinity);
+    const intraLo = prices.reduce((m, v) => (Number(v) > 0 && Number(v) < m ? Number(v) : m), Infinity);
+    const auto = period === 'intraday' ? {} : calcAutoLevels(mainData?.points || [], 20);
+    const markLine = buildLevelMarkLines({
+      preClose: period === 'intraday' ? mainData?.preClose : null,
+      resistance: period === 'intraday' ? (Number.isFinite(intraHi) ? intraHi : null) : auto.resistance,
+      support: period === 'intraday' ? (Number.isFinite(intraLo) ? intraLo : null) : auto.support,
+    });
 
     // 清空占位后再渲染，保证容器已有尺寸
     els.chartMain.innerHTML = '';
@@ -1834,7 +1848,8 @@ async function refreshDetailCharts() {
           '<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>暂无分时（闭盘也会显示当日走势）</span><span class="text-[11px]">可切换日K，或稍后重试</span></div>';
       }
     } else if (mainData?.points?.length) {
-      renderKlineChart(els.chartMain, mainData.points, { markLine });
+      const title = period === 'week' ? '周K' : period === 'month' ? '月K' : '日K';
+      renderKlineChart(els.chartMain, mainData.points, { markLine, title });
     } else {
       els.chartMain.innerHTML =
         '<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">暂无K线</div>';
@@ -2653,7 +2668,7 @@ async function refreshAll() {
     if (state.view === 'data') {
       await Promise.all([loadDataCenter(), loadBoards(), loadRank()]);
     }
-    if (state.detail) {
+    if (state.detail && state.period !== 'week' && state.period !== 'month') {
       if (state.detail.kind === 'fund') await openDetail(state.detail);
       else await refreshDetailCharts();
     }
@@ -3213,6 +3228,98 @@ async function refreshMajorNews(force = false) {
   return state.insightNews;
 }
 
+function heldStocks() {
+  return state.list.filter((x) => x.kind === 'stock' && Number(x.lots) > 0);
+}
+
+function renderPicks() {
+  const body = $('picks-body');
+  if (!body) return;
+  const held = heldStocks();
+  if (!held.length) {
+    body.innerHTML =
+      '<p style="color:var(--muted)">还没有持仓。在自选股票里填上手数，再来分析今天买不买、什么时候卖。</p>';
+    return;
+  }
+  if (state.picksLoading) {
+    body.innerHTML = `<p style="color:var(--muted)">正在看 ${held.length} 只持仓的日K和成本…</p>`;
+    return;
+  }
+  const report = state.picks || state.settings?.picksReport;
+  if (!report) {
+    body.innerHTML = `<p style="color:var(--muted)">当前 ${held.length} 只填了手数。点「分析」才会调用 AI。</p>`;
+    return;
+  }
+  const card = (row, text) => `<button type="button" class="pick-card" data-pick-code="${escAttr(row.code)}">
+      <div class="font-semibold">${esc(row.name || row.code)} <span style="color:var(--muted)">${esc(row.code)}</span></div>
+      <p class="mt-1 text-left">${highlightTrend(text)}</p>
+    </button>`;
+  const block = (title, rows, line) => {
+    const list = rows || [];
+    const inner = list.length
+      ? list.map((row) => card(row, line(row))).join('')
+      : '<p style="color:var(--muted)">今天没有。</p>';
+    return `<div class="pick-block"><div class="text-sm font-semibold">${title}</div><div class="mt-1 space-y-1">${inner}</div></div>`;
+  };
+  const when = report.generatedAt
+    ? new Date(report.generatedAt).toLocaleString('zh-CN', { hour12: false })
+    : '';
+  const err = state.picksError ? `<p style="color:var(--up)">${esc(state.picksError)}</p>` : '';
+  body.innerHTML = `
+    ${err}
+    <p class="text-[11px]" style="color:var(--muted)">${esc(when)} · ${held.length} 只持仓 · 仅供参考，不构成投资建议</p>
+    <div class="pick-card pick-card-static">${highlightTrend(report.summary || '')}</div>
+    ${block('今天可以买', report.buy, (row) => [row.why, row.when].filter(Boolean).join('。'))}
+    ${block('什么时候卖', report.sell, (row) => [row.when, row.why].filter(Boolean).join('。'))}
+    ${block('先拿着', report.hold, (row) => row.note || row.why || '')}
+  `;
+}
+
+async function runPicks() {
+  const held = heldStocks().slice(0, 24);
+  if (!held.length) {
+    renderPicks();
+    return;
+  }
+  const apiKey = await ensureDeepseekKey();
+  if (!apiKey) return;
+  state.picksLoading = true;
+  state.picksError = '';
+  renderPicks();
+  try {
+    const rows = [];
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < held.length) {
+        const item = held[cursor];
+        cursor += 1;
+        const secid = item.secid || toSecid(item.market, item.code, item.marketNo);
+        const dayK = await fetchKline(secid, 101, 30).catch(() => null);
+        rows.push({ item, quote: state.quotes[quoteKey(item)] || {}, dayK });
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, held.length) }, () => worker()));
+    const report = await askHoldingsReport(apiKey, buildHoldingsFacts(rows), state.settings?.aiModel);
+    const known = new Set(held.map((x) => String(x.code).replace(/\D/g, '').slice(-6)));
+    const keep = (list) => (list || []).filter((row) => known.has(String(row.code).slice(-6)));
+    report.buy = keep(report.buy);
+    report.sell = keep(report.sell);
+    report.hold = keep(report.hold);
+    state.picks = report;
+    state.settings = await saveSettings({ picksReport: report });
+  } catch (e) {
+    console.error(e);
+    const msg = String(e?.message || e);
+    state.picksError = msg;
+    if (/401|invalid|api key|密钥/i.test(msg)) {
+      state.settings = await saveSettings({ deepseekApiKey: '' });
+    }
+  } finally {
+    state.picksLoading = false;
+    renderPicks();
+  }
+}
+
 /* events */
 document.querySelectorAll('.view-tab').forEach((tab) => {
   tab.addEventListener('click', () => setView(tab.dataset.view));
@@ -3227,6 +3334,7 @@ document.querySelectorAll('.primary-tab').forEach((tab) => {
   tab.addEventListener('click', () => {
     state.primaryKind = tab.dataset.primary;
     state.secondaryGroup = 'all';
+    scrollPageTop();
     rememberPlace();
     renderPrimaryTabs();
     renderGroupTabs();
@@ -3306,6 +3414,7 @@ els.eventDismissBtn?.addEventListener('click', async () => {
 });
 document.querySelectorAll('.board-tab').forEach((tab) => {
   tab.addEventListener('click', () => {
+    scrollPageTop();
     state.boardType = tab.dataset.board;
     document.querySelectorAll('.board-tab').forEach((b) => {
       const on = b.dataset.board === state.boardType;
@@ -3319,6 +3428,7 @@ document.querySelectorAll('.board-tab').forEach((tab) => {
 
 document.querySelectorAll('.rank-tab').forEach((tab) => {
   tab.addEventListener('click', () => {
+    scrollPageTop();
     state.rank.dir = tab.dataset.rank;
     document.querySelectorAll('.rank-tab').forEach((b) => {
       const on = b.dataset.rank === state.rank.dir;
@@ -3335,10 +3445,19 @@ els.rankSort.addEventListener('change', () => {
   renderRank();
 });
 
+$('picks-run')?.addEventListener('click', () => runPicks());
+$('picks-body')?.addEventListener('click', (e) => {
+  const code = e.target.closest?.('[data-pick-code]')?.dataset.pickCode;
+  if (!code) return;
+  const item = state.list.find((x) => String(x.code).replace(/\D/g, '').slice(-6) === String(code).slice(-6));
+  if (item) openDetail(item);
+});
+
 document.querySelectorAll('.period-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
     state.period = btn.dataset.period;
     syncPeriodTabs();
+    document.querySelector('#detail-panel .overflow-auto')?.scrollTo(0, 0);
     refreshDetailCharts();
   });
 });
@@ -3541,7 +3660,7 @@ async function bootApp() {
   if (state.settings?.funFlowNames && els.funNamesBtn) {
     els.funNamesBtn.classList.add('bg-accent', 'text-white');
   }
-  const savedView = ['watch', 'pulse', 'data', 'etf'].includes(state.settings?.lastView)
+  const savedView = ['watch', 'pulse', 'data', 'etf', 'picks'].includes(state.settings?.lastView)
     ? state.settings.lastView
     : 'watch';
   state.primaryKind = state.settings?.lastPrimary === 'fund' ? 'fund' : 'stock';

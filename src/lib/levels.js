@@ -59,21 +59,24 @@ export function checkStopLoss(item, quote) {
   return { hit: false, kind: null, price, stopLoss: stop, pctToStop };
 }
 
-/** 图表标记线：仅昨收 */
-export function buildLevelMarkLines({ preClose }) {
+/** 图表标记线：昨收、压力、支撑，标签用中文 */
+export function buildLevelMarkLines({ preClose, support, resistance }) {
   const mute = '#94a3b8';
   const data = [];
-  if (preClose != null && Number.isFinite(Number(preClose))) {
+  const push = (price, name, color) => {
+    const y = Number(price);
+    if (!Number.isFinite(y) || y <= 0) return;
+    if (data.some((d) => Math.abs(d.yAxis - y) / y < 0.0015)) return;
     data.push({
-      yAxis: Number(preClose),
-      name: '昨收',
-      lineStyle: { type: 'dashed', color: mute, width: 1 },
-      label: { formatter: '昨收', color: mute, fontSize: 10 },
+      yAxis: y,
+      name,
+      lineStyle: { type: 'dashed', color, width: 1 },
+      label: { formatter: name, color, fontSize: 10 },
     });
-  }
-  if (!data.length) return undefined;
-  return {
-    symbol: 'none',
-    data,
   };
+  push(preClose, '昨收', mute);
+  push(resistance, '压力', '#e11d48');
+  push(support, '支撑', '#059669');
+  if (!data.length) return undefined;
+  return { symbol: 'none', data };
 }

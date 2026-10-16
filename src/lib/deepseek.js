@@ -571,6 +571,121 @@ export async function askSeatReport(apiKey, facts, modelPref) {
   };
 }
 
+function holdingBlock(row) {
+  const { item, quote, dayK } = row;
+  const live = Number(quote?.price);
+  const cost = Number(item?.cost);
+  const lots = Number(item?.lots);
+  const pct = Number(quote?.changePct);
+  const pnl = cost > 0 && live > 0 ? ((live - cost) / cost) * 100 : null;
+  const stop = disciplineStop(item, cost);
+  const trend = describeTrend(dayK, limitBand(item, item?.name)).slice(0, 4).join('；');
+  return [
+    `${item.name || ''} ${item.code}`,
+    `现价 ${num(live)} 今日 ${signed(pct)}% 今高 ${num(quote?.high)} 今低 ${num(quote?.low)}`,
+    cost > 0 ? `成本 ${num(cost)} 浮盈 ${signed(pnl)}% 手数 ${num(lots, lots % 1 ? 2 : 0)}` : `手数 ${num(lots, lots % 1 ? 2 : 0)} 成本未填`,
+    stop ? `纪律止损 ${num(stop.price)}${live > 0 && live <= stop.price ? '，已跌破' : ''}` : '',
+    trend || '日K未取到',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+export function buildHoldingsFacts(rows) {
+  const bjNow = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date());
+  const body = (rows || []).map(holdingBlock).join('\n---\n');
+  return [
+    `当前北京时间 ${bjNow}。文中的今天就是这一天。`,
+    '下面全是用户已经持仓的股票（手数已填）。不要分析名单以外的票，不要编造新闻、龙虎榜或资金流。',
+    body || '没有持仓。',
+  ].join('\n');
+}
+
+const HOLDINGS_SYSTEM = [
+  '你是个人短线参谋。用户已经持有下面这些股票，要你判断：哪些今天还适合买（加仓或今天才值得动手），已经拿着的应该什么时候卖。',
+  '只根据给出的现价、涨跌、成本和日K位置。缺的数据写未提供，禁止编造主力、消息和目标价。',
+  '适合今天买：现价不在20日高点附近、没有远离均线追高、没有跌破纪律止损。已经浮盈很大的不要再建议买。',
+  '卖出时机要写成能执行的条件：冲到压力附近卖、跌破止损卖、尾盘不留隔夜。不要只写「择机卖出」。',
+  '今天不适合动的放进 hold，一句原因。',
+  '输出严格 JSON：',
+  '{"summary":"今天整体两句",',
+  '"buy":[{"code":"代码","name":"名称","why":"为什么今天可以买","when":"什么价位或什么情况买"}],',
+  '"sell":[{"code":"代码","name":"名称","when":"什么时候卖","why":"为什么"}],',
+  '"hold":[{"code":"代码","name":"名称","note":"为什么今天先拿着"}]}',
+  'buy、sell、hold 里的 code 必须来自名单。没有就给空数组。每类最多 8 只。',
+].join('');
+
+export async function askHoldingsReport(apiKey, facts, modelPref) {
+  const key = String(apiKey || '').trim();
+  if (!key) throw new Error('缺少 DeepSeek 密钥');
+  const messages = [
+    { role: 'system', content: HOLDINGS_SYSTEM },
+    { role: 'user', content: facts },
+  ];
+  const preferred = modelPref === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash';
+  const attempts =
+    preferred === 'deepseek-v4-pro'
+      ? [
+          { model: 'deepseek-v4-pro', thinking: { type: 'disabled' } },
+          { model: 'deepseek-flash', thinking: { type: 'disabled' } },
+          { model: 'deepseek-chat' },
+        ]
+      : [
+          { model: 'deepseek-flash', thinking: { type: 'disabled' } },
+          { model: 'deepseek-chat' },
+        ];
+  let json = null;
+  let used = 'deepseek-flash';
+  let lastErr = null;
+  for (const attempt of attempts) {
+    try {
+      json = await postDeepseek(key, {
+        model: attempt.model,
+        temperature: 0.2,
+        response_format: { type: 'json_object' },
+        messages,
+        ...(attempt.thinking ? { thinking: attempt.thinking } : {}),
+      });
+      used = attempt.model;
+      break;
+    } catch (e) {
+      lastErr = e;
+      const msg = String(e?.message || '');
+      if (/401|invalid|api key|密钥/i.test(msg)) throw e;
+    }
+  }
+  if (!json) throw lastErr || new Error('DeepSeek 分析失败');
+  const report = JSON.parse(json?.choices?.[0]?.message?.content || '{}');
+  const clean = (list) =>
+    (Array.isArray(list) ? list : [])
+      .map((row) => ({
+        code: String(row?.code || '').replace(/\D/g, '').slice(0, 6),
+        name: clip(row?.name, 20),
+        why: clip(row?.why, 180),
+        when: clip(row?.when, 180),
+        note: clip(row?.note, 180),
+      }))
+      .filter((row) => row.code)
+      .slice(0, 8);
+  return {
+    summary: clip(report.summary, 400),
+    buy: clean(report.buy),
+    sell: clean(report.sell),
+    hold: clean(report.hold),
+    generatedAt: Date.now(),
+    source: used,
+  };
+}
+
 function clip(value, max) {
   return String(value || '').slice(0, max);
 }
