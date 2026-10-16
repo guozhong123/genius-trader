@@ -382,6 +382,9 @@ const MARKET_SYSTEM = [
   '只根据给出的指数、涨跌家数、资金和板块涨跌说话。禁止编造没列出的板块和涨幅。',
   '短线要跟当天最强、主力还在进的方向，已经大涨的板块写明是接力还是不宜再追。',
   '环境差时 action 用「今天不做」。环境一般用「只做最强」。环境好且有明确主线才用「做多」。',
+  '必须用给出的星期、是否节前/节后/周五、避险情绪。节前红盘只是历史倾向，和今天涨跌家数冲突时以今天为准，禁止写成必涨。',
+  '避险要黄金、外盘权益、跌家、北向至少两项一起才写避险偏强。只有黄金涨，写成线索不够。',
+  '周五默认不建议隔夜。长假前一天可以有冲高，但尾盘写成宜兑现，不新开隔夜重仓。节后第一天不追高开。',
   '若有前几天的大盘报告，consistency 说明主线有没有切换。',
   '事实里的北京时间和「下一交易日」日期必须原样使用。不要只写明天、隔夜。',
   'hold 是手里的票今天整体怎么处理，一句。follow 是跟着主力做哪一个方向、不跟哪些，一句。这是用户最后要看的。',
@@ -396,7 +399,7 @@ const MARKET_SYSTEM = [
   '"follow":"跟主力做哪个方向，一句"}',
 ].join('');
 
-export function buildMarketFacts({ indices, center, boards, tape, prior, sheet, clock }) {
+export function buildMarketFacts({ indices, center, boards, tape, prior, sheet, clock, calendar }) {
   const idx = (indices || [])
     .slice(0, 8)
     .map((x) => `${x.name || x.code} ${signed(x.changePct)}%`)
@@ -410,6 +413,7 @@ export function buildMarketFacts({ indices, center, boards, tape, prior, sheet, 
   const top = ranked.slice(0, 8).map((b) => `${b.name} ${signed(b.changePct)}%`).join('，');
   const bottom = ranked.slice(-5).map((b) => `${b.name} ${signed(b.changePct)}%`).join('，');
   return [
+    calendar || '',
     `大盘：${idx || '暂无'}`,
     `环境：${tape || '未知'}`,
     `两市成交 ${num(ov?.amountYi)} 亿，涨 ${zd?.up ?? '—'} 跌 ${zd?.down ?? '—'}，涨停 ${zd?.limitUp ?? '—'}，跌停 ${zd?.limitDown ?? '—'}，北向 ${signed(nb?.last)} 亿，两市主力 ${signed(flow?.main)} 亿`,

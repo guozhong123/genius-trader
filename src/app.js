@@ -63,7 +63,7 @@ import {
   renderUpDownChart,
   resizeAllCharts,
 } from './lib/charts.js';
-import { getTodayEvents, getUpcomingEvents, getMajorUpcomingEvents } from './lib/calendar.js';
+import { getTodayEvents, getUpcomingEvents, getMajorUpcomingEvents, marketCalendarFacts } from './lib/calendar.js';
 import { buildLevelMarkLines } from './lib/levels.js';
 import { normalizeGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
@@ -1645,20 +1645,7 @@ async function runMarketAi() {
     if (!state.trend?.brief) await loadTrendSheet();
     const ready = (state.pulseBoards?.CN || []).filter((b) => Number.isFinite(Number(b.changePct)));
     if (ready.length < 3) await refreshPulse();
-    const boards = (state.pulseBoards?.CN || []).filter((b) => Number.isFinite(Number(b.changePct)));
-    const report = await askMarketReport(
-      apiKey,
-      buildMarketFacts({
-        indices: state.indices || [],
-        center: state.center,
-        boards,
-        tape: judgeTape(state.center)?.label || '',
-        prior: priorContext((r) => r.kind === 'market'),
-        sheet: state.trend?.brief || '',
-        clock: marketClock().line,
-      }),
-      state.settings?.aiModel,
-    );
+    const report = await askMarketReport(apiKey, marketFacts(), state.settings?.aiModel);
     const saved = await pushReport({
       ...report,
       kind: 'market',
@@ -2204,6 +2191,13 @@ function renderTrend() {
       </div>
     </div>
     ${trendCard('总结', trendPlanHtml(sheet.plan), '', 'trend-summary')}
+    ${(() => {
+      const cal = marketCalendarFacts(new Date(), { indices: state.indices || [], center: state.center });
+      return trendCard(
+        '日历',
+        cal.lines.map((line) => `<p class="trend-summary-line">${highlightTrend(line)}</p>`).join(''),
+      );
+    })()}
     ${trendCard(
       '情绪',
       `<div class="trend-metrics">
@@ -2248,6 +2242,24 @@ function renderTrend() {
     <p class="trend-foot">外盘、连板和席位是公开数据的粗判，不是机构底仓。不构成买卖承诺。</p>`;
 }
 
+function marketFacts(extra = '') {
+  const clock = marketClock();
+  const calendar = marketCalendarFacts(new Date(), {
+    indices: state.indices || [],
+    center: state.center,
+  });
+  return buildMarketFacts({
+    indices: state.indices || [],
+    center: state.center,
+    boards: (state.pulseBoards?.CN || []).filter((b) => Number.isFinite(Number(b.changePct))),
+    tape: judgeTape(state.center)?.label || '',
+    prior: priorContext((r) => r.kind === 'market'),
+    sheet: state.trend?.brief || '',
+    clock: `${clock.line}${extra}`,
+    calendar: calendar.text,
+  });
+}
+
 function slotNote(slot) {
   if (!slot) return '';
   return `\n这一档是${slot.label}。开盘看开盘这段怎么走，盘中看上午的方向还在不在，尾盘看收盘前持仓过不过夜。`;
@@ -2263,19 +2275,7 @@ async function runTrendAi(opts = {}) {
   renderTrend();
   try {
     const clock = marketClock();
-    const report = await askMarketReport(
-      apiKey,
-      buildMarketFacts({
-        indices: state.indices || [],
-        center: state.center,
-        boards: (state.pulseBoards?.CN || []).filter((b) => Number.isFinite(Number(b.changePct))),
-        tape: judgeTape(state.center)?.label || '',
-        prior: priorContext((r) => r.kind === 'market'),
-        sheet: state.trend?.brief || '',
-        clock: `${clock.line}${slotNote(opts.slot)}`,
-      }),
-      state.settings?.aiModel,
-    );
+    const report = await askMarketReport(apiKey, marketFacts(slotNote(opts.slot)), state.settings?.aiModel);
     state.trendAdvice = await pushReport({
       ...report,
       kind: 'market',

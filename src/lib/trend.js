@@ -64,13 +64,32 @@ function weekdayOf(ymd) {
   return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
 }
 
+function holidayBlocks(ymd) {
+  return [
+    ['2025-01-01', '2025-01-01'],
+    ['2025-01-28', '2025-02-04'],
+    ['2025-04-04', '2025-04-06'],
+    ['2025-05-01', '2025-05-05'],
+    ['2025-05-31', '2025-06-02'],
+    ['2025-10-01', '2025-10-08'],
+    ['2026-01-01', '2026-01-03'],
+    ['2026-02-15', '2026-02-23'],
+    ['2026-04-04', '2026-04-06'],
+    ['2026-05-01', '2026-05-05'],
+    ['2026-06-19', '2026-06-21'],
+    ['2026-09-25', '2026-09-27'],
+    ['2026-10-01', '2026-10-07'],
+    ['2027-01-01', '2027-01-03'],
+  ].some(([a, b]) => ymd >= a && ymd <= b);
+}
+
 /** 大A下一交易日。收盘后和周末都往后推，不含节假日。 */
 export function nextAshareDate(now = new Date()) {
   const sh = shParts(now);
   let ymd = sh.ymd;
   const closed = sh.weekday === 'Sat' || sh.weekday === 'Sun' || sh.mins >= 15 * 60;
   if (closed) ymd = addDays(ymd, 1);
-  while (weekdayOf(ymd) === 0 || weekdayOf(ymd) === 6) ymd = addDays(ymd, 1);
+  while (weekdayOf(ymd) === 0 || weekdayOf(ymd) === 6 || holidayBlocks(ymd)) ymd = addDays(ymd, 1);
   return ymd;
 }
 
