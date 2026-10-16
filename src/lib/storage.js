@@ -96,7 +96,7 @@ export async function setWatchlist(list) {
   await chrome.storage.local.set({ [KEYS.watchlist]: list });
 }
 
-function uniqueIndices(list) {
+export function uniqueIndices(list) {
   const seen = new Set();
   const out = [];
   for (const x of list || []) {
@@ -161,7 +161,27 @@ export async function updateItem(item, patch) {
   return next;
 }
 
-/** 从神器导出数据合并进自选（按代码去重，保留已有项） */
+function posValue(v) {
+  if (v == null || v === '') return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 1000) / 1000 : undefined;
+}
+
+const IMPORT_SETTING_KEYS = [
+  'theme',
+  'sortBy',
+  'showValuationBias',
+  'chartAxisMode',
+  'funFlowNames',
+  'predictOpen',
+  'lastView',
+  'lastPrimary',
+  'lastGroup',
+  'mobileGroupsExpanded',
+  'aiModel',
+];
+
+/** 合并导入股票/基金/分组；已有代码会补上成本、现价（价格） */
 export async function importShenqiBundle(bundle) {
   const groups = Array.isArray(bundle?.groups) ? bundle.groups : [];
   const incoming = Array.isArray(bundle?.watchlist) ? bundle.watchlist : [];
@@ -186,12 +206,31 @@ export async function importShenqiBundle(bundle) {
   const list = await getWatchlist();
   const exist = new Set(list.map(itemKey));
   const merged = [...list];
+  let added = 0;
+  let updated = 0;
   for (const item of incoming) {
+    if (!item || !item.code) continue;
     const key = itemKey(item);
-    if (exist.has(key)) continue;
+    const gid = !item.groupId || item.groupId === 'default' ? 'other' : item.groupId;
+    const cost = posValue(item.cost);
+    const mark = posValue(item.markPrice) ?? posValue(item.livePrice);
+    if (exist.has(key)) {
+      const i = merged.findIndex((x) => itemKey(x) === key);
+      if (i >= 0) {
+        const cur = merged[i];
+        merged[i] = {
+          ...cur,
+          name: item.name || cur.name,
+          groupId: gid || cur.groupId,
+          pinned: item.pinned != null ? !!item.pinned : cur.pinned,
+          cost: cost != null ? cost : cur.cost,
+          markPrice: mark != null ? mark : cur.markPrice,
+        };
+        updated += 1;
+      }
+      continue;
+    }
     exist.add(key);
-    const gid =
-      !item.groupId || item.groupId === 'default' ? 'other' : item.groupId;
     merged.push({
       ...item,
       name: item.name || item.code,
@@ -199,7 +238,10 @@ export async function importShenqiBundle(bundle) {
       pinned: !!item.pinned,
       order: merged.length,
       addedAt: item.addedAt || Date.now(),
+      cost: cost ?? null,
+      markPrice: mark ?? null,
     });
+    added += 1;
   }
 
   const listNorm = normalizeGroups(nextGroups, merged);
@@ -211,8 +253,38 @@ export async function importShenqiBundle(bundle) {
   return {
     list: listNorm.list,
     settings: { ...nextSettings, groups: listNorm.groups },
-    added: listNorm.list.length - list.length,
+    added,
+    updated,
   };
+}
+
+/** 导入完整备份：自选 + 分组 + 成本/现价 + 指数/主题等（不含密钥） */
+export async function importUserBundle(bundle) {
+  const result = await importShenqiBundle(bundle);
+  const incomingSettings = bundle?.settings && typeof bundle.settings === 'object' ? bundle.settings : {};
+  const patch = {};
+  for (const k of IMPORT_SETTING_KEYS) {
+    const v = incomingSettings[k] !== undefined ? incomingSettings[k] : bundle?.[k];
+    if (v !== undefined && v !== '') patch[k] = v;
+  }
+  const idx = Array.isArray(bundle?.indices)
+    ? bundle.indices
+    : Array.isArray(incomingSettings.indices)
+      ? incomingSettings.indices
+      : null;
+  if (idx?.length) patch.indices = uniqueIndices(idx);
+  if (Array.isArray(incomingSettings.aiHistory) && incomingSettings.aiHistory.length) {
+    const cur = result.settings.aiHistory || [];
+    const seen = new Set(cur.map((r) => r?.id).filter(Boolean));
+    const extra = incomingSettings.aiHistory.filter((r) => r?.id && !seen.has(r.id));
+    patch.aiHistory = [...extra, ...cur].slice(0, 200);
+  }
+  if (incomingSettings.aiReports && typeof incomingSettings.aiReports === 'object') {
+    patch.aiReports = { ...incomingSettings.aiReports, ...(result.settings.aiReports || {}) };
+  }
+  if (!Object.keys(patch).length) return result;
+  const settings = await saveSettings(patch);
+  return { ...result, settings };
 }
 
 export async function reorderWatchlist(orderedKeys) {

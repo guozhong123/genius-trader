@@ -4,7 +4,7 @@ import {
   addItem,
   getSettings,
   getWatchlist,
-  importShenqiBundle,
+  importUserBundle,
   INDEX_PRESETS,
   itemKey,
   removeItem,
@@ -679,7 +679,6 @@ function shownPrice(item, field) {
 }
 
 function costLineHtml(item, livePrice) {
-  if (item.kind === 'fund') return '';
   const key = escAttr(itemKey(item));
   const cost = parseUserPrice(shownPrice(item, 'cost'));
   const live = Number(livePrice);
@@ -688,7 +687,7 @@ function costLineHtml(item, livePrice) {
     const pct = ((live - cost) / cost) * 100;
     pnl = `<span class="pnl ${tone(pct)}">浮盈 ${fmtPct(pct)}</span>`;
   }
-  const stop = disciplineStop(item, cost);
+  const stop = item.kind === 'fund' ? null : disciplineStop(item, cost);
   const broken = stop && live > 0 && live <= stop.price;
   const stopHtml = stop
     ? `<span class="stop-tag ${broken ? 'text-down' : ''}" title="成本下方 ${(stop.gap * 100).toFixed(0)}%">止损 ${stop.price.toFixed(2)}${broken ? ' 已破' : ''}</span>`
@@ -697,6 +696,7 @@ function costLineHtml(item, livePrice) {
     <label class="pos-field">成本<input data-cost="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownPrice(item, 'cost'))}" placeholder="成本" /></label>
     <label class="pos-field">价格<input data-mark="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownPrice(item, 'mark'))}" placeholder="价格" /></label>
     <div class="pos-pnl">${pnl}${stopHtml}</div>
+    <button type="button" data-clear-pos="${key}" class="pos-clear" title="清空现价和成本">清</button>
   </div>`;
 }
 
@@ -749,7 +749,7 @@ function rowHtml(item) {
     : fmtPrice(price, item.market);
   return `
     <article data-open="${escAttr(itemKey(item))}" draggable="${state.settings.sortBy === 'manual'}"
-      class="list-row row-compact glass group cursor-pointer rounded-lg${isFund ? '' : ' has-pos'}">
+      class="list-row row-compact glass group cursor-pointer rounded-lg has-pos">
       <div class="col-name-block">
         <div class="meta min-w-0 overflow-hidden">
         <div class="flex min-w-0 items-center gap-1">
@@ -763,8 +763,8 @@ function rowHtml(item) {
         <span class="pct-chip shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular-nums" style="${chip(pct)}">${fmtPct(pct)}</span>
         ${aiRowBtn(item)}
       </div>
-      <div class="col-num text-[13px] font-semibold leading-none">${priceLabel}</div>
-      ${isFund ? '' : costLineHtml(item, price)}
+      <div class="col-num live-price text-[13px] font-semibold leading-none">${priceLabel}</div>
+      ${costLineHtml(item, price)}
       <div class="col-actions">
         <button data-move-group="${escAttr(itemKey(item))}" class="rounded px-1 text-[10px] ring-soft" style="color:var(--muted)" title="改分组">组</button>
         <button data-pin="${escAttr(itemKey(item))}" class="rounded px-1 text-[10px] ring-soft" style="color:var(--muted)">${item.pinned ? '取消' : '顶'}</button>
@@ -775,17 +775,20 @@ function rowHtml(item) {
 
 function listHeaderHtml() {
   const sortBy = state.settings?.sortBy || 'manual';
-  const stock = state.primaryKind === 'stock';
+  const isFund = state.primaryKind === 'fund';
   return `
-    <div class="list-head mb-0.5${stock ? ' has-pos' : ''}">
+    <div class="list-head mb-0.5 has-pos">
       <div class="col-name">
         <span>名称</span>
         <span class="col-sort">
           <button type="button" data-sort-cycle class="active" title="点击切换：不排 → 涨↓ → 跌↑">${sortCycleLabel(sortBy)}</button>
         </span>
       </div>
-      <div class="col-num">${stock ? '现价' : '净值/估值'}</div>
-      ${stock ? '<div class="col-num">成本</div><div class="col-num">价格</div><div class="pos-pnl">盈亏</div>' : ''}
+      <div class="col-num">${isFund ? '净值' : '现价'}</div>
+      <div class="col-num">成本</div>
+      <div class="col-num">价格</div>
+      <div class="pos-pnl">盈亏</div>
+      <div class="pos-clear-h"></div>
       <div class="col-actions text-right text-[11px]" style="color:var(--muted)">操作</div>
     </div>`;
 }
@@ -975,6 +978,20 @@ function bindListEvents() {
   };
   els.list.querySelectorAll('[data-cost]').forEach((el) => bindPriceInput(el, 'cost'));
   els.list.querySelectorAll('[data-mark]').forEach((el) => bindPriceInput(el, 'mark'));
+  els.list.querySelectorAll('[data-clear-pos]').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const key = btn.getAttribute('data-clear-pos');
+      const item = state.list.find((x) => itemKey(x) === key);
+      if (!item) return;
+      positionDrafts.delete(key);
+      const patch = { cost: null, markPrice: null };
+      const idx = state.list.findIndex((x) => itemKey(x) === key);
+      if (idx >= 0) state.list[idx] = { ...state.list[idx], ...patch };
+      state.list = await updateItem(state.list[idx] || item, patch);
+      renderList();
+    });
+  });
 }
 
 function renderSearchResults() {
@@ -1350,6 +1367,26 @@ function visibleReports() {
   });
 }
 
+function reportCoreBadge(r) {
+  const act = String(r?.action || '');
+  const blocked = /不买|减仓|回避|空仓|今天不做|不跟/.test(act);
+  const doable = /买入|加仓|可做|做多|参与/.test(act) && !blocked;
+  if (r?.kind === 'market') {
+    if (blocked || !/买入|做多|跟|可做|参与/.test(act)) return '';
+    const raw = String(r.leaders || r.sector || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!raw) return '';
+    return raw.replace(/[。；;].*$/, '').slice(0, 14);
+  }
+  if (!doable) return '';
+  const sector = String(r.sector || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!sector) return '';
+  return sector.replace(/[。；;].*$/, '').slice(0, 12);
+}
+
 function renderReportDrawer() {
   const drawer = state.reportDrawer || {};
   els.reportDrawer?.classList.toggle('hidden', !drawer.open);
@@ -1386,7 +1423,9 @@ function renderReportDrawer() {
         const when = r.generatedAt
           ? new Date(r.generatedAt).toLocaleString('zh-CN', { hour12: false })
           : '';
-        return `<button type="button" class="report-row" data-report-id="${escAttr(r.id)}">
+        const badge = reportCoreBadge(r);
+        return `<button type="button" class="report-row${badge ? ' has-core' : ''}" data-report-id="${escAttr(r.id)}">
+          ${badge ? `<span class="report-core" title="${escAttr(badge)}">${esc(badge)}</span>` : ''}
           <div class="flex items-center justify-between gap-2">
             <span class="min-w-0 truncate text-[13px] font-semibold">${esc(r.title || r.code || '报告')}</span>
             <span class="shrink-0 text-[12px] font-semibold ${actionClass(r.action)}">${esc(r.action || '')}</span>
@@ -1986,6 +2025,32 @@ function trendChanges() {
   return out;
 }
 
+function highlightTrend(text) {
+  return esc(text).replace(
+    /不宜再追|退潮|跌家占优|资金在撤|价已走弱|一日游|今天少做|炸板|大涨了|回落|外盘降权/g,
+    (m) => `<span class="trend-hot">${m}</span>`,
+  );
+}
+
+function trendPlanHtml(plan) {
+  const lines = String(plan || '')
+    .split(/(?<=[。！？])/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!lines.length) return '<p class="trend-empty">还没有可执行的方向。</p>';
+  return lines.map((s) => `<p class="trend-summary-line">${highlightTrend(s)}</p>`).join('');
+}
+
+function trendCard(title, body, extra = '', cls = '') {
+  return `<section class="trend-card${cls ? ` ${cls}` : ''}">
+    <div class="trend-card-head">
+      <div class="trend-card-title">${title}</div>
+      ${extra}
+    </div>
+    <div class="trend-card-body">${body}</div>
+  </section>`;
+}
+
 function renderTrend() {
   const sheet = state.trend;
   const loading = state.trendLoading && !sheet;
@@ -1993,7 +2058,9 @@ function renderTrend() {
     if (!sheet && !loading) els.trendStrip.classList.add('hidden');
     else {
       els.trendStrip.classList.remove('hidden');
-      els.trendStrip.textContent = loading ? '顺势加载中…' : sheet.plan || '顺势';
+      els.trendStrip.innerHTML = loading
+        ? '顺势加载中…'
+        : `<span class="trend-strip-label">顺势</span> ${highlightTrend(sheet.plan || '顺势')}`;
     }
   }
   if (!els.trendSheet) return;
@@ -2017,20 +2084,23 @@ function renderTrend() {
         : '';
   const overnight = (sheet.overnight || [])
     .map((row) => {
-      const targets = row.targets
+      const targets = (row.targets || [])
         .map(
           (t) =>
-            `${esc(t.name)} 今${pctText(t.changePct)} 昨${pctText(t.prev)} <span class="${tagCls(t.tag)}">${esc(t.tag)}</span>`,
+            `<div class="trend-sub"><span class="trend-sub-name">${esc(t.name)}</span><span>今${pctText(t.changePct)}</span><span>昨${pctText(t.prev)}</span><span class="${tagCls(t.tag)}">${esc(t.tag)}</span></div>`,
         )
-        .join('；');
-      return `<div class="trend-row"><span class="font-semibold">${esc(row.from)} ${pctText(row.overseas)}</span><span>${targets}</span></div>`;
+        .join('');
+      return `<div class="trend-item"><div class="trend-item-k">${esc(row.from)} ${pctText(row.overseas)}</div>${targets}</div>`;
     })
     .join('');
   const mains = (sheet.mains || [])
     .map((row) => {
-      const leader = row.leader ? ` 中军 ${esc(row.leader)} ${pctText(row.leaderPct)}` : '';
-      const hist = row.known ? `近5日${row.upDays}天上涨、合计${pctText(row.sum5)}` : '近几日K线未取到';
-      return `<div class="trend-row"><span class="font-semibold">${esc(row.name)}</span><span>${hist}，主力${Number(row.mainFlow).toFixed(1)}亿${leader} <span class="${tagCls(row.tag)}">${esc(row.tag)}</span></span></div>`;
+      const hist = row.known ? `近5日 ${row.upDays} 天涨 · 合计 ${pctText(row.sum5)}` : '近几日K线未取到';
+      const leader = row.leader ? `<span>中军 ${esc(row.leader)} ${pctText(row.leaderPct)}</span>` : '';
+      return `<div class="trend-item">
+        <div class="trend-item-k">${esc(row.name)} <span class="${tagCls(row.tag)}">${esc(row.tag)}</span></div>
+        <div class="trend-sub"><span>${hist}</span><span>主力 ${Number(row.mainFlow).toFixed(1)} 亿</span>${leader}</div>
+      </div>`;
     })
     .join('');
   const flowLine = (rows) =>
@@ -2043,13 +2113,13 @@ function renderTrend() {
   const seats = (sheet.seats || [])
     .map(
       (row) =>
-        `<div class="trend-row"><span>${row.tag ? `<b>${esc(row.tag)}</b> ` : ''}${esc(row.stock)}</span><span class="truncate">${esc(row.name)} <b class="${tone(row.netYi)}">${row.netYi.toFixed(2)}亿</b></span></div>`,
+        `<div class="trend-item"><div class="trend-item-k">${row.tag ? `<b>${esc(row.tag)}</b> ` : ''}${esc(row.stock)}</div><div class="trend-sub"><span>${esc(row.name)}</span><b class="${tone(row.netYi)}">${row.netYi.toFixed(2)}亿</b></div></div>`,
     )
     .join('');
   const reviewRows = (sheet.review?.rows || [])
     .map(
       (row) =>
-        `<span class="trend-chip">${esc(row.name)} ${esc(row.action)} ${pctText(row.changePct)} <b class="${tagCls(row.verdict)}">${esc(row.verdict)}</b></span>`,
+        `<div class="trend-item"><div class="trend-item-k">${esc(row.name)}</div><div class="trend-sub"><span>${esc(row.action)}</span><span>${pctText(row.changePct)}</span><b class="${tagCls(row.verdict)}">${esc(row.verdict)}</b></div></div>`,
     )
     .join('');
   const fut = sheet.futures;
@@ -2061,63 +2131,88 @@ function renderTrend() {
   const futCls = (stance) =>
     /偏多|多单加得更多/.test(stance) ? 'text-up' : /偏空|空单加得更多|多单在减/.test(stance) ? 'text-down' : '';
   const futLine = (row) =>
-    `<div class="trend-row"><span class="font-semibold">${esc(row.house)}${row.client ? ' · 代客' : ''} ${esc(row.productName)} ${esc(row.contract)}</span><span>多 ${hand(row.longPos)} 手（${hand(row.longAdd, true)}）空 ${hand(row.shortPos)} 手（${hand(row.shortAdd, true)}） <b class="${futCls(row.stance)}">${esc(row.stance)}</b>${row.hint ? `<span style="color:var(--muted)"> · ${esc(row.hint)}</span>` : ''}</span></div>`;
+    `<div class="trend-item">
+      <div class="trend-item-k">${esc(row.house)}${row.client ? ' · 代客' : ''} · ${esc(row.productName)} ${esc(row.contract)}</div>
+      <div class="trend-sub">
+        <span>多 ${hand(row.longPos)}（${hand(row.longAdd, true)}）</span>
+        <span>空 ${hand(row.shortPos)}（${hand(row.shortAdd, true)}）</span>
+        <b class="${futCls(row.stance)}">${esc(row.stance)}</b>
+      </div>
+      ${row.hint ? `<p class="trend-hint">${esc(row.hint)}</p>` : ''}
+    </div>`;
   const futRows = [...(fut?.indexRows || []), ...(fut?.commodityRows || [])];
   const futHtml = futRows.map(futLine).join('');
   const futAdviceHtml = state.futAiRunning
-    ? '<div class="text-[12px]" style="color:var(--muted)">正在看这些席位是偏多、偏空，还是对冲…</div>'
+    ? '<p class="trend-empty">正在看这些席位是偏多、偏空，还是对冲…</p>'
     : state.futAiError
-      ? `<div class="text-[12px]" style="color:var(--up)">${esc(state.futAiError)}</div>`
+      ? `<p class="trend-hot">${esc(state.futAiError)}</p>`
       : state.futAdvice
-        ? reportArticleHtml(state.futAdvice)
-        : '<div class="text-[12px]" style="color:var(--muted)">席位结论还没有。保存过密钥的话，开盘 9:25、盘中 13:00、尾盘 14:40 各自动写一次。</div>';
+        ? `<div class="trend-ai-box">${reportArticleHtml(state.futAdvice)}</div>`
+        : '<p class="trend-empty">席位结论还没有。保存过密钥的话，开盘、盘中、尾盘各自动写一次。</p>';
   const advice = state.trendAdvice;
   const adviceHtml = state.trendAiRunning
-    ? '<div class="text-[12px]" style="color:var(--muted)">正在调用模型，只根据上面这张纸…</div>'
+    ? '<p class="trend-empty">正在调用模型，只根据上面这张纸…</p>'
     : state.trendAiError
-      ? `<div class="text-[12px]" style="color:var(--up)">${esc(state.trendAiError)}</div>`
+      ? `<p class="trend-hot">${esc(state.trendAiError)}</p>`
       : advice
-        ? reportArticleHtml(advice)
-        : '<div class="text-[12px]" style="color:var(--muted)">模型结论还没有。保存过密钥的话，开盘 9:25、盘中 13:00、尾盘 14:40 各自动写一次。上面的规则粗判不是模型。</div>';
+        ? `<div class="trend-ai-box">${reportArticleHtml(advice)}</div>`
+        : '<p class="trend-empty">模型结论还没有。保存过密钥的话，开盘、盘中、尾盘各自动写一次。</p>';
+  const aiBtn = (attr, running, has) =>
+    `<button type="button" ${attr} class="trend-ai-btn" ${running ? 'disabled' : ''}>${running ? '分析中' : has ? '重新分析' : '用 AI 出结论'}</button>`;
   els.trendSheet.innerHTML = `
-    <div class="mb-1 flex flex-wrap items-baseline gap-2">
-      <div class="text-sm font-semibold">顺势</div>
-      <span class="text-[11px] font-semibold ${moodCls}">${esc(mood)}</span>
-      ${sheet.tapeWeak ? '<span class="text-[11px]" style="color:var(--down)">跌家占优，外盘降权</span>' : ''}
-    </div>
-    <p class="mb-2 text-[11px] leading-relaxed" style="color:var(--muted)">数据时间：北京 ${esc(clock.beijing)}。大A下一交易日 <b>${esc(clock.next)}</b>。美股这一时段的美东时间 ${esc(clock.eastern)}。下面说的隔夜，指的就是这个美股时段，对应大A的 ${esc(clock.next)}。</p>
-    <p class="mb-2 text-[12px] leading-relaxed"><span class="text-[10px]" style="color:var(--muted)">规则粗判，不是模型。</span> ${esc(sheet.plan || '')}</p>
-    <div class="trend-metrics">
-      <div><span title="今天涨停股票里，最多连续几天涨停">高度</span><b>${s?.height ?? '—'}板</b></div>
-      <div><span title="摸到涨停又打开的数量，除以涨停加炸板">炸板率</span><b>${s?.zbRate == null ? '—' : `${Math.round(s.zbRate * 100)}%`}</b></div>
-      <div><span title="上一个A股交易日涨停的股票，今天的平均涨跌">昨涨停溢价</span><b class="${tone(s?.premium)}">${s?.premium == null ? '—' : pctText(s.premium)}</b></div>
-      <div><span title="昨天第一天涨停的票里，今天再次涨停的比例">首板晋级</span><b>${s?.promoRate == null ? '—' : `${Math.round(s.promoRate * 100)}%`}</b></div>
-    </div>
-    <p class="text-[10px] leading-relaxed" style="color:var(--muted)">高度是连板有多高。炸板率高，说明涨停封不住。昨涨停溢价为负，说明昨天的板今天在亏。首板晋级低，说明接力差，不宜去追新板。</p>
-    <div class="trend-block"><div class="trend-label">隔夜映射 · 美东 ${esc(clock.eastern)} → 大A ${esc(clock.next)}</div><p class="mb-1 text-[10px] leading-relaxed" style="color:var(--muted)">外盘这一时段涨了，对照大A ${esc(clock.next)} 可能被带着看的板块，并看 A 股这边是不是已经大涨。已经大涨就标不宜再追。跌家占优时，这条只是线索。</p>${overnight || '<div style="color:var(--muted)">外盘没有明显强于 1% 的方向。</div>'}</div>
-    <div class="trend-block"><div class="trend-label">主线</div>${mains || '<div style="color:var(--muted)">没有还在进的主题。资金和价格都没有形成可以跟的主线。</div>'}</div>
-    <div class="trend-block"><div class="trend-label">主题资金</div><div class="mb-1 text-[11px]" style="color:var(--muted)">净流入</div><div class="trend-chips">${flowLine(inflow) || '—'}</div><div class="mb-1 mt-1 text-[11px]" style="color:var(--muted)">净流出</div><div class="trend-chips">${flowLine(outflow) || '—'}</div></div>
-    <div class="trend-block"><div class="trend-label">龙虎榜席位${sheet.seatDate ? ` · ${esc(sheet.seatDate)}` : ''}</div><p class="mb-1 text-[10px] leading-relaxed" style="color:var(--muted)">龙虎榜是交易所公布的异动股买卖前五营业部。能看到机构专用、沪股通深股通、以及常见游资席位有没有净买。这不是他们的全部持仓。</p>${seats || '<div style="color:var(--muted)">这天的席位还没出来。</div>'}</div>
-    <div class="trend-block">
-      <div class="mb-1 flex items-center justify-between gap-2">
-        <div class="trend-label">期货席位${fut?.date ? ` · 持仓日 ${esc(fut.date)}` : ''}</div>
-        <button type="button" data-fut-ai class="rounded-md bg-accent px-2 py-1 text-[11px] font-semibold text-white" ${state.futAiRunning ? 'disabled' : ''}>${state.futAiRunning ? '分析中' : state.futAdvice ? '重新分析' : '分析这些席位'}</button>
+    <div class="trend-head">
+      <div>
+        <div class="trend-head-title">顺势</div>
+        <div class="trend-head-meta">北京 ${esc(clock.beijing)} · 下一交易日 ${esc(clock.next)} · 美东 ${esc(clock.eastern)}</div>
       </div>
-      <p class="mb-1 text-[10px] leading-relaxed" style="color:var(--muted)">加多单，是这家期货公司当天多头持仓比上一交易日多了多少手。加空单是空头增加。括号里的数字是增减，前面是持仓手数。带「代客」的是客户的单，不是期货公司自己的钱。多空一起加，更像对冲或客户两边都有，不要当成它在单边看涨。这是交易所公布的前 20 名会员，不是全部持仓，也不是股票账户。持仓日是 ${esc(fut?.date || '—')}，用来看大A ${esc(clock.next)}。</p>
-      ${futHtml || '<div style="color:var(--muted)">这天的期货席位还没出来。</div>'}
-      <p class="mb-1 mt-2 text-[10px] leading-relaxed" style="color:var(--muted)">每个交易日自动三次：开盘 9:25、盘中 13:00、尾盘 14:40。过了点再打开，只补当前这一档。点按钮会马上再写一版，逐条说偏多、偏空还是对冲，并写成持仓怎么处理、跟不跟这一段。</p>
-      ${futAdviceHtml}
-    </div>
-    <div class="trend-block"><div class="trend-label">报告对照 · ${esc(sheet.review?.day || '还没有')} 的结论，对 ${esc(clock.today)} 的涨跌</div><p class="mb-1">${esc(sheet.review?.summary || '')}</p><div class="trend-chips">${reviewRows}</div></div>
-    <div class="trend-block">
-      <div class="mb-1 flex items-center justify-between gap-2">
-        <div class="trend-label">最终建议</div>
-        <button type="button" data-trend-ai class="rounded-md bg-accent px-2 py-1 text-[11px] font-semibold text-white" ${state.trendAiRunning ? 'disabled' : ''}>${state.trendAiRunning ? '分析中' : advice ? '重新分析' : '用 AI 出结论'}</button>
+      <div class="trend-head-tags">
+        <span class="trend-mood ${moodCls}">${esc(mood)}</span>
+        ${sheet.tapeWeak ? '<span class="trend-hot">跌家占优，外盘降权</span>' : ''}
       </div>
-      <p class="mb-1 text-[10px] leading-relaxed" style="color:var(--muted)">对着大A ${esc(clock.next)}。每个交易日自动三次：开盘 9:25、盘中 13:00、尾盘 14:40。过了点再打开，只补当前这一档。点按钮会马上重做。结论写成持仓怎么处理、跟哪段主力。</p>
-      ${adviceHtml}
     </div>
-    <p class="text-[10px] leading-snug" style="color:var(--muted)">外盘、连板和席位是公开数据的粗判，不是机构底仓。已经大涨的方向写成不宜再追。不构成买卖承诺。</p>`;
+    ${trendCard('总结', trendPlanHtml(sheet.plan), '', 'trend-summary')}
+    ${trendCard(
+      '情绪',
+      `<div class="trend-metrics">
+        <div><span>高度</span><b>${s?.height ?? '—'}板</b></div>
+        <div><span>炸板率</span><b>${s?.zbRate == null ? '—' : `${Math.round(s.zbRate * 100)}%`}</b></div>
+        <div><span>昨涨停溢价</span><b class="${tone(s?.premium)}">${s?.premium == null ? '—' : pctText(s.premium)}</b></div>
+        <div><span>首板晋级</span><b>${s?.promoRate == null ? '—' : `${Math.round(s.promoRate * 100)}%`}</b></div>
+      </div>
+      <p class="trend-hint">高度看连板。炸板率高说明封不住。溢价为负说明昨板今天亏。晋级低就不宜追新板。</p>`,
+    )}
+    ${trendCard(
+      `隔夜映射 · 美东 ${esc(clock.eastern)} → 大A ${esc(clock.next)}`,
+      `${overnight || '<p class="trend-empty">外盘没有明显强于 1% 的方向。</p>'}
+      <p class="trend-hint">外盘涨了，对照大A可能被带着看的板块。已经大涨就标不宜再追。</p>`,
+    )}
+    ${trendCard('主线', mains || '<p class="trend-empty">没有还在进的主题。</p>')}
+    ${trendCard(
+      '主题资金',
+      `<div class="trend-flow-label">净流入</div><div class="trend-chips">${flowLine(inflow) || '—'}</div>
+      <div class="trend-flow-label">净流出</div><div class="trend-chips">${flowLine(outflow) || '—'}</div>`,
+    )}
+    ${trendCard(
+      `龙虎榜${sheet.seatDate ? ` · ${esc(sheet.seatDate)}` : ''}`,
+      seats || '<p class="trend-empty">这天的席位还没出来。</p>',
+    )}
+    ${trendCard(
+      `期货席位${fut?.date ? ` · 持仓日 ${esc(fut.date)}` : ''}`,
+      `${futHtml || '<p class="trend-empty">这天的期货席位还没出来。</p>'}
+      <p class="trend-hint">括号是当日增减手数。代客是客户的单。多空一起加更像对冲。</p>
+      ${futAdviceHtml}`,
+      aiBtn('data-fut-ai', state.futAiRunning, !!state.futAdvice),
+    )}
+    ${trendCard(
+      `报告对照 · ${esc(sheet.review?.day || '还没有')} → ${esc(clock.today)}`,
+      `${sheet.review?.summary ? `<p class="trend-summary-line">${highlightTrend(sheet.review.summary)}</p>` : '<p class="trend-empty">还没有可对照的报告。</p>'}${reviewRows}`,
+    )}
+    ${trendCard(
+      `最终建议 · 对着大A ${esc(clock.next)}`,
+      adviceHtml,
+      aiBtn('data-trend-ai', state.trendAiRunning, !!advice),
+    )}
+    <p class="trend-foot">外盘、连板和席位是公开数据的粗判，不是机构底仓。不构成买卖承诺。</p>`;
 }
 
 function slotNote(slot) {
@@ -2531,26 +2626,18 @@ async function refreshAll() {
   }
 }
 
-async function importShenqiData(force = false) {
-  if (!force && state.settings?.importedShenqi) return 0;
-  try {
-    const importUrl = chrome.runtime.getURL('import-shenqi.json');
-    const res = await fetch(importUrl);
-    if (!res.ok) return 0;
-    const bundle = await res.json();
-    // fix display names in groups
-    bundle.groups = (bundle.groups || []).map((g) => ({
+async function applyImportedBundle(bundle) {
+  const next = {
+    ...bundle,
+    groups: (bundle.groups || []).map((g) => ({
       ...g,
       name: GROUP_NAME_FIX[g.name] || g.name,
-    }));
-    const result = await importShenqiBundle(bundle);
-    state.list = result.list;
-    state.settings = result.settings;
-    return result.added;
-  } catch (e) {
-    console.error(e);
-    return 0;
-  }
+    })),
+  };
+  const result = await importUserBundle(next);
+  state.list = result.list;
+  state.settings = result.settings;
+  return result;
 }
 
 async function setSort(sortBy) {
@@ -2979,15 +3066,42 @@ function closeBrief() {
 }
 
 function exportWatchlistJson() {
+  const s = state.settings || {};
+  const watchlist = (state.list || []).map((item) => {
+    const q = state.quotes[quoteKey(item)] || {};
+    const live = Number(q.price);
+    return {
+      ...item,
+      livePrice: Number.isFinite(live) ? live : item.livePrice ?? null,
+    };
+  });
   const payload = {
-    groups: state.settings?.groups || [],
-    watchlist: state.list,
+    version: 2,
+    exportedAt: new Date().toISOString(),
+    groups: s.groups || [],
+    watchlist,
+    indices: s.indices || [],
+    settings: {
+      theme: s.theme,
+      sortBy: s.sortBy,
+      showValuationBias: s.showValuationBias,
+      chartAxisMode: s.chartAxisMode,
+      funFlowNames: s.funFlowNames,
+      predictOpen: s.predictOpen,
+      lastView: s.lastView,
+      lastPrimary: s.lastPrimary,
+      lastGroup: s.lastGroup,
+      mobileGroupsExpanded: s.mobileGroupsExpanded,
+      aiModel: s.aiModel,
+      aiHistory: s.aiHistory || [],
+      aiReports: s.aiReports || {},
+    },
   };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'genius-trader-export.json';
+  a.download = `genius-trader-export-${new Date().toISOString().slice(0, 10)}.json`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -3236,15 +3350,38 @@ els.dialogOk.addEventListener('click', () => {
 });
 els.dialogMask.addEventListener('click', () => closeDialog(false));
 
-$('import-btn')?.addEventListener('click', async () => {
-  const ok = await confirmDialog('导入神器自选', '将合并导入股票/基金与分组（已有代码不重复）。继续？');
+$('import-btn')?.addEventListener('click', () => {
+  const picker = $('import-file');
+  if (picker) {
+    picker.value = '';
+    picker.click();
+  }
+});
+$('import-file')?.addEventListener('change', async (e) => {
+  const file = e.target?.files?.[0];
+  if (!file) return;
+  let bundle;
+  try {
+    bundle = JSON.parse(await file.text());
+  } catch {
+    els.statusText.textContent = '导入失败：不是有效的 JSON';
+    return;
+  }
+  const ok = await confirmDialog(
+    '导入备份',
+    '将合并股票、基金、分组、成本与现价。已有代码会补上成本/价格，新代码会加进来。继续？',
+  );
   if (!ok) return;
-  const added = await importShenqiData(true);
+  const { added, updated } = await applyImportedBundle(bundle);
+  applyTheme(state.settings?.theme);
   renderPrimaryTabs();
   renderGroupTabs();
   renderList();
   await refreshQuotes();
-  els.statusText.textContent = added > 0 ? `新导入 ${added} 只` : '没有新增（可能已全部导入）';
+  const bits = [];
+  if (added > 0) bits.push(`新增 ${added}`);
+  if (updated > 0) bits.push(`更新 ${updated}`);
+  els.statusText.textContent = bits.length ? `已导入（${bits.join('，')}）` : '没有可导入的数据';
 });
 
 window.addEventListener('resize', () => {
@@ -3341,7 +3478,6 @@ async function bootApp() {
       await setWatchlist(normalized);
     }
   }
-  const added = await importShenqiData(false);
   // 仅清理历史「未分组/默认」，不再按主题强制重分（避免分组来回变、删不掉）
   {
     const norm = normalizeGroups(state.settings.groups, state.list);
@@ -3382,8 +3518,7 @@ async function bootApp() {
   renderStatus();
   syncBriefUnreadUi();
   renderEventBanner();
-  if (added > 0) els.statusText.textContent = `已导入神器自选 ${added} 只`;
-  else if (currentUser()) els.statusText.textContent = `你好，${currentUser()}`;
+  if (currentUser()) els.statusText.textContent = `你好，${currentUser()}`;
   state.pulseBoards = {
     CN: pulseSectorSkeleton('CN'),
     US: pulseSectorSkeleton('US'),

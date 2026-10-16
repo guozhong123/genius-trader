@@ -69,6 +69,7 @@
               <button id="model-btn" class="glass shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-accent" title="填写密钥并选择模型">模型</button>
               <button id="export-btn" class="glass shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold" style="color: var(--muted)">导出</button>
               <button id="import-btn" class="glass shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold" style="color: var(--muted)">导入</button>
+              <input id="import-file" type="file" accept="application/json,.json" class="hidden" />
               <button id="logout-btn" class="glass shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold" style="color: var(--muted)" title="退出登录">退出</button>
               <button id="refresh-btn" class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-white bg-accent" title="刷新">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 12a9 9 0 1 1-2.6-6.2"/><path d="M21 3v7h-7"/></svg>
@@ -101,16 +102,16 @@
           <div id="list" class="list-panel mx-auto"></div>
           <div id="empty" class="glass mx-auto mt-2 hidden max-w-xl rounded-xl px-4 py-10 text-center">
             <h2 data-empty-title class="text-base font-semibold">还没有自选</h2>
-            <p data-empty-desc class="mt-1 text-xs" style="color: var(--muted)">顶部搜索添加</p>
+            <p data-empty-desc class="mt-1 text-xs" style="color: var(--muted)">顶部搜索添加，或点导入恢复备份</p>
           </div>
         </section>
 
         <!-- 盘况独立页 -->
         <section id="view-pulse" class="view-pane hidden">
-          <div id="trend-sheet" class="trend-sheet glass mb-2 rounded-xl p-3"></div>
-          <div id="pulse-bar" class="pulse-bar glass rounded-xl p-3">
+          <div id="pulse-bar" class="pulse-bar glass mb-2 rounded-xl p-3">
             <div id="pulse-boards"></div>
           </div>
+          <div id="trend-sheet" class="trend-sheet glass rounded-xl p-3"></div>
         </section>
 
         <section id="view-data" class="view-pane hidden space-y-2">

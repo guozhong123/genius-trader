@@ -410,6 +410,12 @@
     }
   }
 
+  @media (max-width: 520px) {
+    .pulse-boards {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
   .brief-tab.active {
     background: var(--accent);
     color: #fff;
@@ -544,21 +550,104 @@
       gap: 10px;
     }
 
-    .list-head.has-pos,
-    .list-row.has-pos {
-      grid-template-columns: minmax(0, 1fr) 52px 4.6rem 4.6rem;
-    }
-
-    .list-head.has-pos .pos-pnl,
-    .list-row.has-pos .pos-pnl,
-    .list-head.has-pos .col-actions,
-    .list-row.has-pos .col-actions {
+    .list-head.has-pos {
       display: none;
     }
 
+    .list-row.has-pos {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px 8px;
+      padding: 8px;
+    }
+
+    .list-row.has-pos .col-name-block {
+      flex: 1 1 calc(100% - 92px);
+      min-width: 0;
+    }
+
+    .list-row.has-pos .col-actions {
+      display: flex;
+      flex: 0 0 auto;
+      justify-content: flex-end;
+    }
+
+    .list-row.has-pos .col-num,
+    .list-row.has-pos .live-price {
+      flex: 0 0 auto;
+      min-width: 4.4rem;
+    }
+
+    .list-row.has-pos .live-price::before {
+      content: '现价 ';
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--muted);
+    }
+
+    .list-row.has-pos .pos-fields {
+      display: flex;
+      flex: 1 1 100%;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px 8px;
+    }
+
+    .list-row.has-pos .pos-pnl {
+      display: flex;
+      align-items: flex-end;
+    }
+
     .pos-field input {
-      width: 3.1rem;
-      padding: 2px 4px;
+      width: 4.4rem;
+      min-height: 32px;
+      padding: 4px 6px;
+    }
+
+    .top-actions {
+      flex-wrap: wrap;
+    }
+
+    .report-drawer {
+      width: 100vw;
+    }
+
+    .trend-sheet {
+      font-size: 13px;
+      gap: 10px;
+    }
+
+    .trend-card {
+      padding: 10px;
+    }
+
+    .trend-head-title {
+      font-size: 15px;
+    }
+
+    .pulse-bar {
+      padding: 10px 8px;
+    }
+
+    #chart-boards {
+      height: 280px;
+    }
+
+    #etf-frame {
+      height: 62vh;
+    }
+
+    #flow-summary {
+      font-size: 11px;
+    }
+
+    .ai-advice-actions {
+      grid-template-columns: 1fr;
+    }
+
+    .login-card {
+      width: min(400px, 100%);
     }
 
     .list-row .col-name-block {
@@ -727,7 +816,7 @@
 
   .list-head.has-pos,
   .list-row.has-pos {
-    grid-template-columns: minmax(0, 1fr) 72px 108px 108px 88px 100px;
+    grid-template-columns: minmax(0, 1fr) 72px 108px 108px 88px 36px 100px;
   }
 
   .pos-fields {
@@ -773,6 +862,24 @@
     font-size: 11px;
     font-weight: 600;
     color: var(--muted);
+  }
+
+  .pos-clear,
+  .pos-clear-h {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    min-height: 28px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--muted);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--line) 90%, transparent);
+  }
+
+  .pos-clear:hover {
+    color: var(--up);
   }
 
   .list-head {
@@ -963,16 +1070,151 @@
   font-weight: 700;
 }
 
+.trend-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.trend-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.trend-head-title {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.trend-head-meta {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.trend-head-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.trend-mood {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.trend-card {
+  border-radius: 12px;
+  padding: 12px;
+  background: var(--panel-solid);
+  border: 1px solid var(--line);
+}
+
+.trend-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid color-mix(in oklab, var(--line) 85%, transparent);
+}
+
+.trend-card-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.trend-ai-btn {
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--accent);
+}
+
+.trend-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.trend-summary-line {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.trend-item {
+  padding: 8px 0;
+  border-bottom: 1px dashed color-mix(in oklab, var(--line) 80%, transparent);
+}
+
+.trend-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.trend-item-k {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.trend-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
+.trend-sub-name {
+  font-weight: 600;
+}
+
+.trend-empty,
+.trend-hint,
+.trend-foot {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.trend-foot {
+  padding: 0 2px 4px;
+}
+
+.trend-flow-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.trend-ai-box {
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in oklab, var(--line) 85%, transparent);
+}
+
 .trend-metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
-  margin-bottom: 8px;
 }
 
 .trend-metrics div {
   border-radius: 10px;
-  padding: 6px 8px;
+  padding: 8px;
   background: color-mix(in oklab, var(--accent) 6%, transparent);
 }
 
@@ -983,7 +1225,7 @@
 }
 
 .trend-metrics b {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .trend-block {
@@ -996,6 +1238,22 @@
   padding: 8px 10px;
   background: color-mix(in oklab, var(--accent) 10%, transparent);
   line-height: 1.5;
+}
+
+.trend-summary {
+  margin: 0;
+  background: color-mix(in oklab, var(--up) 7%, transparent);
+  border-color: color-mix(in oklab, var(--up) 18%, var(--line));
+}
+
+.trend-hot {
+  color: var(--up);
+  font-weight: 700;
+}
+
+.trend-strip-label {
+  margin-right: 6px;
+  font-weight: 700;
 }
 
 .trend-label {
@@ -1016,12 +1274,13 @@
 .trend-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 6px;
 }
 
 .trend-chip {
   border-radius: 8px;
-  padding: 2px 6px;
+  padding: 4px 8px;
+  font-size: 12px;
   background: color-mix(in oklab, var(--accent) 6%, transparent);
 }
 
@@ -1073,6 +1332,7 @@
 
 .report-row {
   display: block;
+  position: relative;
   width: 100%;
   margin-bottom: 8px;
   border-radius: 12px;
@@ -1080,6 +1340,26 @@
   text-align: left;
   background: color-mix(in oklab, var(--accent) 6%, transparent);
   border: 1px solid var(--line);
+}
+
+.report-row.has-core {
+  padding-top: 30px;
+}
+
+.report-core {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  max-width: 52%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--up);
+  background: color-mix(in oklab, var(--up) 12%, transparent);
 }
 
 .report-row .line-clamp-2 {
