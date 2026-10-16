@@ -65,7 +65,7 @@ import {
 } from './lib/charts.js';
 import { getTodayEvents, getUpcomingEvents, getMajorUpcomingEvents, marketCalendarFacts } from './lib/calendar.js';
 import { buildLevelMarkLines } from './lib/levels.js';
-import { normalizeGroups } from './lib/stock-groups.js';
+import { normalizeGroups, repairStockGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
 import { askDeepseekReport, askMarketReport, askSeatReport, buildMarketFacts, buildSeatFacts, buildStockFacts, disciplineStop } from './lib/deepseek.js';
 import { OVERNIGHT_LINKS, buildOvernight, marketClock, moodLabel, planText, reviewCalls, scoreMainLines, shYmd, sheetBrief, tradingSlot } from './lib/trend.js';
@@ -413,18 +413,25 @@ function rememberPlace() {
 function groupsForPrimary() {
   const kind = state.primaryKind;
   const counts = new Map();
+  const otherKind = new Set();
   for (const item of state.list) {
-    if (item.kind !== kind) continue;
     const gid = item.groupId || 'other';
-    counts.set(gid, (counts.get(gid) || 0) + 1);
+    if (item.kind === kind) counts.set(gid, (counts.get(gid) || 0) + 1);
+    else otherKind.add(gid);
   }
   const groups = state.settings?.groups || [];
-  // 有持仓的分组 + 空分组（方便新建后拖入）
-  return groups.map((g) => ({
-    ...g,
-    count: counts.get(g.id) || 0,
-    displayName: displayGroupName(g.name),
-  }));
+  return groups
+    .filter((g) => {
+      const n = counts.get(g.id) || 0;
+      if (n > 0 || g.id === 'other') return true;
+      if (g.id === state.secondaryGroup) return true;
+      return !otherKind.has(g.id);
+    })
+    .map((g) => ({
+      ...g,
+      count: counts.get(g.id) || 0,
+      displayName: displayGroupName(g.name),
+    }));
 }
 
 function sortedList() {
@@ -2767,14 +2774,14 @@ async function deleteGroup(gid, { skipConfirm = false } = {}) {
 }
 
 async function moveItemGroup(item) {
-  const groups = state.settings.groups || [];
+  const groups = groupsForPrimary();
   const ok = await openDialog({
     title: `移动「${item.name || item.code}」`,
-    bodyHtml: `<div class="space-y-1">${groups
+    bodyHtml: `<div class="group-pick">${groups
       .map(
-        (g) => `<label class="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 ring-soft">
+        (g) => `<label class="group-pick-item">
         <input type="radio" name="move-gid" value="${escAttr(g.id)}" ${(item.groupId || 'other') === g.id ? 'checked' : ''} />
-        <span class="text-sm">${esc(displayGroupName(g.name))}</span>
+        <span>${esc(g.displayName)}</span>
       </label>`,
       )
       .join('')}</div>`,
@@ -3513,6 +3520,12 @@ async function bootApp() {
       await setWatchlist(norm.list);
       state.list = norm.list;
       state.settings = await saveSettings({ groups: norm.groups });
+    }
+    const repaired = repairStockGroups(state.list, state.settings.groups);
+    if (repaired.changed) {
+      await setWatchlist(repaired.list);
+      state.list = repaired.list;
+      state.settings = await saveSettings({ groups: repaired.groups });
     }
   }
   if (state.settings.groups?.some((g) => GROUP_NAME_FIX[g.name])) {

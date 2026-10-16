@@ -36,23 +36,37 @@ export const STOCK_THEME_BY_CODE = {
   '300308': 'cpo/半导体',
   '002384': 'cpo/半导体',
   '601869': 'cpo/半导体',
-  // 锂电 / 汽车
+  // 锂电
   '002594': '锂矿/电池',
   '300750': '锂矿/电池',
-  '600609': '锂矿/电池',
-  '000559': '锂矿/电池',
+  // 汽车（不是锂矿）
+  '600609': '汽车',
+  '000559': '汽车',
   // 工业母机
   '601091': '工业母机',
   // 有色
   '601899': '黄金白银有色',
-  // 科技 / 通信
-  '512570': '科技',
+  // 科技
   '003005': '科技',
-  '600103': '科技',
+  // 证券不是科技
+  '512570': '金融',
+  // 通信
+  '002467': '通信',
+  // 石油不是煤炭；养殖不是消费
+  '159195': '石油',
+  '516670': '养殖',
+};
+
+/** 只改还停在旧错误分组里的代码，手动改过的不动 */
+const THEME_REPAIR_FROM = {
+  '600609': '锂矿/电池',
+  '000559': '锂矿/电池',
+  '512570': '科技',
   '002467': '科技',
-  '600207': '科技',
-  // 石油能源
   '159195': '煤炭',
+  '516670': '混合消费',
+  '600103': '科技',
+  '600207': '科技',
 };
 
 const LEGACY_GROUP_NAMES = new Set(['未分组', '默认', '默认分组']);
@@ -106,6 +120,54 @@ export function normalizeImportedGroup(g) {
     return { id: 'other', name: '其他' };
   }
   return g;
+}
+
+export function repairStockGroups(list, groups) {
+  const nextGroups = [...(groups || [])];
+  const nameToId = new Map(nextGroups.map((g) => [g.name, g.id]));
+  const idToName = new Map(nextGroups.map((g) => [g.id, g.name]));
+  const ensure = (name) => {
+    if (name === '其他') {
+      if (!nameToId.has('其他')) {
+        nextGroups.unshift({ id: 'other', name: '其他' });
+        nameToId.set('其他', 'other');
+        idToName.set('other', '其他');
+      }
+      return nameToId.get('其他');
+    }
+    if (nameToId.has(name)) return nameToId.get(name);
+    const id = `g_${name.replace(/[^\w\u4e00-\u9fff]+/g, '_').slice(0, 24)}`;
+    nextGroups.push({ id, name });
+    nameToId.set(name, id);
+    idToName.set(id, name);
+    return id;
+  };
+
+  let changed = false;
+  const next = (list || []).map((item) => {
+    if (item.kind !== 'stock') return item;
+    const code = String(item.code);
+    const from = THEME_REPAIR_FROM[code];
+    const theme = STOCK_THEME_BY_CODE[code];
+    const current = idToName.get(item.groupId || 'other') || '';
+    if (from && current === from) {
+      const gid = theme ? ensure(theme) : ensure('其他');
+      if (gid !== item.groupId) {
+        changed = true;
+        return { ...item, groupId: gid };
+      }
+    }
+    if (!theme && (code === '600103' || code === '600207') && current === '科技') {
+      const gid = ensure('其他');
+      if (gid !== item.groupId) {
+        changed = true;
+        return { ...item, groupId: gid };
+      }
+    }
+    return item;
+  });
+  if (nextGroups.length !== (groups || []).length) changed = true;
+  return { list: next, groups: nextGroups, changed };
 }
 
 export function regroupStocks(list, groups) {

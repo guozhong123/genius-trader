@@ -709,6 +709,17 @@
       max-width: none !important;
       border-radius: 16px 16px 0 0 !important;
     }
+
+    #dialog-root.modal-wrap {
+      align-items: center !important;
+      padding: 12px !important;
+    }
+
+    #dialog.modal-panel {
+      width: min(420px, 94vw) !important;
+      max-width: 94vw !important;
+      border-radius: 16px !important;
+    }
   }
 
   @media (max-width: 480px) {
@@ -1072,6 +1083,47 @@
       display: none;
     }
   }
+}
+
+.dialog-panel {
+  display: flex;
+  flex-direction: column;
+  max-height: min(72dvh, 520px);
+  overflow: hidden;
+}
+
+.dialog-body {
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.dialog-actions {
+  flex: none;
+}
+
+.group-pick {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.group-pick-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 13px;
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--line) 90%, transparent);
+}
+
+.group-pick-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .login-root {
