@@ -770,6 +770,37 @@ function aiRowBtn(item) {
   return `<button type="button" data-ai="${escAttr(key)}" class="ai-row-btn ${toneCls}" title="${report ? '重新分析，点股票看报告' : 'DeepSeek 分析'}">${esc(label)}</button>`;
 }
 
+function aiProbCell(item) {
+  if (item.kind === 'fund') return '';
+  const key = itemKey(item);
+  if (state.aiRunning?.[key]) {
+    return '<div class="ai-probs"><span style="color:var(--muted)">分析中</span></div>';
+  }
+  const report = aiReportOf(item);
+  if (!report) return '<div class="ai-probs"><span style="color:var(--muted)">—</span></div>';
+  const line = (name, pct, on, bad) =>
+    `<span class="${on ? `on${bad ? ' down' : ''}` : ''}">${name} ${pct ?? 0}%</span>`;
+  return `<div class="ai-probs" title="买入 / 继续等 / 不买">
+    ${line('买入', report.buyProb, report.action === '买入', false)}
+    ${line('继续等', report.waitProb, report.action === '继续等', false)}
+    ${line('不买', report.avoidProb, report.action === '不买', true)}
+  </div>`;
+}
+
+function scanBarHtml() {
+  if (state.primaryKind !== 'stock') return '';
+  const prog = state.scanRunning
+    ? `分析中 ${state.scanProgress?.done || 0}/${state.scanProgress?.total || 0}`
+    : '点一下，分析全部自选股票';
+  const dis = state.scanRunning ? 'disabled' : '';
+  return `<div class="scan-bar">
+    <button type="button" data-scan-all ${dis} class="scan-btn">买入</button>
+    <button type="button" data-scan-all ${dis} class="scan-btn">继续等</button>
+    <button type="button" data-scan-all ${dis} class="scan-btn">不买</button>
+    <span class="scan-hint">${esc(prog)}</span>
+  </div>`;
+}
+
 function rowHtml(item) {
   const q = state.quotes[quoteKey(item)] || {};
   const name = preferDisplayName(q.name, item.name);
@@ -785,7 +816,7 @@ function rowHtml(item) {
     : fmtPrice(price, item.market);
   return `
     <article data-open="${escAttr(itemKey(item))}" draggable="${state.settings.sortBy === 'manual'}"
-      class="list-row row-compact glass group cursor-pointer rounded-lg has-pos">
+      class="list-row row-compact glass group cursor-pointer rounded-lg has-pos${isFund ? '' : ' has-ai'}">
       <div class="col-name-block">
         <div class="meta min-w-0 overflow-hidden">
         <div class="flex min-w-0 items-center gap-1">
@@ -800,6 +831,7 @@ function rowHtml(item) {
       </div>
       <div class="col-num live-price text-[13px] font-semibold leading-none">${priceLabel}</div>
       ${costLineHtml(item, price)}
+      ${aiProbCell(item)}
       <div class="col-actions">
         <button data-move-group="${escAttr(itemKey(item))}" class="rounded px-1 text-[10px] ring-soft" style="color:var(--muted)" title="改分组">组</button>
         <button data-pin="${escAttr(itemKey(item))}" class="rounded px-1 text-[10px] ring-soft" style="color:var(--muted)">${item.pinned ? '取消' : '顶'}</button>
@@ -812,7 +844,7 @@ function listHeaderHtml() {
   const sortBy = state.settings?.sortBy || 'manual';
   const isFund = state.primaryKind === 'fund';
   return `
-    <div class="list-head mb-0.5 has-pos">
+    <div class="list-head mb-0.5 has-pos${isFund ? '' : ' has-ai'}">
       <div class="col-name">
         <span>名称</span>
         <span class="col-sort">
@@ -824,6 +856,7 @@ function listHeaderHtml() {
       <div class="col-num">手数</div>
       <div class="pos-pnl">浮盈</div>
       <div class="pos-clear-h"></div>
+      ${isFund ? '' : '<div class="ai-probs">概率</div>'}
       <div class="col-actions text-right text-[11px]" style="color:var(--muted)">操作</div>
     </div>`;
 }
@@ -857,6 +890,7 @@ function renderList() {
 
   // 「全部」扁平列表，不按主题分组；表头可点排序
   els.list.innerHTML = `
+    ${scanBarHtml()}
     ${listHeaderHtml()}
     <div class="grid gap-0.5">${rows.map(rowHtml).join('')}</div>`;
   bindListEvents();
@@ -875,6 +909,13 @@ function renderList() {
 }
 
 function bindListEvents() {
+  els.list.querySelectorAll('[data-scan-all]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      scanAllStocks();
+    });
+  });
+
   els.list.querySelector('[data-sort-cycle]')?.addEventListener('click', async () => {
     const cur = state.settings?.sortBy || 'manual';
     await setSort(nextSortCycle(cur));
@@ -1533,7 +1574,7 @@ async function ensureDeepseekKey() {
   return openModelSettings();
 }
 
-async function runDeepseekForItem(item) {
+async function runDeepseekForItem(item, opts = {}) {
   if (!item || item.kind === 'fund') return;
   const keyId = itemKey(item);
   if (state.aiRunning?.[keyId]) return;
@@ -1549,7 +1590,7 @@ async function runDeepseekForItem(item) {
     positionDrafts.delete(keyId);
   }
   item = state.list.find((x) => itemKey(x) === keyId) || item;
-  const apiKey = await ensureDeepseekKey();
+  const apiKey = opts.apiKey || (await ensureDeepseekKey());
   if (!apiKey) return;
   state.aiRunning = { ...state.aiRunning, [keyId]: true };
   renderList();
@@ -1615,7 +1656,7 @@ async function runDeepseekForItem(item) {
       title: displayName || item.name || item.code,
     });
     if (state.detail && itemKey(state.detail) === keyId) renderDeepseekReport(saved);
-    openReportDrawer({ focusId: saved.id });
+    if (!opts.quiet) openReportDrawer({ focusId: saved.id });
   } catch (e) {
     console.error(e);
     const msg = String(e?.message || e);
@@ -1624,11 +1665,46 @@ async function runDeepseekForItem(item) {
     }
     if (/401|invalid|api key|密钥/i.test(msg)) {
       state.settings = await saveSettings({ deepseekApiKey: '' });
+      state.scanStop = true;
     }
   } finally {
     const next = { ...state.aiRunning };
     delete next[keyId];
     state.aiRunning = next;
+    if (!opts.quiet) renderList();
+  }
+}
+
+async function scanAllStocks() {
+  if (state.scanRunning) return;
+  const stocks = state.list.filter((x) => x.kind === 'stock');
+  if (!stocks.length) return;
+  const apiKey = await ensureDeepseekKey();
+  if (!apiKey) return;
+  state.scanRunning = true;
+  state.scanStop = false;
+  state.scanProgress = { done: 0, total: stocks.length };
+  renderList();
+  if (!state.center?.overview) await loadDataCenter().catch(() => {});
+  if (!state.insightNews?.length) await refreshMajorNews(false).catch(() => {});
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < stocks.length && !state.scanStop) {
+      const item = stocks[cursor];
+      cursor += 1;
+      try {
+        await runDeepseekForItem(item, { quiet: true, apiKey });
+      } catch (e) {
+        console.error(e);
+      }
+      state.scanProgress = { ...state.scanProgress, done: (state.scanProgress?.done || 0) + 1 };
+      renderList();
+    }
+  };
+  try {
+    await Promise.all(Array.from({ length: Math.min(2, stocks.length) }, () => worker()));
+  } finally {
+    state.scanRunning = false;
     renderList();
   }
 }

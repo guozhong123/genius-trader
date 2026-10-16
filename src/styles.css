@@ -594,6 +594,14 @@
       gap: 6px 8px;
     }
 
+    .list-row.has-pos .ai-probs {
+      flex: 1 1 100%;
+      flex-direction: row;
+      justify-content: flex-start;
+      gap: 8px;
+      max-height: none;
+    }
+
     .list-row.has-pos .pos-pnl {
       display: flex;
       align-items: flex-end;
@@ -830,6 +838,11 @@
     grid-template-columns: minmax(0, 1.15fr) 64px 92px 72px 92px 28px 88px;
   }
 
+  .list-head.has-pos.has-ai,
+  .list-row.has-pos.has-ai {
+    grid-template-columns: minmax(0, 1.15fr) 64px 92px 72px 92px 28px 78px 88px;
+  }
+
   .list-row.has-pos {
     padding: 4px 8px;
     min-height: 0;
@@ -911,6 +924,64 @@
     font-size: 11px;
     font-weight: 600;
     color: var(--muted);
+  }
+
+  .scan-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+
+  .scan-btn {
+    border-radius: 8px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--accent);
+    background: color-mix(in oklab, var(--accent) 10%, var(--panel-solid));
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 35%, transparent);
+  }
+
+  .scan-btn:disabled {
+    opacity: 0.55;
+  }
+
+  .scan-hint {
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  .ai-probs {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 0;
+    min-width: 0;
+    max-height: 3.45em;
+    overflow: hidden;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1.15;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    color: var(--muted);
+  }
+
+  .ai-probs .on {
+    color: var(--up);
+    font-weight: 700;
+  }
+
+  .ai-probs .on.down {
+    color: var(--down);
+  }
+
+  .list-head .ai-probs {
+    font-size: 11px;
+    font-weight: 600;
   }
 
   .pos-clear,
