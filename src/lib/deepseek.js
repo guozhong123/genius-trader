@@ -695,3 +695,62 @@ function clampPct(n) {
   if (!Number.isFinite(x)) return 0;
   return Math.max(0, Math.min(100, Math.round(x)));
 }
+
+const SCAN_SYSTEM = [
+  '你给一批自选股同时打分，只输出买入、继续等、不买的概率。',
+  '只根据给出的现价、涨跌、成本、止损和日K位置。禁止编造主力、新闻和目标价。',
+  '远离20日高点、均线之上追高、或已经跌破纪律止损：买入概率要低。',
+  '三个概率加起来约等于100。action 取概率最高的一项。',
+  '输出严格 JSON：{"items":[{"code":"6位代码","action":"买入|继续等|不买","buyProb":0到100,"waitProb":0到100,"avoidProb":0到100}]}',
+  'items 必须覆盖名单里的每一只，不要多出名单外的代码。',
+].join('');
+
+export function buildScanFacts(rows, tape) {
+  const body = (rows || []).map(holdingBlock).join('\n---\n');
+  return [tape || '', '下面每只单独打分，不要漏。', body].filter(Boolean).join('\n');
+}
+
+export async function askScanBatch(apiKey, facts) {
+  const key = String(apiKey || '').trim();
+  if (!key) throw new Error('缺少 DeepSeek 密钥');
+  const messages = [
+    { role: 'system', content: SCAN_SYSTEM },
+    { role: 'user', content: facts },
+  ];
+  const attempts = [
+    { model: 'deepseek-flash', thinking: { type: 'disabled' } },
+    { model: 'deepseek-chat' },
+  ];
+  let json = null;
+  let lastErr = null;
+  for (const attempt of attempts) {
+    try {
+      json = await postDeepseek(key, {
+        model: attempt.model,
+        temperature: 0.2,
+        response_format: { type: 'json_object' },
+        messages,
+        ...(attempt.thinking ? { thinking: attempt.thinking } : {}),
+      });
+      break;
+    } catch (e) {
+      lastErr = e;
+      if (/401|invalid|api key|密钥/i.test(String(e?.message || ''))) throw e;
+    }
+  }
+  if (!json) throw lastErr || new Error('DeepSeek 分析失败');
+  const report = JSON.parse(json?.choices?.[0]?.message?.content || '{}');
+  const list = Array.isArray(report.items) ? report.items : Array.isArray(report.stocks) ? report.stocks : [];
+  return list
+    .map((row) => {
+      const action = ['买入', '继续等', '不买'].includes(row?.action) ? row.action : '继续等';
+      return {
+        code: String(row?.code || '').replace(/\D/g, '').slice(-6),
+        action,
+        buyProb: clampPct(row?.buyProb),
+        waitProb: clampPct(row?.waitProb),
+        avoidProb: clampPct(row?.avoidProb),
+      };
+    })
+    .filter((row) => row.code);
+}

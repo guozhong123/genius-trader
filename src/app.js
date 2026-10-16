@@ -67,7 +67,7 @@ import { getTodayEvents, getUpcomingEvents, getMajorUpcomingEvents, marketCalend
 import { buildLevelMarkLines, calcAutoLevels } from './lib/levels.js';
 import { normalizeGroups, repairStockGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
-import { askDeepseekReport, askHoldingsReport, askMarketReport, askSeatReport, buildHoldingsFacts, buildMarketFacts, buildSeatFacts, buildStockFacts, disciplineStop } from './lib/deepseek.js';
+import { askDeepseekReport, askMarketReport, askScanBatch, askSeatReport, buildMarketFacts, buildScanFacts, buildSeatFacts, buildStockFacts, disciplineStop } from './lib/deepseek.js';
 import { OVERNIGHT_LINKS, buildOvernight, marketClock, moodLabel, planText, reviewCalls, scoreMainLines, shYmd, sheetBrief, tradingSlot } from './lib/trend.js';
 import { isLoggedIn, login, logout, currentUser } from './lib/auth.js';
 
@@ -368,7 +368,7 @@ function scrollPageTop() {
 function setView(view) {
   state.view = view;
   scrollPageTop();
-  ['watch', 'pulse', 'data', 'etf', 'picks'].forEach((v) => {
+  ['watch', 'pulse', 'data', 'etf'].forEach((v) => {
     const el = $(`view-${v}`);
     if (!el) return;
     const on = v === view;
@@ -397,14 +397,13 @@ function setView(view) {
     refreshPulse();
     loadTrendSheet();
   }
-  if (view === 'picks') renderPicks();
   requestAnimationFrame(() => resizeAllCharts());
   rememberPlace();
 }
 
 function rememberPlace() {
   if (!state.settings) return;
-  const lastView = ['watch', 'pulse', 'data', 'etf', 'picks'].includes(state.view) ? state.view : 'watch';
+  const lastView = ['watch', 'pulse', 'data', 'etf'].includes(state.view) ? state.view : 'watch';
   const lastPrimary = state.primaryKind === 'fund' ? 'fund' : 'stock';
   const lastGroup = state.secondaryGroup || 'all';
   if (
@@ -454,8 +453,8 @@ function sortedList() {
     const byBuy = state.primaryKind === 'stock' && (sortBy === 'manual' || sortBy === 'buyProb');
     if (!byBuy && !!b.pinned - !!a.pinned) return !!b.pinned - !!a.pinned;
     if (byBuy) {
-      const pa = Number(aiReportOf(a)?.buyProb);
-      const pb = Number(aiReportOf(b)?.buyProb);
+      const pa = Number(probSnapshot(a)?.buyProb);
+      const pb = Number(probSnapshot(b)?.buyProb);
       const diff = (Number.isFinite(pb) ? pb : -1) - (Number.isFinite(pa) ? pa : -1);
       if (diff) return diff;
       return (a.order ?? 0) - (b.order ?? 0);
@@ -778,13 +777,21 @@ function aiRowBtn(item) {
   return `<button type="button" data-ai="${escAttr(key)}" class="ai-row-btn ${toneCls}" title="${report ? '重新分析，点股票看报告' : 'DeepSeek 分析'}">${esc(label)}</button>`;
 }
 
+function probSnapshot(item) {
+  const key = itemKey(item);
+  const scan = state.settings?.aiScan?.[key];
+  const report = aiReportOf(item);
+  if (scan && (!report || (scan.generatedAt || 0) >= (report.generatedAt || 0))) return scan;
+  return report;
+}
+
 function aiProbCell(item) {
   if (item.kind === 'fund') return '';
   const key = itemKey(item);
   if (state.aiRunning?.[key]) {
     return '<div class="ai-probs"><span style="color:var(--muted)">分析中</span></div>';
   }
-  const report = aiReportOf(item);
+  const report = probSnapshot(item);
   if (!report) return '<div class="ai-probs"><span style="color:var(--muted)">—</span></div>';
   const line = (name, pct, on, bad) =>
     `<span class="${on ? `on${bad ? ' down' : ''}` : ''}">${name} ${pct ?? 0}%</span>`;
@@ -1688,26 +1695,48 @@ async function scanAllStocks() {
   if (!apiKey) return;
   state.scanRunning = true;
   state.scanStop = false;
+  const chunks = [];
+  for (let i = 0; i < stocks.length; i += 12) chunks.push(stocks.slice(i, i + 12));
   state.scanProgress = { done: 0, total: stocks.length };
   renderList();
-  if (!state.center?.overview) await loadDataCenter().catch(() => {});
-  if (!state.insightNews?.length) await refreshMajorNews(false).catch(() => {});
-  let cursor = 0;
-  const worker = async () => {
-    while (cursor < stocks.length && !state.scanStop) {
-      const item = stocks[cursor];
-      cursor += 1;
-      try {
-        await runDeepseekForItem(item, { quiet: true, apiKey });
-      } catch (e) {
-        console.error(e);
+  const tape = judgeTape(state.center)?.label || '';
+  try {
+    for (const chunk of chunks) {
+      if (state.scanStop) break;
+      const rows = [];
+      let cursor = 0;
+      const worker = async () => {
+        while (cursor < chunk.length) {
+          const item = chunk[cursor];
+          cursor += 1;
+          const secid = item.secid || toSecid(item.market, item.code, item.marketNo);
+          const dayK = await fetchKline(secid, 101, 30).catch(() => null);
+          rows.push({ item, quote: state.quotes[quoteKey(item)] || {}, dayK });
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(4, chunk.length) }, () => worker()));
+      const scored = await askScanBatch(apiKey, buildScanFacts(rows, tape ? `今天环境：${tape}` : ''));
+      const known = new Map(chunk.map((item) => [String(item.code).replace(/\D/g, '').slice(-6), item]));
+      const aiScan = { ...(state.settings?.aiScan || {}) };
+      const now = Date.now();
+      for (const row of scored) {
+        const item = known.get(row.code);
+        if (!item) continue;
+        aiScan[itemKey(item)] = { ...row, generatedAt: now };
       }
-      state.scanProgress = { ...state.scanProgress, done: (state.scanProgress?.done || 0) + 1 };
+      state.settings = await saveSettings({ aiScan });
+      state.scanProgress = {
+        ...state.scanProgress,
+        done: Math.min(stocks.length, (state.scanProgress?.done || 0) + chunk.length),
+      };
       renderList();
     }
-  };
-  try {
-    await Promise.all(Array.from({ length: Math.min(2, stocks.length) }, () => worker()));
+  } catch (e) {
+    console.error(e);
+    const msg = String(e?.message || e);
+    if (/401|invalid|api key|密钥/i.test(msg)) {
+      state.settings = await saveSettings({ deepseekApiKey: '' });
+    }
   } finally {
     state.scanRunning = false;
     renderList();
@@ -3317,98 +3346,6 @@ async function refreshMajorNews(force = false) {
   return state.insightNews;
 }
 
-function heldStocks() {
-  return state.list.filter((x) => x.kind === 'stock' && Number(x.lots) > 0);
-}
-
-function renderPicks() {
-  const body = $('picks-body');
-  if (!body) return;
-  const held = heldStocks();
-  if (!held.length) {
-    body.innerHTML =
-      '<p style="color:var(--muted)">还没有持仓。在自选股票里填上手数，再来分析今天买不买、什么时候卖。</p>';
-    return;
-  }
-  if (state.picksLoading) {
-    body.innerHTML = `<p style="color:var(--muted)">正在看 ${held.length} 只持仓的日K和成本…</p>`;
-    return;
-  }
-  const report = state.picks || state.settings?.picksReport;
-  if (!report) {
-    body.innerHTML = `<p style="color:var(--muted)">当前 ${held.length} 只填了手数。点「分析」才会调用 AI。</p>`;
-    return;
-  }
-  const card = (row, text) => `<button type="button" class="pick-card" data-pick-code="${escAttr(row.code)}">
-      <div class="font-semibold">${esc(row.name || row.code)} <span style="color:var(--muted)">${esc(row.code)}</span></div>
-      <p class="mt-1 text-left">${highlightTrend(text)}</p>
-    </button>`;
-  const block = (title, rows, line) => {
-    const list = rows || [];
-    const inner = list.length
-      ? list.map((row) => card(row, line(row))).join('')
-      : '<p style="color:var(--muted)">今天没有。</p>';
-    return `<div class="pick-block"><div class="text-sm font-semibold">${title}</div><div class="mt-1 space-y-1">${inner}</div></div>`;
-  };
-  const when = report.generatedAt
-    ? new Date(report.generatedAt).toLocaleString('zh-CN', { hour12: false })
-    : '';
-  const err = state.picksError ? `<p style="color:var(--up)">${esc(state.picksError)}</p>` : '';
-  body.innerHTML = `
-    ${err}
-    <p class="text-[11px]" style="color:var(--muted)">${esc(when)} · ${held.length} 只持仓 · 仅供参考，不构成投资建议</p>
-    <div class="pick-card pick-card-static">${highlightTrend(report.summary || '')}</div>
-    ${block('今天可以买', report.buy, (row) => [row.why, row.when].filter(Boolean).join('。'))}
-    ${block('什么时候卖', report.sell, (row) => [row.when, row.why].filter(Boolean).join('。'))}
-    ${block('先拿着', report.hold, (row) => row.note || row.why || '')}
-  `;
-}
-
-async function runPicks() {
-  const held = heldStocks().slice(0, 24);
-  if (!held.length) {
-    renderPicks();
-    return;
-  }
-  const apiKey = await ensureDeepseekKey();
-  if (!apiKey) return;
-  state.picksLoading = true;
-  state.picksError = '';
-  renderPicks();
-  try {
-    const rows = [];
-    let cursor = 0;
-    const worker = async () => {
-      while (cursor < held.length) {
-        const item = held[cursor];
-        cursor += 1;
-        const secid = item.secid || toSecid(item.market, item.code, item.marketNo);
-        const dayK = await fetchKline(secid, 101, 30).catch(() => null);
-        rows.push({ item, quote: state.quotes[quoteKey(item)] || {}, dayK });
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(4, held.length) }, () => worker()));
-    const report = await askHoldingsReport(apiKey, buildHoldingsFacts(rows), state.settings?.aiModel);
-    const known = new Set(held.map((x) => String(x.code).replace(/\D/g, '').slice(-6)));
-    const keep = (list) => (list || []).filter((row) => known.has(String(row.code).slice(-6)));
-    report.buy = keep(report.buy);
-    report.sell = keep(report.sell);
-    report.hold = keep(report.hold);
-    state.picks = report;
-    state.settings = await saveSettings({ picksReport: report });
-  } catch (e) {
-    console.error(e);
-    const msg = String(e?.message || e);
-    state.picksError = msg;
-    if (/401|invalid|api key|密钥/i.test(msg)) {
-      state.settings = await saveSettings({ deepseekApiKey: '' });
-    }
-  } finally {
-    state.picksLoading = false;
-    renderPicks();
-  }
-}
-
 /* events */
 document.querySelectorAll('.view-tab').forEach((tab) => {
   tab.addEventListener('click', () => setView(tab.dataset.view));
@@ -3532,14 +3469,6 @@ document.querySelectorAll('.rank-tab').forEach((tab) => {
 els.rankSort.addEventListener('change', () => {
   state.rank.sort = els.rankSort.value;
   renderRank();
-});
-
-$('picks-run')?.addEventListener('click', () => runPicks());
-$('picks-body')?.addEventListener('click', (e) => {
-  const code = e.target.closest?.('[data-pick-code]')?.dataset.pickCode;
-  if (!code) return;
-  const item = state.list.find((x) => String(x.code).replace(/\D/g, '').slice(-6) === String(code).slice(-6));
-  if (item) openDetail(item);
 });
 
 document.querySelectorAll('.period-btn').forEach((btn) => {
@@ -3749,7 +3678,7 @@ async function bootApp() {
   if (state.settings?.funFlowNames && els.funNamesBtn) {
     els.funNamesBtn.classList.add('bg-accent', 'text-white');
   }
-  const savedView = ['watch', 'pulse', 'data', 'etf', 'picks'].includes(state.settings?.lastView)
+  const savedView = ['watch', 'pulse', 'data', 'etf'].includes(state.settings?.lastView)
     ? state.settings.lastView
     : 'watch';
   state.primaryKind = state.settings?.lastPrimary === 'fund' ? 'fund' : 'stock';

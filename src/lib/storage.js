@@ -94,12 +94,24 @@ export async function setWatchlist(list) {
   await chrome.storage.local.set({ [KEYS.watchlist]: list });
 }
 
+function isGoldIndex(x) {
+  const text = `${x?.name || ''} ${x?.code || ''} ${x?.secid || ''}`;
+  return /黄金|GC00Y|AU9999|AU0|518880|518800|159934/.test(text);
+}
+
 export function uniqueIndices(list) {
+  const rows = list || [];
+  const gold = rows.find((x) => isGoldIndex(x) && /GC00Y/.test(`${x.code}${x.secid}`)) || rows.find(isGoldIndex);
   const seen = new Set();
   const out = [];
-  for (const x of list || []) {
+  let goldUsed = false;
+  for (const x of rows) {
     const sid = x?.secid || '';
-    if (!sid || sid === '1.518880' || x.code === '518880') continue;
+    if (!sid) continue;
+    if (isGoldIndex(x)) {
+      if (goldUsed || (gold && x !== gold)) continue;
+      goldUsed = true;
+    }
     if (seen.has(sid)) continue;
     seen.add(sid);
     out.push(x);
