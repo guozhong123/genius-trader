@@ -151,8 +151,10 @@
     border-radius: 999px;
     box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
   }
+}
 
-  .app-frame {
+/* 组件样式放在 layer 外：避免 Tailwind 重排 utilities 后，桌面 grid 盖掉移动端 @media */
+.app-frame {
     display: flex;
     align-items: flex-start;
     min-height: 100vh;
@@ -706,21 +708,49 @@
       justify-self: end;
     }
 
+    /* 自选次导航：股票/分组与盘面语气分行，避免「分组」被挤成竖条 */
+    #watch-subnav {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px 8px;
+    }
+
     #group-tabs {
+      flex: 1 1 auto;
+      width: auto;
+      min-width: 0;
       align-items: center;
       gap: 6px;
+      flex-wrap: wrap;
     }
 
     .groups-fold-btn {
       display: inline-flex;
+      flex: none;
       align-items: center;
       gap: 4px;
+      white-space: nowrap;
       border-radius: 6px;
       padding: 4px 8px;
       font-size: 11px;
       font-weight: 600;
       color: var(--accent);
       box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--line) 90%, transparent);
+    }
+
+    .market-tone {
+      flex: 1 1 100%;
+      order: 3;
+      margin: 0;
+      text-align: left;
+      line-height: 1.35;
+    }
+
+    #status-text {
+      margin-left: 0;
+      flex: 1 1 auto;
+      text-align: right;
     }
 
     .list-row .col-actions button {
@@ -776,21 +806,60 @@
       padding: 4px 8px;
     }
 
-    .list-head,
-    .list-row {
+    .list-head:not(.has-pos),
+    .list-row:not(.has-pos) {
       grid-template-columns: minmax(0, 1fr) 68px;
       gap: 6px;
       padding: 8px 8px;
     }
 
-    .list-row .col-name-block,
-    .list-head .col-name {
-      grid-template-columns: minmax(0, 1fr) 4.5rem;
+    .list-row.has-pos {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 8px 8px;
+      padding: 10px 8px;
+    }
+
+    .list-row.has-pos .live-price {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      font-size: 15px;
+    }
+
+    .list-row.has-pos .pos-field:nth-child(1) {
+      grid-column: 1;
+    }
+
+    .list-row.has-pos .pos-field:nth-child(2) {
+      grid-column: 2;
+    }
+
+    .list-row.has-pos .pos-pnl {
+      grid-column: 1 / -1;
+      align-items: flex-start;
+      flex-direction: row;
+      flex-wrap: wrap;
+      gap: 6px 10px;
+      justify-content: flex-start;
+      text-align: left;
+    }
+
+    .list-row .col-name-block {
+      gap: 6px;
     }
 
     .list-row .col-name-block .pct-chip {
       min-width: 4.25rem;
       font-size: 11px;
+    }
+
+    .list-row.has-pos .pos-field input {
+      width: 100%;
+    }
+
+    .list-row.has-pos .pos-field input::placeholder {
+      color: transparent;
     }
   }
 
@@ -1222,14 +1291,13 @@
     margin-bottom: 8px;
   }
 
-  @media (max-width: 720px) {
-    .list-head:not(.has-pos),
-    .list-row:not(.has-pos) {
-      grid-template-columns: minmax(0, 1fr) 72px;
-    }
-    .list-row:not(.has-pos) .col-actions {
-      display: none;
-    }
+@media (max-width: 720px) {
+  .list-head:not(.has-pos),
+  .list-row:not(.has-pos) {
+    grid-template-columns: minmax(0, 1fr) 72px;
+  }
+  .list-row:not(.has-pos) .col-actions {
+    display: none;
   }
 }
 
@@ -1642,6 +1710,210 @@ button.pick-card {
   flex: 1 1 180px;
   margin: 0;
   text-align: center;
+}
+
+@media (max-width: 900px) {
+  .market-tone {
+    flex: 1 1 100%;
+    order: 3;
+    text-align: left;
+    line-height: 1.35;
+  }
+
+  #watch-subnav {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+  }
+
+  #group-tabs {
+    flex: 1 1 auto;
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .groups-fold-btn {
+    flex: none;
+    white-space: nowrap;
+  }
+
+  #status-text {
+    margin-left: 0;
+    flex: 1 1 auto;
+    text-align: right;
+  }
+
+  /* 持仓行：窄屏两列，避免桌面多列被挤重叠 */
+  .list-head.has-pos {
+    display: none;
+  }
+
+  .list-row.has-pos,
+  .list-row.has-pos.has-ai {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6px 10px;
+    align-items: center;
+    padding: 8px;
+  }
+
+  .list-row.has-pos .col-name-block,
+  .list-row.has-pos .col-actions,
+  .list-row.has-pos .ai-probs,
+  .list-row.has-pos .pos-clear {
+    grid-column: 1 / -1;
+  }
+
+  .list-row.has-pos .col-actions {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .list-row.has-pos .live-price {
+    min-width: 0;
+    justify-self: start;
+    white-space: nowrap;
+  }
+
+  .list-row.has-pos .live-price::before {
+    content: '现价 ';
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--muted);
+  }
+
+  .list-row.has-pos .pos-fields {
+    display: contents;
+  }
+
+  .list-row.has-pos .pos-field {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    width: 100%;
+    min-width: 0;
+    white-space: nowrap;
+  }
+
+  .list-row.has-pos .pos-field:nth-child(1)::before {
+    content: '成本';
+    font-size: 10px;
+    color: var(--muted);
+  }
+
+  .list-row.has-pos .pos-field:nth-child(2)::before {
+    content: '手数';
+    font-size: 10px;
+    color: var(--muted);
+  }
+
+  .list-row.has-pos .pos-field input {
+    flex: 1;
+    width: auto;
+    min-width: 0;
+    min-height: 32px;
+    padding: 4px 6px;
+  }
+
+  .list-row.has-pos .pos-field input::placeholder {
+    color: transparent;
+  }
+
+  .list-row.has-pos .pos-clear {
+    justify-self: end;
+    width: auto;
+  }
+
+  .list-row.has-pos .ai-probs {
+    flex-direction: row;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+    max-height: none;
+  }
+
+  .list-row.has-pos .pos-pnl {
+    align-items: flex-end;
+    max-height: none;
+  }
+
+  .top-toolbar {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .top-search {
+    order: -1;
+    flex: none;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .indices-bar {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      'label add'
+      'chips chips';
+    gap: 6px 8px;
+    align-items: center;
+  }
+
+  .indices-label {
+    grid-area: label;
+  }
+
+  #add-index-btn {
+    grid-area: add;
+    align-self: center;
+  }
+
+  .indices-row {
+    grid-area: chips;
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    width: 100%;
+    min-width: 0;
+    flex: none;
+    overflow: visible !important;
+  }
+
+  .index-chip {
+    flex: none;
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 480px) {
+  .list-row.has-pos,
+  .list-row.has-pos.has-ai {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+    padding: 10px 8px;
+  }
+
+  .list-row.has-pos .live-price {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 15px;
+  }
+
+  .list-row.has-pos .pos-pnl {
+    grid-column: 1 / -1;
+    align-items: flex-start;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    justify-content: flex-start;
+    text-align: left;
+  }
 }
 
 .more-menu {
