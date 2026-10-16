@@ -603,8 +603,23 @@
 
     .list-row.has-pos .pos-field {
       display: flex;
+      align-items: center;
+      gap: 4px;
       width: 100%;
       min-width: 0;
+      white-space: nowrap;
+    }
+
+    .list-row.has-pos .pos-field:nth-child(1)::before {
+      content: '成本';
+      font-size: 10px;
+      color: var(--muted);
+    }
+
+    .list-row.has-pos .pos-field:nth-child(2)::before {
+      content: '手数';
+      font-size: 10px;
+      color: var(--muted);
     }
 
     .list-row.has-pos .pos-clear {
@@ -1037,7 +1052,16 @@
     font-size: 11px;
     font-weight: 700;
     color: var(--muted);
+  }
+
+  .pos-clear {
     box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--line) 90%, transparent);
+  }
+
+  .pos-clear-h {
+    box-shadow: none;
+    min-width: 0;
+    min-height: 0;
   }
 
   .pos-clear:hover {
@@ -1104,11 +1128,10 @@
   }
 
   .list-row .col-name-block {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    display: flex;
     align-items: center;
-    justify-items: start;
-    gap: 4px 6px;
+    justify-content: flex-start;
+    gap: 8px;
     width: 100%;
     min-width: 0;
   }
@@ -1120,8 +1143,9 @@
   }
 
   .list-row .col-name-block .pct-chip {
-    justify-self: start;
+    flex: none;
     min-width: 3.6rem;
+    margin-left: 2px;
     padding: 2px 6px;
     text-align: center;
     box-sizing: border-box;
@@ -1615,8 +1639,8 @@ button.pick-card {
 }
 
 .market-tone {
-  flex: 1 0 100%;
-  margin: 2px 0 0;
+  flex: 1 1 180px;
+  margin: 0;
   text-align: center;
 }
 
@@ -1629,7 +1653,7 @@ button.pick-card {
   top: calc(100% + 6px);
   right: 0;
   z-index: 40;
-  display: flex;
+  display: none;
   min-width: 112px;
   flex-direction: column;
   gap: 2px;
@@ -1638,6 +1662,10 @@ button.pick-card {
   background: var(--panel-solid);
   border: 1px solid var(--line);
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
+}
+
+.more-panel:not(.hidden) {
+  display: flex;
 }
 
 .more-panel button {
@@ -1657,8 +1685,14 @@ button.pick-card {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 14px;
+  align-items: baseline;
   font-size: 13px;
   line-height: 1.7;
+}
+
+.flow-date {
+  font-weight: 700;
+  color: var(--ink);
 }
 
 .etf-frame {
@@ -1717,8 +1751,7 @@ button.pick-card {
 }
 
 .list-row.is-held {
-  background: color-mix(in oklab, var(--accent) 12%, var(--panel-solid));
-  box-shadow: inset 3px 0 0 var(--accent);
+  background: transparent;
 }
 
 .hold-tag {

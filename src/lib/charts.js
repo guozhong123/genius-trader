@@ -490,7 +490,10 @@ export function renderFlowChart(el, flow, { axisMode = 'full', legendNames } = {
     yAxis: {
       type: 'value',
       name: '亿',
-      nameTextStyle: { color: mute, fontSize: 10 },
+      nameLocation: 'end',
+      nameRotate: 0,
+      nameGap: 10,
+      nameTextStyle: { color: mute, fontSize: 10, align: 'left' },
       splitLine: { lineStyle: { color: splitLine() } },
       axisLabel: { color: mute, fontSize: 10 },
     },
@@ -519,7 +522,7 @@ export function renderUpDownChart(el, dist) {
     xAxis: {
       type: 'category',
       data: dist.labels,
-      axisLabel: { color: mute, fontSize: 9, rotate: 40 },
+      axisLabel: { color: mute, fontSize: 10, rotate: 0, interval: 0 },
       axisLine: { lineStyle: { color: splitLine() } },
     },
     yAxis: {
@@ -564,7 +567,10 @@ export function renderNorthboundChart(el, nb) {
     yAxis: {
       type: 'value',
       name: '亿',
-      nameTextStyle: { color: mute, fontSize: 10 },
+      nameLocation: 'end',
+      nameRotate: 0,
+      nameGap: 10,
+      nameTextStyle: { color: mute, fontSize: 10, align: 'left' },
       splitLine: { lineStyle: { color: splitLine() } },
       axisLabel: { color: mute, fontSize: 10 },
     },

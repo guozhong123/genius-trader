@@ -507,9 +507,7 @@ function renderGroupTabs() {
   if (expanded) {
     els.groupTabs.innerHTML = [foldBtn, allBtn, ...groupBtns, addBtn].join('');
   } else {
-    const current =
-      active === 'all' ? allBtn : groupBtns[secs.findIndex((g) => g.id === active)] || allBtn;
-    els.groupTabs.innerHTML = [foldBtn, current, addBtn].join('');
+    els.groupTabs.innerHTML = [foldBtn, addBtn].join('');
   }
 
   $('add-group-btn')?.addEventListener('click', () => addGroupDialog());
@@ -759,8 +757,8 @@ function costLineHtml(item, livePrice) {
   const live = Number(livePrice);
   const market = item.kind === 'fund' ? 'FUND' : item.market || '';
   return `<div class="pos-fields" data-live="${Number.isFinite(live) ? live : ''}" data-market="${escAttr(market)}" data-kind="${escAttr(item.kind || '')}">
-    <label class="pos-field">成本<input data-cost="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownField(item, 'cost'))}" placeholder="成本" /></label>
-    <label class="pos-field">手数<input data-lots="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownField(item, 'lots'))}" placeholder="手数" title="A股1手=100股；基金填份额" /></label>
+    <label class="pos-field"><input data-cost="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownField(item, 'cost'))}" placeholder="成本" /></label>
+    <label class="pos-field"><input data-lots="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownField(item, 'lots'))}" placeholder="手数" title="A股1手=100股；基金填份额" /></label>
     <div class="pos-pnl">${pnlHtml(cost, live, lots, item)}${stopHtml(item, cost, live)}</div>
     <button type="button" data-clear-pos="${key}" class="pos-clear" title="清空成本和手数">清</button>
   </div>`;
@@ -1179,7 +1177,9 @@ function renderFlowSummary() {
   const down = zd?.down ?? ov?.down;
   const bit = (label, value, cls, suffix = '') =>
     `<span>${label} <b class="${cls}">${value}</b>${suffix}</span>`;
+  const day = state.center.flow?.date || nb?.date || '';
   els.flowSummary.innerHTML = [
+    day ? `<span class="flow-date">${esc(day)}</span>` : '',
     bit('两市成交', ov?.amountYi == null ? '—' : Number(ov.amountYi).toFixed(2), '', ' 亿'),
     bit('主力', fmtYi(s?.main), tone(s?.main), ' 亿'),
     bit('超大单', fmtYi(s?.huge), tone(s?.huge), ' 亿'),
@@ -1188,10 +1188,14 @@ function renderFlowSummary() {
     bit('下跌', down ?? '—', 'text-down'),
     bit('北向', fmtYi(nb?.last), tone(nb?.last), ' 亿'),
   ].join('');
+  const flowTitle = $('flow-asof');
+  if (flowTitle) flowTitle.textContent = day ? day : '';
   if (zd) {
-    $('zd-summary').innerHTML = `涨 <span class="text-up font-semibold">${zd.up}</span> / 跌 <span class="text-down font-semibold">${zd.down}</span>`;
+    $('zd-summary').innerHTML = `${day ? `${esc(day)} · ` : ''}涨 <span class="text-up font-semibold">${zd.up}</span> / 跌 <span class="text-down font-semibold">${zd.down}</span>`;
   }
-  if (nb) $('nb-summary').innerHTML = `净流入 <span class="font-semibold ${tone(nb.last)}">${fmtYi(nb.last)} 亿</span>`;
+  if (nb) {
+    $('nb-summary').innerHTML = `${nb.date ? `${esc(nb.date)} · ` : ''}净流入 <span class="font-semibold ${tone(nb.last)}">${fmtYi(nb.last)} 亿</span>`;
+  }
   renderMarketTone();
 }
 

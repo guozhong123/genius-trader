@@ -1015,9 +1015,12 @@ function parseFlowKlines(klines) {
   const mid = [];
   const large = [];
   const huge = [];
+  let date = '';
   for (const line of klines || []) {
     const p = String(line).split(',');
-    times.push((p[0] || '').split(' ')[1] || p[0]);
+    const raw = p[0] || '';
+    if (!date) date = raw.split(' ')[0] || '';
+    times.push(raw.split(' ')[1] || raw);
     main.push(+(Number(p[1]) / yi).toFixed(2));
     small.push(+(Number(p[2]) / yi).toFixed(2));
     mid.push(+(Number(p[3]) / yi).toFixed(2));
@@ -1026,6 +1029,7 @@ function parseFlowKlines(klines) {
   }
   const last = (arr) => (arr.length ? arr[arr.length - 1] : 0);
   return {
+    date,
     times,
     main,
     small,
@@ -1365,7 +1369,10 @@ export async function fetchNorthbound() {
     const shen = Number(p[2] || 0);
     net.push(+((hu + shen) / 1e8).toFixed(2));
   }
+  const rawDate = String(json?.data?.s2nDate || '');
+  const date = /^\d{2}-\d{2}$/.test(rawDate) ? `${new Date().getFullYear()}-${rawDate}` : rawDate;
   return {
+    date,
     times,
     net,
     last: net.length ? net[net.length - 1] : 0,
