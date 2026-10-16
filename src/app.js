@@ -451,16 +451,19 @@ function sortedList() {
   const sortBy = state.settings?.sortBy || 'manual';
   const q = (item) => state.quotes[quoteKey(item)] || {};
   rows.sort((a, b) => {
-    if (!!b.pinned - !!a.pinned) return !!b.pinned - !!a.pinned;
+    const byBuy = state.primaryKind === 'stock' && (sortBy === 'manual' || sortBy === 'buyProb');
+    if (!byBuy && !!b.pinned - !!a.pinned) return !!b.pinned - !!a.pinned;
+    if (byBuy) {
+      const pa = Number(aiReportOf(a)?.buyProb);
+      const pb = Number(aiReportOf(b)?.buyProb);
+      const diff = (Number.isFinite(pb) ? pb : -1) - (Number.isFinite(pa) ? pa : -1);
+      if (diff) return diff;
+      return (a.order ?? 0) - (b.order ?? 0);
+    }
     if (sortBy === 'pct') return (q(b).changePct || 0) - (q(a).changePct || 0);
     if (sortBy === 'pctAsc') return (q(a).changePct || 0) - (q(b).changePct || 0);
     if (sortBy === 'name') return String(a.name).localeCompare(String(b.name), 'zh');
     if (sortBy === 'price') return (q(b).price || 0) - (q(a).price || 0);
-    if (sortBy === 'buyProb') {
-      const pa = Number(aiReportOf(a)?.buyProb);
-      const pb = Number(aiReportOf(b)?.buyProb);
-      return (Number.isFinite(pb) ? pb : -1) - (Number.isFinite(pa) ? pa : -1);
-    }
     return (a.order ?? 0) - (b.order ?? 0);
   });
   return rows;
@@ -794,19 +797,13 @@ function aiProbCell(item) {
 
 function scanBarHtml() {
   if (state.primaryKind !== 'stock') return '';
-  const prog = state.scanRunning
+  const label = state.scanRunning
     ? `分析中 ${state.scanProgress?.done || 0}/${state.scanProgress?.total || 0}`
-    : '点一下，分析全部自选股票';
+    : '分析全部';
   const dis = state.scanRunning ? 'disabled' : '';
-  const byBuy = (state.settings?.sortBy || 'manual') === 'buyProb';
   return `<div class="scan-bar">
-    <button type="button" data-scan-all ${dis} class="scan-btn">买入</button>
-    <button type="button" data-scan-all ${dis} class="scan-btn">继续等</button>
-    <button type="button" data-scan-all ${dis} class="scan-btn">不买</button>
-    <button type="button" data-sort-buy class="scan-btn${byBuy ? ' on' : ''}" title="按买入概率从高到低，再点一次恢复原顺序">买入概率${byBuy ? '↓' : ''}</button>
-    <span class="scan-hint">${esc(prog)}</span>
+    <button type="button" data-scan-all ${dis} class="scan-btn">${esc(label)}</button>
   </div>`;
-}
 
 function rowHtml(item) {
   const q = state.quotes[quoteKey(item)] || {};
@@ -863,7 +860,7 @@ function listHeaderHtml() {
       <div class="col-num">手数</div>
       <div class="pos-pnl">浮盈</div>
       <div class="pos-clear-h"></div>
-      ${isFund ? '' : `<button type="button" data-sort-buy class="ai-probs ai-sort${sortBy === 'buyProb' ? ' on' : ''}" title="按买入概率从高到低">买入${sortBy === 'buyProb' ? '↓' : ''}</button>`}
+      ${isFund ? '' : '<div class="ai-probs">概率</div>'}
       <div class="col-actions text-right text-[11px]" style="color:var(--muted)">操作</div>
     </div>`;
 }
@@ -920,14 +917,6 @@ function bindListEvents() {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       scanAllStocks();
-    });
-  });
-
-  els.list.querySelectorAll('[data-sort-buy]').forEach((btn) => {
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const cur = state.settings?.sortBy || 'manual';
-      await setSort(cur === 'buyProb' ? 'manual' : 'buyProb');
     });
   });
 

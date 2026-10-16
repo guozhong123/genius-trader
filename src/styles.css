@@ -555,28 +555,29 @@
     }
 
     .list-row.has-pos {
-      display: flex;
-      flex-wrap: wrap;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 6px 10px;
       align-items: center;
-      gap: 6px 8px;
       padding: 8px;
     }
 
-    .list-row.has-pos .col-name-block {
-      flex: 1 1 calc(100% - 92px);
-      min-width: 0;
+    .list-row.has-pos .col-name-block,
+    .list-row.has-pos .col-actions,
+    .list-row.has-pos .ai-probs,
+    .list-row.has-pos .pos-clear {
+      grid-column: 1 / -1;
     }
 
     .list-row.has-pos .col-actions {
       display: flex;
-      flex: 0 0 auto;
       justify-content: flex-end;
     }
 
-    .list-row.has-pos .col-num,
     .list-row.has-pos .live-price {
-      flex: 0 0 auto;
-      min-width: 4.4rem;
+      min-width: 0;
+      justify-self: start;
+      white-space: nowrap;
     }
 
     .list-row.has-pos .live-price::before {
@@ -587,15 +588,21 @@
     }
 
     .list-row.has-pos .pos-fields {
+      display: contents;
+    }
+
+    .list-row.has-pos .pos-field {
       display: flex;
-      flex: 1 1 100%;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 6px 8px;
+      width: 100%;
+      min-width: 0;
+    }
+
+    .list-row.has-pos .pos-clear {
+      justify-self: end;
+      width: auto;
     }
 
     .list-row.has-pos .ai-probs {
-      flex: 1 1 100%;
       flex-direction: row;
       justify-content: flex-start;
       gap: 8px;
@@ -603,12 +610,14 @@
     }
 
     .list-row.has-pos .pos-pnl {
-      display: flex;
       align-items: flex-end;
+      max-height: none;
     }
 
-    .pos-field input {
-      width: 4.4rem;
+    .list-row.has-pos .pos-field input {
+      flex: 1;
+      width: auto;
+      min-width: 0;
       min-height: 32px;
       padding: 4px 6px;
     }
