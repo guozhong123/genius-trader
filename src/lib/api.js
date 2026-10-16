@@ -954,15 +954,17 @@ export async function fetchIndices(list) {
   });
 }
 
-function parseTrendsPayload(data) {
+function parseTrendsPayload(data, ndays = 1) {
   if (!data?.trends?.length) return null;
   const points = data.trends.map((line) => {
     const p = String(line).split(',');
     // 东财分时常见：时间,现价,开,高,低,成交量,成交额,均价
     const price = Number(p[1]);
     const avg = Number(p[7] ?? p[1]);
+    const rawTime = p[0] || '';
+    const clock = rawTime.split(' ')[1] || rawTime;
     return {
-      time: (p[0] || '').split(' ')[1] || p[0],
+      time: ndays > 1 ? rawTime.slice(5, 16) || clock : clock,
       price,
       avg: Number.isFinite(avg) ? avg : price,
       volume: Number(p[5] || 0),
@@ -978,12 +980,13 @@ function parseTrendsPayload(data) {
   };
 }
 
-/** 分时走势（交易中走 push2，闭盘/失败再走 push2his，都能拿当天线） */
-export async function fetchIntraday(secid) {
+/** 分时走势。ndays=5 为近五个交易日的分时。 */
+export async function fetchIntraday(secid, ndays = 1) {
+  const days = ndays > 1 ? 5 : 1;
   const q =
     `fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13` +
     `&fields2=f51,f52,f53,f54,f55,f56,f57,f58&mpi=1000&ut=fa5fd1943c7b386f172d6893dbfba10b` +
-    `&secid=${encodeURIComponent(secid)}&ndays=1&iscr=0&iscca=0`;
+    `&secid=${encodeURIComponent(secid)}&ndays=${days}&iscr=0&iscca=0`;
 
   const urls = [
     `https://push2.eastmoney.com/api/qt/stock/trends2/get?${q}`,
@@ -995,7 +998,7 @@ export async function fetchIntraday(secid) {
       const res = await fetch(url);
       if (!res.ok) continue;
       const json = await res.json();
-      const parsed = parseTrendsPayload(json?.data);
+      const parsed = parseTrendsPayload(json?.data, days);
       if (parsed) return parsed;
     } catch {
       /* try next */

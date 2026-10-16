@@ -472,6 +472,9 @@ export function renderFlowChart(el, flow, { axisMode = 'full', legendNames } = {
     animationDuration: 280,
     legend: {
       top: 0,
+      icon: 'circle',
+      itemWidth: 8,
+      itemHeight: 8,
       textStyle: { color: mute, fontSize: 11 },
       data: legends,
     },
@@ -497,6 +500,8 @@ export function renderFlowChart(el, flow, { axisMode = 'full', legendNames } = {
       showSymbol: false,
       connectNulls: true,
       data: seriesData[i] ?? [],
+      color: colors[i] ?? mute,
+      itemStyle: { color: colors[i] ?? mute },
       lineStyle: { width: widths[i] ?? 1.2, color: colors[i] ?? mute },
     })),
   });

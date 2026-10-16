@@ -61,6 +61,9 @@
   }
 
   body {
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
     background-color: var(--bg-base);
     background-image:
       radial-gradient(900px 480px at 0% -10%, color-mix(in oklab, var(--bg-a) 45%, transparent), transparent 60%),
@@ -68,6 +71,13 @@
       linear-gradient(180deg, var(--bg-c), var(--bg-base));
     background-attachment: fixed;
     transition: background-color 0.25s ease;
+  }
+
+  input,
+  textarea,
+  select {
+    user-select: text;
+    -webkit-user-select: text;
   }
 
   * {
@@ -652,7 +662,8 @@
     }
 
     #etf-frame {
-      height: 62vh;
+      height: calc(100dvh - 210px);
+      min-height: 68dvh;
     }
 
     #flow-summary {
@@ -769,7 +780,15 @@
   }
 
   .groups-fold-btn {
-    display: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--line) 90%, transparent);
   }
 
   .list-panel {
@@ -844,7 +863,8 @@
 
   .list-head.has-pos,
   .list-row.has-pos {
-    grid-template-columns: minmax(0, 1.15fr) 64px 92px 72px 92px 28px 88px;
+    grid-template-columns: minmax(0, 1.15fr) 72px 92px 72px 92px 28px 88px;
+    padding: 4px 8px;
   }
 
   .list-head.has-pos.has-ai,
@@ -864,6 +884,7 @@
   .pos-field {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 4px;
     min-width: 0;
     font-size: 10px;
@@ -1030,21 +1051,32 @@
   }
 
   .list-head .col-name {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 5.25rem;
+    display: flex;
     align-items: center;
-    gap: 10px;
+    justify-content: flex-start;
+    gap: 8px;
     width: 100%;
+    padding-right: 18px;
     text-align: left;
   }
 
   .list-head .col-sort {
-    justify-self: end;
+    justify-self: start;
+  }
+
+  .list-head .col-num,
+  .list-row .col-num,
+  .list-head .pos-pnl,
+  .list-row .pos-pnl,
+  .list-head .ai-probs,
+  .list-row .ai-probs,
+  .list-head .col-actions {
+    text-align: center;
+    justify-self: center;
   }
 
   .list-head .col-num,
   .list-row .col-num {
-    text-align: right;
     font-variant-numeric: tabular-nums;
   }
 
@@ -1580,4 +1612,220 @@ button.pick-card {
   font-size: 11px;
   line-height: 1.45;
   color: var(--muted);
+}
+
+.market-tone {
+  flex: 1 0 100%;
+  margin: 2px 0 0;
+  text-align: center;
+}
+
+.more-menu {
+  position: relative;
+}
+
+.more-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  display: flex;
+  min-width: 112px;
+  flex-direction: column;
+  gap: 2px;
+  border-radius: 10px;
+  padding: 6px;
+  background: var(--panel-solid);
+  border: 1px solid var(--line);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
+}
+
+.more-panel button {
+  border-radius: 8px;
+  padding: 8px 10px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.more-panel button:hover {
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+}
+
+.flow-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.etf-frame {
+  display: block;
+  height: calc(100dvh - 180px);
+  min-height: 520px;
+  background: var(--panel-solid);
+}
+
+.rank-sort {
+  appearance: none;
+  border-radius: 8px;
+  padding: 6px 28px 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--panel-solid) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%2364748b' d='M1 1l5 5 5-5'/%3E%3C/svg%3E") no-repeat right 8px center;
+  border: 1px solid var(--line);
+}
+
+.rank-head,
+.rank-row {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 80px 72px;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  text-align: center;
+}
+
+.rank-head {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+
+.rank-row {
+  width: 100%;
+  font-size: 12px;
+  border-bottom: 1px solid color-mix(in oklab, var(--line) 55%, transparent);
+}
+
+.bucket-label {
+  margin: 8px 2px 4px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.bucket-label.held {
+  color: var(--accent);
+}
+
+.bucket-label.watch {
+  color: var(--muted);
+}
+
+.list-row.is-held {
+  background: color-mix(in oklab, var(--accent) 12%, var(--panel-solid));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.hold-tag {
+  flex: none;
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 16%, transparent);
+}
+
+.report-drawer {
+  width: min(880px, 100vw);
+}
+
+.report-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+.report-col-title,
+.report-day-label,
+.force-sub {
+  margin: 8px 0 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.report-lead {
+  margin-bottom: 8px;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.report-points {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.report-point {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.report-more {
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: color-mix(in oklab, var(--muted) 8%, transparent);
+}
+
+.report-more summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.force-now {
+  margin-top: 6px;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.force-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.force-chip {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+}
+
+.force-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  font-size: 13px;
+  border-bottom: 1px solid color-mix(in oklab, var(--line) 70%, transparent);
+}
+
+@media (max-width: 900px) {
+  .report-split {
+    grid-template-columns: 1fr;
+  }
+
+  .etf-frame {
+    height: calc(100dvh - 220px);
+    min-height: 70dvh;
+  }
+
+  .flow-line {
+    font-size: 12px;
+  }
 }

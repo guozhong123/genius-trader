@@ -259,14 +259,14 @@ const SYSTEM = [
   '11. 行业今日跌超过2%时，压低买入概率，板块在跌就不要因为个股强而追。',
   '12. 近45日龙虎榜净额为负，或说明里有机构卖出，倾向不买。没上榜就写没上榜，禁止编座席位。',
   '13. 现价已经跌破纪律止损价时，action 只能是不买。',
-  '14. 用户做当日短线：当天分析、当天决定，默认不拿隔夜。today 要写清今天的买点、什么情况盘中走、尾盘还留不留。',
+  '14. 用户做当日短线：当天分析、当天决定。today 只写什么价附近可以买、什么价该卖、尾盘留不留。',
   '15. 若给出了前几天的报告，consistency 说明结论有没有变。变了就写今天的数据哪里不同。没有历史就写「无更早报告」。',
   '16. 事实里的北京时间就是「今天」。不要只写明天、隔夜，要写成给出的具体日期。',
-  '17. hold 只写这只票的持仓或准备买的仓怎么处理，一句。follow 只写跟不跟这只的主力，一句。这两句是用户最后扫一眼的结论。',
+  '17. summary 最多两句，先给结论。hold 必须写卖不卖、卖几成、拿不拿；没填成本或手数就写买不买、买几成、什么价买。exit 写具体价格。follow 一句。不要重复展开。',
   '输出严格 JSON：',
   '{"action":"买入|不买|继续等","buyProb":0到100整数,"waitProb":整数,"avoidProb":整数,',
-  '"summary":"四到六句：今天做不做、为什么、最关键的一个条件",',
-  '"today":"当日节奏：什么价位附近可以看、什么情况放弃、尾盘是否清掉",',
+  '"summary":"最多两句：今天卖不卖或买不买，以及唯一条件",',
+  '"today":"什么价附近买、什么价卖、尾盘留不留",',
   '"sector":"所属板块今天能否带动这只票，短线是否跟板块",',
   '"position":"相对用户成本",',
   '"mainForce":"今日与近5日主力，点明真买/诱多/真卖/不明显",',
@@ -275,11 +275,11 @@ const SYSTEM = [
   '"valuation":"位置贵不贵，短线是否还追得动",',
   '"market":"大盘今天允不允许做短线",',
   '"plan":"仓位几成，触发条件",',
-  '"exit":"当天怎么走：冲高走、跌破走、还是尾盘走",',
+  '"exit":"什么价卖、卖几成；没仓就写什么价买，一句",',
   '"stop":"放弃条件",',
   '"risk":"今天最大的一个风险",',
   '"consistency":"和前几天报告比，结论变了没有",',
-  '"hold":"这只票的持仓：拿着、减一点、今天走，或还没买就写买不买，一句",',
+  '"hold":"卖不卖、卖几成、拿不拿；没仓就写买几成和什么价，一句",',
   '"follow":"跟不跟这只的主力，一句"}',
   '三个概率加起来约等于100。',
 ].join('');
@@ -753,4 +753,63 @@ export async function askScanBatch(apiKey, facts) {
       };
     })
     .filter((row) => row.code);
+}
+
+const FORCE_SYSTEM = [
+  '你判断今天A股主力盘中可能怎么走，给短线用。',
+  '只根据给出的日历、资金、涨跌家数和板块涨跌。禁止编造市盈率、目标点位和没列出的新闻。',
+  '早上强、下午转弱要写成条件，不要写成已经发生。',
+  '位置靠后只看今天涨跌：跌得多、但不是跌停潮的，写成位置靠后、可能有修复。禁止写低估值或市盈率。',
+  '每句都短。输出严格 JSON：',
+  '{"now":"现在主力一句","later":"下午可能一句","turn":"由强转弱的条件一句","watch":["最多4个板块"],"soft":[{"name":"板块","why":"一句"}]}',
+].join('');
+
+export async function askForceOutlook(apiKey, facts) {
+  const key = String(apiKey || '').trim();
+  if (!key) throw new Error('缺少 DeepSeek 密钥');
+  const messages = [
+    { role: 'system', content: FORCE_SYSTEM },
+    { role: 'user', content: facts },
+  ];
+  const attempts = [
+    { model: 'deepseek-flash', thinking: { type: 'disabled' } },
+    { model: 'deepseek-chat' },
+  ];
+  let json = null;
+  let lastErr = null;
+  for (const attempt of attempts) {
+    try {
+      json = await postDeepseek(key, {
+        model: attempt.model,
+        temperature: 0.2,
+        response_format: { type: 'json_object' },
+        messages,
+        ...(attempt.thinking ? { thinking: attempt.thinking } : {}),
+      });
+      break;
+    } catch (e) {
+      lastErr = e;
+      if (/401|invalid|api key|密钥/i.test(String(e?.message || ''))) throw e;
+    }
+  }
+  if (!json) throw lastErr || new Error('DeepSeek 分析失败');
+  const report = JSON.parse(json?.choices?.[0]?.message?.content || '{}');
+  const watch = (Array.isArray(report.watch) ? report.watch : [])
+    .map((x) => String(x || '').trim())
+    .filter(Boolean)
+    .slice(0, 4);
+  const soft = (Array.isArray(report.soft) ? report.soft : [])
+    .map((row) => ({
+      name: String(row?.name || '').trim(),
+      why: String(row?.why || '').trim(),
+    }))
+    .filter((row) => row.name)
+    .slice(0, 6);
+  return {
+    now: String(report.now || '').trim(),
+    later: String(report.later || '').trim(),
+    turn: String(report.turn || '').trim(),
+    watch,
+    soft,
+  };
 }

@@ -67,7 +67,7 @@ import { getTodayEvents, getUpcomingEvents, getMajorUpcomingEvents, marketCalend
 import { buildLevelMarkLines, calcAutoLevels } from './lib/levels.js';
 import { normalizeGroups, repairStockGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
-import { askDeepseekReport, askMarketReport, askScanBatch, askSeatReport, buildMarketFacts, buildScanFacts, buildSeatFacts, buildStockFacts, disciplineStop } from './lib/deepseek.js';
+import { askDeepseekReport, askForceOutlook, askMarketReport, askScanBatch, askSeatReport, buildMarketFacts, buildScanFacts, buildSeatFacts, buildStockFacts, disciplineStop } from './lib/deepseek.js';
 import { OVERNIGHT_LINKS, buildOvernight, marketClock, moodLabel, planText, reviewCalls, scoreMainLines, shYmd, sheetBrief, tradingSlot } from './lib/trend.js';
 import { isLoggedIn, login, logout, currentUser } from './lib/auth.js';
 
@@ -368,7 +368,7 @@ function scrollPageTop() {
 function setView(view) {
   state.view = view;
   scrollPageTop();
-  ['watch', 'pulse', 'data', 'etf'].forEach((v) => {
+  ['watch', 'pulse', 'data', 'etf', 'force'].forEach((v) => {
     const el = $(`view-${v}`);
     if (!el) return;
     const on = v === view;
@@ -397,13 +397,15 @@ function setView(view) {
     refreshPulse();
     loadTrendSheet();
   }
+  if (view === 'force') loadForce();
+  if (view === 'etf') ensureHeatmap();
   requestAnimationFrame(() => resizeAllCharts());
   rememberPlace();
 }
 
 function rememberPlace() {
   if (!state.settings) return;
-  const lastView = ['watch', 'pulse', 'data', 'etf'].includes(state.view) ? state.view : 'watch';
+  const lastView = ['watch', 'pulse', 'data', 'etf', 'force'].includes(state.view) ? state.view : 'watch';
   const lastPrimary = state.primaryKind === 'fund' ? 'fund' : 'stock';
   const lastGroup = state.secondaryGroup || 'all';
   if (
@@ -442,16 +444,21 @@ function groupsForPrimary() {
     }));
 }
 
+function isHeld(item) {
+  return Number(item?.cost) > 0 || Number(item?.lots) > 0;
+}
+
 function sortedList() {
   let rows = state.list.filter((x) => x.kind === state.primaryKind);
   if (state.secondaryGroup !== 'all') {
     rows = rows.filter((x) => (x.groupId || 'other') === state.secondaryGroup);
   }
   const sortBy = state.settings?.sortBy || 'manual';
+  const byBuy = state.primaryKind === 'stock' && (sortBy === 'manual' || sortBy === 'buyProb');
   const q = (item) => state.quotes[quoteKey(item)] || {};
-  rows.sort((a, b) => {
-    const byBuy = state.primaryKind === 'stock' && (sortBy === 'manual' || sortBy === 'buyProb');
-    if (!byBuy && !!b.pinned - !!a.pinned) return !!b.pinned - !!a.pinned;
+  const compare = (a, b) => {
+    const pin = Number(!!b.pinned) - Number(!!a.pinned);
+    if (pin) return pin;
     if (byBuy) {
       const pa = Number(probSnapshot(a)?.buyProb);
       const pb = Number(probSnapshot(b)?.buyProb);
@@ -464,8 +471,10 @@ function sortedList() {
     if (sortBy === 'name') return String(a.name).localeCompare(String(b.name), 'zh');
     if (sortBy === 'price') return (q(b).price || 0) - (q(a).price || 0);
     return (a.order ?? 0) - (b.order ?? 0);
-  });
-  return rows;
+  };
+  const held = rows.filter(isHeld).sort(compare);
+  const rest = rows.filter((row) => !isHeld(row)).sort(compare);
+  return [...held, ...rest];
 }
 
 function renderPrimaryTabs() {
@@ -485,8 +494,7 @@ function activeGroupLabel(secs, active) {
 function renderGroupTabs() {
   const secs = groupsForPrimary();
   const active = state.secondaryGroup;
-  const mobile = isMobileLayout();
-  const expanded = !mobile || state.settings?.mobileGroupsExpanded === true;
+  const expanded = state.settings?.groupsExpanded === true;
 
   const allBtn = `<button data-group="all" class="rounded-md px-2 py-0.5 text-[11px] font-semibold ${active === 'all' ? 'bg-accent text-white' : 'ring-soft'}" style="${active === 'all' ? '' : 'color:var(--muted)'}">全部</button>`;
   const groupBtns = secs.map(
@@ -494,29 +502,20 @@ function renderGroupTabs() {
       `<button type="button" draggable="${expanded ? 'true' : 'false'}" data-group="${escAttr(g.id)}" data-group-drag="${escAttr(g.id)}" title="单击切换 · 双击改名/删除 · 拖拽排序" class="group-chip rounded-md px-2 py-0.5 text-[11px] font-semibold ${active === g.id ? 'bg-accent text-white' : 'ring-soft'}" style="${active === g.id ? '' : 'color:var(--muted)'}">${esc(g.displayName)} <span style="opacity:.7">${g.count}</span></button>`,
   );
   const addBtn = `<button type="button" id="add-group-btn" class="group-add-btn" title="新建分组">+</button>`;
-
-  if (mobile) {
-    const foldLabel = expanded
-      ? '收起分组'
-      : `分组 · ${esc(activeGroupLabel(secs, active))}`;
-    const foldBtn = `<button type="button" id="groups-fold-btn" class="groups-fold-btn" aria-expanded="${expanded}">${expanded ? '▾' : '▸'} ${foldLabel}</button>`;
-    if (expanded) {
-      els.groupTabs.innerHTML = [foldBtn, allBtn, ...groupBtns, addBtn].join('');
-    } else {
-      const current =
-        active === 'all'
-          ? allBtn
-          : groupBtns[secs.findIndex((g) => g.id === active)] || allBtn;
-      els.groupTabs.innerHTML = [foldBtn, current, addBtn].join('');
-    }
+  const foldLabel = expanded ? '收起分组' : `分组 · ${esc(activeGroupLabel(secs, active))}`;
+  const foldBtn = `<button type="button" id="groups-fold-btn" class="groups-fold-btn" aria-expanded="${expanded}">${expanded ? '▾' : '▸'} ${foldLabel}</button>`;
+  if (expanded) {
+    els.groupTabs.innerHTML = [foldBtn, allBtn, ...groupBtns, addBtn].join('');
   } else {
-    els.groupTabs.innerHTML = [allBtn, ...groupBtns, addBtn].join('');
+    const current =
+      active === 'all' ? allBtn : groupBtns[secs.findIndex((g) => g.id === active)] || allBtn;
+    els.groupTabs.innerHTML = [foldBtn, current, addBtn].join('');
   }
 
   $('add-group-btn')?.addEventListener('click', () => addGroupDialog());
   $('groups-fold-btn')?.addEventListener('click', async () => {
-    const next = !(state.settings?.mobileGroupsExpanded === true);
-    state.settings = await saveSettings({ mobileGroupsExpanded: next });
+    const next = !(state.settings?.groupsExpanded === true);
+    state.settings = await saveSettings({ groupsExpanded: next });
     renderGroupTabs();
   });
 
@@ -826,14 +825,16 @@ function rowHtml(item) {
   const priceLabel = isFund
     ? `${fmtPrice(price, 'FUND')}${q.source ? `<span class="ml-0.5 text-[9px] font-normal" style="color:var(--muted)">${q.source}</span>` : ''}`
     : fmtPrice(price, item.market);
+  const held = isHeld(item);
   return `
     <article data-open="${escAttr(itemKey(item))}" draggable="${state.settings.sortBy === 'manual'}"
-      class="list-row row-compact glass group cursor-pointer rounded-lg has-pos${isFund ? '' : ' has-ai'}">
+      class="list-row row-compact glass group cursor-pointer rounded-lg has-pos${isFund ? '' : ' has-ai'}${held ? ' is-held' : ''}">
       <div class="col-name-block">
         <div class="meta min-w-0 overflow-hidden">
         <div class="flex min-w-0 items-center gap-1">
             ${item.pinned ? '<span class="shrink-0 text-[9px] text-accent">顶</span>' : ''}
-            <h3 class="truncate text-[13px] font-medium leading-none">${esc(name)}</h3>
+            ${held ? '<span class="hold-tag">持有</span>' : ''}
+            <h3 class="truncate text-[13px] font-medium leading-none ${tone(pct)}">${esc(name)}</h3>
             ${gname ? `<span class="shrink-0 rounded px-1 text-[9px]" style="background:color-mix(in oklab,var(--muted) 12%,transparent);color:var(--muted)">${esc(gname)}</span>` : ''}
         </div>
           <p class="mt-0.5 truncate text-[10px] leading-none" style="color:var(--muted)">${esc(item.code)}${isFund && q.asOf ? ` · ${esc(q.asOf)}` : ''}</p>
@@ -841,7 +842,7 @@ function rowHtml(item) {
         <span class="pct-chip shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular-nums" style="${chip(pct)}">${fmtPct(pct)}</span>
         ${aiRowBtn(item)}
       </div>
-      <div class="col-num live-price text-[13px] font-semibold leading-none">${priceLabel}</div>
+      <div class="col-num live-price text-[13px] font-semibold leading-none ${tone(pct)}">${priceLabel}</div>
       ${costLineHtml(item, price)}
       ${aiProbCell(item)}
       <div class="col-actions">
@@ -869,7 +870,7 @@ function listHeaderHtml() {
       <div class="pos-pnl">浮盈</div>
       <div class="pos-clear-h"></div>
       ${isFund ? '' : '<div class="ai-probs">概率</div>'}
-      <div class="col-actions text-right text-[11px]" style="color:var(--muted)">操作</div>
+      <div class="col-actions text-[11px]" style="color:var(--muted)">操作</div>
     </div>`;
 }
 
@@ -900,11 +901,21 @@ function renderList() {
   const focusVal = focusAttr ? active.getAttribute(focusAttr) : '';
   const caret = focusAttr ? active.selectionStart : null;
 
-  // 「全部」扁平列表，不按主题分组；表头可点排序
+  const held = rows.filter(isHeld);
+  const rest = rows.filter((row) => !isHeld(row));
+  const blocks = [];
+  if (held.length) {
+    blocks.push(`<div class="bucket-label held">持仓 ${held.length}</div>`);
+    blocks.push(held.map(rowHtml).join(''));
+  }
+  if (rest.length) {
+    if (held.length) blocks.push(`<div class="bucket-label watch">自选 ${rest.length}</div>`);
+    blocks.push(rest.map(rowHtml).join(''));
+  }
   els.list.innerHTML = `
     ${scanBarHtml()}
     ${listHeaderHtml()}
-    <div class="grid gap-0.5">${rows.map(rowHtml).join('')}</div>`;
+    <div class="grid gap-0.5">${blocks.join('')}</div>`;
   bindListEvents();
   if (focusAttr && focusVal) {
     const el = els.list.querySelector(`input[${focusAttr}="${CSS.escape(focusVal)}"]`);
@@ -1076,6 +1087,7 @@ function bindListEvents() {
       const idx = state.list.findIndex((x) => itemKey(x) === key);
       if (idx >= 0) state.list[idx] = { ...state.list[idx], ...patch };
       state.list = await updateItem(state.list[idx] || item, patch);
+      renderList();
     });
   };
   els.list.querySelectorAll('[data-cost]').forEach((el) => bindPosInput(el, 'cost'));
@@ -1108,8 +1120,9 @@ function renderSearchResults() {
       const exists = state.list.some((x) => itemKey(x) === itemKey(item));
       return `<button type="button" data-add-idx="${idx}" class="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-sm ${exists ? 'opacity-40' : ''}" ${exists ? 'disabled' : ''}>
         <span class="rounded px-1 text-[10px]" style="background:color-mix(in oklab,var(--muted) 12%,transparent);color:var(--muted)">${esc(item.label || marketLabel(item.market))}</span>
-        <span class="min-w-0 flex-1 truncate font-medium">${esc(item.name)}</span>
+        <span class="min-w-0 flex-1 truncate font-medium ${tone(item.changePct)}">${esc(item.name)}</span>
         <span class="font-mono text-[11px]" style="color:var(--muted)">${esc(item.code)}</span>
+        <span class="shrink-0 text-[12px] font-semibold tabular-nums ${tone(item.changePct)}">${fmtPct(item.changePct)}</span>
         <span class="text-[11px] font-semibold text-accent">${exists ? '已有' : '添加'}</span>
       </button>`;
     })
@@ -1162,26 +1175,19 @@ function renderFlowSummary() {
   const zd = state.center.updown;
   const nb = state.center.northbound;
   const ov = state.center.overview;
-  const cards = [
-    { label: '两市成交', value: ov?.amountYi, unit: '亿' },
-    { label: '主力', value: s?.main, unit: '亿' },
-    { label: '超大单', value: s?.huge, unit: '亿' },
-    { label: '大单', value: s?.large, unit: '亿' },
-    { label: '上涨', value: zd?.up ?? ov?.up, unit: '' },
-    { label: '下跌', value: zd?.down ?? ov?.down, unit: '' },
-    { label: '北向', value: nb?.last, unit: '亿' },
-  ];
-  els.flowSummary.innerHTML = cards
-    .map((c) => {
-      const isCnt = !c.unit;
-      const cls = isCnt ? (c.label === '上涨' ? 'text-up' : 'text-down') : tone(c.value);
-      const val = isCnt ? String(c.value ?? '—') : fmtYi(c.value);
-      return `<div class="glass rounded-lg px-2 py-1">
-        <div class="truncate text-[9px]" style="color:var(--muted)">${c.label}${c.unit ? `(${c.unit})` : ''}</div>
-        <div class="text-sm font-semibold tabular-nums ${cls}">${val}</div>
-      </div>`;
-    })
-    .join('');
+  const up = zd?.up ?? ov?.up;
+  const down = zd?.down ?? ov?.down;
+  const bit = (label, value, cls, suffix = '') =>
+    `<span>${label} <b class="${cls}">${value}</b>${suffix}</span>`;
+  els.flowSummary.innerHTML = [
+    bit('两市成交', ov?.amountYi == null ? '—' : Number(ov.amountYi).toFixed(2), '', ' 亿'),
+    bit('主力', fmtYi(s?.main), tone(s?.main), ' 亿'),
+    bit('超大单', fmtYi(s?.huge), tone(s?.huge), ' 亿'),
+    bit('大单', fmtYi(s?.large), tone(s?.large), ' 亿'),
+    bit('上涨', up ?? '—', 'text-up'),
+    bit('下跌', down ?? '—', 'text-down'),
+    bit('北向', fmtYi(nb?.last), tone(nb?.last), ' 亿'),
+  ].join('');
   if (zd) {
     $('zd-summary').innerHTML = `涨 <span class="text-up font-semibold">${zd.up}</span> / 跌 <span class="text-down font-semibold">${zd.down}</span>`;
   }
@@ -1293,23 +1299,23 @@ function rankRowsSorted() {
 function renderRank() {
   const rows = rankRowsSorted();
   els.rankList.innerHTML = `
-    <div class="flex items-center gap-2 border-b px-2.5 py-1 text-[10px] font-semibold" style="border-color:var(--line);color:var(--muted)">
-      <div class="w-6 shrink-0">#</div>
-      <div class="min-w-0 flex-1">名称</div>
-      <div class="w-[72px] shrink-0 text-right">现价</div>
-      <div class="w-[62px] shrink-0 text-right">涨跌</div>
+    <div class="rank-head">
+      <div>#</div>
+      <div>名称</div>
+      <div>现价</div>
+      <div>涨跌</div>
     </div>
     <div class="max-h-[68vh] overflow-auto">
       ${rows
         .map(
-          (r, i) => `<button data-rank-open="${i}" class="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[12px] hover:opacity-80" style="border-bottom:1px solid color-mix(in oklab,var(--line) 55%,transparent)">
-            <div class="w-6 shrink-0 text-[10px]" style="color:var(--muted)">${i + 1}</div>
-            <div class="min-w-0 flex-1 overflow-hidden">
-              <div class="truncate font-medium leading-none">${esc(r.name)}</div>
+          (r, i) => `<button data-rank-open="${i}" class="rank-row">
+            <div class="text-[10px]" style="color:var(--muted)">${i + 1}</div>
+            <div class="min-w-0 overflow-hidden">
+              <div class="truncate font-medium leading-none ${tone(r.changePct)}">${esc(r.name)}</div>
               <div class="mt-0.5 truncate text-[9px] leading-none" style="color:var(--muted)">${esc(r.code)}</div>
             </div>
-            <div class="w-[72px] shrink-0 text-right tabular-nums">${fmtPrice(r.price, r.market)}</div>
-            <div class="w-[62px] shrink-0 text-right tabular-nums font-semibold ${tone(r.changePct)}">${fmtPct(r.changePct)}</div>
+            <div class="tabular-nums">${fmtPrice(r.price, r.market)}</div>
+            <div class="tabular-nums font-semibold ${tone(r.changePct)}">${fmtPct(r.changePct)}</div>
           </button>`,
         )
         .join('')}
@@ -1329,6 +1335,135 @@ async function loadRank() {
   } catch (e) {
     console.error(e);
   }
+}
+
+const FORCE_NAMES = ['煤炭', '传媒', '半导体', 'CPO', '光模块', '电网', '电力', '创新药'];
+
+function boardHit(name) {
+  const rows = [...(state.forceConcept || []), ...(state.forceIndustry || [])];
+  return rows.find((b) => String(b.name || '').includes(name)) || null;
+}
+
+function renderForce() {
+  const btn = $('force-run');
+  if (btn) {
+    btn.disabled = !!state.forceRunning;
+    btn.textContent = state.forceRunning ? '看盘中…' : '看今天';
+  }
+  const cal = $('force-cal');
+  if (cal) {
+    const facts = marketCalendarFacts(new Date(), { center: state.center });
+    cal.textContent = (facts.lines || []).slice(0, 3).join('');
+  }
+  const body = $('force-body');
+  if (body) {
+    const saved = state.settings?.forceOutlook;
+    if (state.forceRunning) {
+      body.innerHTML = '<div style="color:var(--muted)">正在看今天的资金、板块和日历…</div>';
+    } else if (saved?.now) {
+      const when = saved.generatedAt
+        ? new Date(saved.generatedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
+        : '';
+      const chips = (saved.watch || []).map((x) => `<span class="force-chip">${esc(x)}</span>`).join('');
+      const soft = (saved.soft || [])
+        .map((row) => `<div class="force-line"><b>${esc(row.name)}</b> ${esc(row.why)}</div>`)
+        .join('');
+      body.innerHTML = `
+        <div class="text-[11px]" style="color:var(--muted)">${esc(when)} · 盘中倾向，不是买卖指令</div>
+        <div class="force-now">${esc(saved.now)}</div>
+        <div class="mt-1">${esc(saved.later || '')}</div>
+        ${saved.turn ? `<div class="mt-1 text-down">${esc(saved.turn)}</div>` : ''}
+        ${chips ? `<div class="force-chips">${chips}</div>` : ''}
+        ${soft}`;
+    } else {
+      body.innerHTML = '<div style="color:var(--muted)">点「看今天」。根据此刻的资金、涨跌和日历，判断下午会不会转弱。</div>';
+    }
+  }
+  const boards = $('force-boards');
+  if (boards) {
+    const watched = FORCE_NAMES.map((name) => {
+      const hit = boardHit(name);
+      const pct = hit?.changePct;
+      return `<div class="force-line"><span>${esc(hit?.name || name)}</span><b class="${tone(pct)}">${fmtPct(pct)}</b></div>`;
+    }).join('');
+    const weak = [...(state.forceIndustry || [])]
+      .filter((b) => Number.isFinite(Number(b.changePct)))
+      .sort((a, b) => a.changePct - b.changePct)
+      .slice(0, 6)
+      .map((b) => `<div class="force-line"><span>${esc(b.name)}</span><b class="${tone(b.changePct)}">${fmtPct(b.changePct)}</b></div>`)
+      .join('');
+    boards.innerHTML = `
+      <div class="force-sub">常看的方向</div>
+      ${watched}
+      <div class="force-sub">今天行业里偏弱的</div>
+      ${weak || '<div class="text-[12px]" style="color:var(--muted)">正在取板块…</div>'}`;
+  }
+}
+
+function buildForceFacts() {
+  const cal = marketCalendarFacts(new Date(), { center: state.center });
+  const s = state.center.flow?.summary;
+  const zd = state.center.updown;
+  const flow = s
+    ? `主力 ${fmtYi(s.main)} 亿，超大单 ${fmtYi(s.huge)} 亿，大单 ${fmtYi(s.large)} 亿。涨 ${zd?.up ?? '—'} 跌 ${zd?.down ?? '—'} 涨停 ${zd?.limitUp ?? '—'} 跌停 ${zd?.limitDown ?? '—'}。`
+    : '资金未取到。';
+  const line = (rows) =>
+    (rows || [])
+      .filter((b) => Number.isFinite(Number(b.changePct)))
+      .slice(0, 8)
+      .map((b) => `${b.name} ${fmtPct(b.changePct)}`)
+      .join('，');
+  const industry = [...(state.forceIndustry || [])].sort((a, b) => (b.changePct || 0) - (a.changePct || 0));
+  const watched = FORCE_NAMES.map((name) => {
+    const hit = boardHit(name);
+    return hit ? `${hit.name} ${fmtPct(hit.changePct)}` : `${name} 无行情`;
+  }).join('，');
+  return [cal.text, flow, `行业涨得多：${line(industry) || '无'}`, `行业跌得多：${line([...industry].reverse()) || '无'}`, `指定方向：${watched}`].join('\n');
+}
+
+async function loadForce() {
+  renderForce();
+  try {
+    await loadDataCenter();
+    const [industry, concept] = await Promise.all([
+      fetchBoards('industry').catch(() => state.forceIndustry || []),
+      fetchBoards('concept').catch(() => state.forceConcept || []),
+    ]);
+    state.forceIndustry = industry;
+    state.forceConcept = concept;
+  } catch (e) {
+    console.error(e);
+  }
+  renderForce();
+}
+
+async function runForce() {
+  if (state.forceRunning) return;
+  const apiKey = await ensureDeepseekKey();
+  if (!apiKey) return;
+  state.forceRunning = true;
+  renderForce();
+  try {
+    if (!state.forceIndustry?.length) await loadForce();
+    const report = await askForceOutlook(apiKey, buildForceFacts());
+    state.settings = await saveSettings({ forceOutlook: { ...report, generatedAt: Date.now() } });
+  } catch (e) {
+    console.error(e);
+    const msg = String(e?.message || e);
+    if (/401|invalid|api key|密钥/i.test(msg)) {
+      state.settings = await saveSettings({ deepseekApiKey: '' });
+    }
+  } finally {
+    state.forceRunning = false;
+    renderForce();
+  }
+}
+
+function ensureHeatmap() {
+  const frame = $('etf-frame');
+  if (!frame || frame.dataset.ready === '1') return;
+  frame.dataset.ready = '1';
+  frame.src = 'https://52etf.site/';
 }
 
 function openDialog({ title, bodyHtml }) {
@@ -1403,6 +1538,12 @@ function reportBlock(title, text) {
   return `<div class="mb-2"><div class="text-[11px] font-semibold">${esc(title)}</div><div class="mt-0.5 text-[12px] leading-relaxed">${esc(text)}</div></div>`;
 }
 
+function reportPoint(label, text) {
+  const value = String(text || '').trim();
+  if (!value) return '';
+  return `<div class="report-point"><b>${esc(label)}</b> ${esc(value)}</div>`;
+}
+
 function reportArticleHtml(report) {
   if (!report) return '';
   const when = report.generatedAt
@@ -1410,48 +1551,38 @@ function reportArticleHtml(report) {
     : '';
   const cls = actionClass(report.action);
   const probs =
-    report.kind === 'market'
+    report.kind === 'market' || report.kind === 'seat'
       ? ''
       : `<div class="mb-2 grid grid-cols-3 gap-1.5 text-center">
       <div class="rounded-lg px-1 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">买入</div><div class="text-sm font-semibold text-up">${report.buyProb ?? 0}%</div></div>
       <div class="rounded-lg px-1 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">继续等</div><div class="text-sm font-semibold">${report.waitProb ?? 0}%</div></div>
       <div class="rounded-lg px-1 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">不买</div><div class="text-sm font-semibold text-down">${report.avoidProb ?? 0}%</div></div>
     </div>`;
-  const body =
+  const points =
     report.kind === 'market'
-      ? `${reportBlock('今天做哪些', report.leaders)}${reportBlock('今天避开', report.avoid)}${reportBlock('当天节奏', report.rhythm)}${reportBlock('风险', report.risk)}${reportBlock('和前几天比', report.consistency)}`
+      ? `${reportPoint('做', report.leaders)}${reportPoint('避开', report.avoid)}${reportPoint('节奏', report.rhythm || report.hold)}`
       : report.kind === 'seat'
-        ? `${reportBlock('这些席位在干什么', report.read)}${reportBlock('容易看错的地方', report.risk)}`
-        : `${checksLine(report)}${reportBlock('今天怎么做', report.today)}${reportBlock('板块', report.sector)}${reportBlock('持仓', report.position)}${reportBlock('主力', report.mainForce)}${reportBlock('量价', report.trend)}${reportBlock('消息', report.news)}${reportBlock('估值与涨幅', report.valuation)}${reportBlock('大盘', report.market)}${reportBlock('仓位', report.plan)}${reportBlock('当天离场', report.exit)}${reportBlock('放弃条件', report.stop)}${reportBlock('风险', report.risk)}${reportBlock('和前几天比', report.consistency)}`;
-  const intro =
+        ? `${reportPoint('席位', report.read || report.summary)}${reportPoint('持仓', report.hold)}`
+        : `${reportPoint('怎么处理', report.hold || report.position)}${reportPoint('卖 / 买点', report.exit || report.today)}${reportPoint('跟主力', report.follow)}`;
+  const detail =
     report.kind === 'market'
-      ? 'AI盘 / 顺势结论：告诉你这一天手里的票怎么处理，以及主力方向跟哪一段。顺势每个交易日自动三次：开盘、盘中、尾盘。AI盘要自己点。'
+      ? `${reportBlock('风险', report.risk)}${reportBlock('和前几天比', report.consistency)}`
       : report.kind === 'seat'
-        ? '期货席位：说明中信和其他机构是偏多、偏空，还是多空一起加、更像对冲。每个交易日自动三次：开盘、盘中、尾盘。点按钮可以马上重做。最后看持仓，以及跟不跟这一段。'
-        : '个股报告：点「分析」才会生成。看的是这只票跟不跟主力，以及你填的成本这一天怎么处理。';
-  const hold = report.hold || (report.kind === 'market' ? '' : report.position || '');
-  const follow = report.follow || '';
-  const quick =
-    hold || follow
-      ? `<div class="trend-final">
-      <div class="trend-label">先看这里</div>
-      ${hold ? `<div><b>持仓</b> ${esc(hold)}</div>` : ''}
-      ${follow ? `<div class="mt-1"><b>跟主力</b> ${esc(follow)}</div>` : ''}
-    </div>`
-      : '';
+        ? `${reportBlock('容易看错的地方', report.risk)}`
+        : `${checksLine(report)}${reportBlock('今天怎么做', report.today)}${reportBlock('板块', report.sector)}${reportBlock('持仓', report.position)}${reportBlock('主力', report.mainForce)}${reportBlock('量价', report.trend)}${reportBlock('消息', report.news)}${reportBlock('位置', report.valuation)}${reportBlock('大盘', report.market)}${reportBlock('仓位', report.plan)}${reportBlock('离场', report.exit)}${reportBlock('放弃', report.stop)}${reportBlock('风险', report.risk)}${reportBlock('和前几天比', report.consistency)}`;
+  const title = report.title || (report.kind === 'market' ? '今日大盘' : report.kind === 'seat' ? '期货席位' : '个股');
   return `
-    <p class="mb-2 text-[11px] leading-relaxed" style="color:var(--muted)">${esc(intro)}</p>
-    <div class="mb-2 flex flex-wrap items-end justify-between gap-2">
-      <div>
-        <div class="text-[11px]" style="color:var(--muted)">${esc(report.title || (report.kind === 'market' ? '今日大盘' : report.kind === 'seat' ? '期货席位' : '个股'))} · ${esc(report.source || 'DeepSeek')} · 当日短线 · ${esc(when)}</div>
-        <div class="text-lg font-semibold ${cls}">${esc(report.action || '继续等')}</div>
-      </div>
+    <div class="mb-2">
+      <div class="text-lg font-semibold ${cls}">${esc(report.action || '继续等')}</div>
+      <div class="text-[11px]" style="color:var(--muted)">${esc(title)} · ${esc(when)}</div>
     </div>
     ${probs}
-    <p class="mb-2 text-[13px] leading-relaxed">${esc(report.summary || '')}</p>
-    ${body}
-    ${quick}
-    <p class="text-[10px] leading-snug" style="color:var(--muted)">按给出的那个北京日期做短线判断。概率不是胜率，也不承诺赚钱。先看最下面两句，再决定做不做。</p>`;
+    <p class="report-lead">${esc(report.summary || '')}</p>
+    <div class="report-points">${points}</div>
+    <details class="report-more">
+      <summary>展开依据</summary>
+      ${detail || '<div class="text-[12px]" style="color:var(--muted)">没有更多依据。</div>'}
+    </details>`;
 }
 
 function renderDeepseekReport(report) {
@@ -1518,25 +1649,49 @@ function renderReportDrawer() {
     els.reportDrawerBody.innerHTML = `${pending}<div class="text-[12px] leading-relaxed" style="color:var(--muted)">还没有报告。点顶部 <b>AI盘</b> 看今天哪些板块适合短线，或在自选里点股票旁边的 AI。生成过的都会留在这里，新的在最上面。</div>`;
     return;
   }
-  els.reportDrawerBody.innerHTML =
-    pending +
-    rows
-      .map((r) => {
-        const when = r.generatedAt
-          ? new Date(r.generatedAt).toLocaleString('zh-CN', { hour12: false })
-          : '';
-        const badge = reportCoreBadge(r);
-        return `<button type="button" class="report-row${badge ? ' has-core' : ''}" data-report-id="${escAttr(r.id)}">
-          ${badge ? `<span class="report-core" title="${escAttr(badge)}">${esc(badge)}</span>` : ''}
-          <div class="flex items-center justify-between gap-2">
-            <span class="min-w-0 truncate text-[13px] font-semibold">${esc(r.title || r.code || '报告')}</span>
-            <span class="shrink-0 text-[12px] font-semibold ${actionClass(r.action)}">${esc(r.action || '')}</span>
-          </div>
-          <div class="mt-0.5 text-[10px]" style="color:var(--muted)">${esc(when)} · ${r.kind === 'market' ? '大盘' : r.kind === 'seat' ? '席位' : '个股'}</div>
-          <div class="mt-1 line-clamp-2 text-left text-[12px] leading-snug" style="color:var(--muted)">${esc(r.summary || '')}</div>
-        </button>`;
-      })
+  const card = (r) => {
+    const when = r.generatedAt
+      ? new Date(r.generatedAt).toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
+      : '';
+    const badge = reportCoreBadge(r);
+    return `<button type="button" class="report-row${badge ? ' has-core' : ''}" data-report-id="${escAttr(r.id)}">
+      ${badge ? `<span class="report-core" title="${escAttr(badge)}">${esc(badge)}</span>` : ''}
+      <div class="flex items-center justify-between gap-2">
+        <span class="min-w-0 truncate text-[13px] font-semibold">${esc(r.title || r.code || '报告')}</span>
+        <span class="shrink-0 text-[12px] font-semibold ${actionClass(r.action)}">${esc(r.action || '')}</span>
+      </div>
+      <div class="mt-0.5 text-[10px]" style="color:var(--muted)">${esc(when)}</div>
+      <div class="mt-1 line-clamp-2 text-left text-[12px] leading-snug" style="color:var(--muted)">${esc(r.summary || '')}</div>
+    </button>`;
+  };
+  const byDay = (list) => {
+    const groups = [];
+    for (const row of list) {
+      const day = row.generatedAt
+        ? new Date(row.generatedAt).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric', weekday: 'short' })
+        : '更早';
+      const last = groups[groups.length - 1];
+      if (last?.day === day) last.items.push(row);
+      else groups.push({ day, items: [row] });
+    }
+    if (!groups.length) return '<div class="text-[12px]" style="color:var(--muted)">还没有</div>';
+    return groups
+      .map(
+        (g) =>
+          `<div class="report-day"><div class="report-day-label">${esc(g.day)}</div>${g.items.map(card).join('')}</div>`,
+      )
       .join('');
+  };
+  if (drawer.filter) {
+    els.reportDrawerBody.innerHTML = pending + byDay(rows);
+    return;
+  }
+  const market = rows.filter((r) => r.kind === 'market' || r.kind === 'seat');
+  const stocks = rows.filter((r) => r.kind !== 'market' && r.kind !== 'seat');
+  els.reportDrawerBody.innerHTML = `${pending}<div class="report-split">
+    <section><h3 class="report-col-title">大盘</h3>${byDay(market)}</section>
+    <section><h3 class="report-col-title">股票</h3>${byDay(stocks)}</section>
+  </div>`;
 }
 
 function openReportDrawer({ focusId = null, filter = null } = {}) {
@@ -1691,6 +1846,12 @@ async function scanAllStocks() {
   if (state.scanRunning) return;
   const stocks = state.list.filter((x) => x.kind === 'stock');
   if (!stocks.length) return;
+  const calls = Math.ceil(stocks.length / 12);
+  const ok = await confirmDialog(
+    '分析全部',
+    `给 ${stocks.length} 只股票打买入、继续等、不买的概率，大约 ${calls} 次调用。确定开始？`,
+  );
+  if (!ok) return;
   const apiKey = await ensureDeepseekKey();
   if (!apiKey) return;
   state.scanRunning = true;
@@ -1901,10 +2062,11 @@ async function refreshDetailCharts() {
   const secid = item.secid || toSecid(item.market, item.code, item.marketNo);
   try {
     const period = state.period;
+    const minute = period === 'intraday' || period === 'fiveday';
     const kltMap = { day: 101, week: 102, month: 103 };
     const [mainRes, flowRes] = await Promise.allSettled([
-      period === 'intraday'
-        ? fetchIntraday(secid)
+      minute
+        ? fetchIntraday(secid, period === 'fiveday' ? 5 : 1)
         : fetchKline(secid, kltMap[period] || 101, period === 'month' ? 60 : 90),
       fetchStockMoneyFlow(secid),
     ]);
@@ -1917,7 +2079,7 @@ async function refreshDetailCharts() {
     const prices = mainData?.points?.map((p) => p.price ?? p.high) || [];
     const intraHi = prices.reduce((m, v) => (Number(v) > m ? Number(v) : m), -Infinity);
     const intraLo = prices.reduce((m, v) => (Number(v) > 0 && Number(v) < m ? Number(v) : m), Infinity);
-    const auto = period === 'intraday' ? {} : calcAutoLevels(mainData?.points || [], 20);
+    const auto = minute ? {} : calcAutoLevels(mainData?.points || [], 20);
     const base = Number(mainData?.preClose);
     const pctOf = (price) => {
       if (!(base > 0) || !(Number(price) > 0)) return '—';
@@ -1925,18 +2087,18 @@ async function refreshDetailCharts() {
       return `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`;
     };
     const markLine = buildLevelMarkLines({
-      preClose: period === 'intraday' ? mainData?.preClose : null,
-      resistance: period === 'intraday' ? (Number.isFinite(intraHi) ? intraHi : null) : auto.resistance,
-      support: period === 'intraday' ? (Number.isFinite(intraLo) ? intraLo : null) : auto.support,
-      resistanceName: period === 'intraday' ? `最高涨幅 ${pctOf(intraHi)}` : '压力',
-      supportName: period === 'intraday' ? `最低涨幅 ${pctOf(intraLo)}` : '支撑',
+      preClose: minute ? mainData?.preClose : null,
+      resistance: minute ? (Number.isFinite(intraHi) ? intraHi : null) : auto.resistance,
+      support: minute ? (Number.isFinite(intraLo) ? intraLo : null) : auto.support,
+      resistanceName: minute ? `最高涨幅 ${pctOf(intraHi)}` : '压力',
+      supportName: minute ? `最低涨幅 ${pctOf(intraLo)}` : '支撑',
     });
 
     // 清空占位后再渲染，保证容器已有尺寸
     els.chartMain.innerHTML = '';
     await waitFrames(1);
 
-    if (period === 'intraday') {
+    if (minute) {
       const intra = mainData;
       if (intra?.points?.length) {
         renderIntradayChart(
@@ -1949,7 +2111,7 @@ async function refreshDetailCharts() {
             preClose: intra.preClose,
             markLine: markLine,
           },
-          { axisMode },
+          { axisMode: period === 'fiveday' ? 'live' : axisMode },
         );
         const last = intra.points[intra.points.length - 1];
         if (last?.price != null) {
@@ -1963,7 +2125,7 @@ async function refreshDetailCharts() {
         }
       } else {
         els.chartMain.innerHTML =
-          '<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>暂无分时（闭盘也会显示当日走势）</span><span class="text-[11px]">可切换日K，或稍后重试</span></div>';
+          `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>${period === 'fiveday' ? '暂无五日分时' : '暂无分时（闭盘也会显示当日走势）'}</span><span class="text-[11px]">可切换日K，或稍后重试</span></div>`;
       }
     } else if (mainData?.points?.length) {
       const title = period === 'week' ? '周K' : period === 'month' ? '月K' : '日K';
@@ -2786,6 +2948,7 @@ async function refreshAll() {
     if (state.view === 'data') {
       await Promise.all([loadDataCenter(), loadBoards(), loadRank()]);
     }
+    if (state.view === 'force') await loadForce();
     if (state.detail && state.period !== 'week' && state.period !== 'month') {
       if (state.detail.kind === 'fund') await openDetail(state.detail);
       else await refreshDetailCharts();
@@ -3494,7 +3657,16 @@ els.searchInput.addEventListener('input', () => {
   }
   searchTimer = setTimeout(async () => {
     try {
-      state.searchResults = await searchSymbols(value);
+      const found = await searchSymbols(value);
+      const quotes = found.length ? await fetchQuotes(found.slice(0, 12)).catch(() => ({})) : {};
+      state.searchResults = found.map((item) => {
+        const q = quotes[quoteKey(item)] || {};
+        return {
+          ...item,
+          changePct: q.changePct ?? item.changePct,
+          price: q.price ?? item.price,
+        };
+      });
     } catch {
       state.searchResults = [];
     }
@@ -3502,7 +3674,17 @@ els.searchInput.addEventListener('input', () => {
   }, 260);
 });
 
+$('more-btn')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  $('more-panel')?.classList.toggle('hidden');
+});
+$('more-panel')?.addEventListener('click', () => {
+  $('more-panel')?.classList.add('hidden');
+});
+$('force-run')?.addEventListener('click', () => runForce());
+
 document.addEventListener('click', (e) => {
+  if (!e.target.closest('.more-menu')) $('more-panel')?.classList.add('hidden');
   if (e.target.closest('#search-wrap') || e.target.closest('[data-add-idx]')) return;
   if (!state.searchResults.length) return;
   state.searchResults = [];
