@@ -59,8 +59,14 @@ export function checkStopLoss(item, quote) {
   return { hit: false, kind: null, price, stopLoss: stop, pctToStop };
 }
 
-/** 图表标记线：昨收、压力、支撑，标签用中文 */
-export function buildLevelMarkLines({ preClose, support, resistance }) {
+/** 图表标记线：昨收、压力、支撑，标签用中文。分时可传入带涨幅的名称。 */
+export function buildLevelMarkLines({
+  preClose,
+  support,
+  resistance,
+  resistanceName = '压力',
+  supportName = '支撑',
+}) {
   const mute = '#94a3b8';
   const data = [];
   const push = (price, name, color) => {
@@ -71,12 +77,12 @@ export function buildLevelMarkLines({ preClose, support, resistance }) {
       yAxis: y,
       name,
       lineStyle: { type: 'dashed', color, width: 1 },
-      label: { formatter: name, color, fontSize: 10 },
+      label: { formatter: name, color, fontSize: 10, position: 'insideEndTop' },
     });
   };
   push(preClose, '昨收', mute);
-  push(resistance, '压力', '#e11d48');
-  push(support, '支撑', '#059669');
+  push(resistance, resistanceName, '#e11d48');
+  push(support, supportName, '#059669');
   if (!data.length) return undefined;
   return { symbol: 'none', data };
 }

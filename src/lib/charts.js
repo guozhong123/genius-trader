@@ -6,6 +6,7 @@ import {
   LegendComponent,
   MarkLineComponent,
   DataZoomComponent,
+  TitleComponent,
 } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
 
@@ -18,6 +19,7 @@ echarts.use([
   LegendComponent,
   MarkLineComponent,
   DataZoomComponent,
+  TitleComponent,
   CanvasRenderer,
 ]);
 
@@ -160,9 +162,33 @@ export function renderIntradayChart(
     : undefined;
 
   const interval = Math.max(1, Math.ceil(chartTimes.length / 5));
+  const priced = chartPrices.filter((v) => v != null && Number(v) > 0).map(Number);
+  const hi = priced.length ? Math.max(...priced) : null;
+  const lo = priced.length ? Math.min(...priced) : null;
+  const pctText = (price) => {
+    if (!(base > 0) || !(price > 0)) return '—';
+    const pct = ((price - base) / base) * 100;
+    return `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`;
+  };
+  const hiPct = pctText(hi);
+  const loPct = pctText(lo);
+  const loColor = lo != null && base > 0 && lo >= base ? up : down;
 
   chart.setOption({
     animationDuration: 280,
+    title: hi
+      ? {
+          text: `{hi|最高涨幅 ${hiPct}}    {lo|最低涨幅 ${loPct}}`,
+          left: 48,
+          top: 0,
+          textStyle: {
+            rich: {
+              hi: { color: up, fontSize: 12, fontWeight: 700 },
+              lo: { color: loColor, fontSize: 12, fontWeight: 700 },
+            },
+          },
+        }
+      : undefined,
     axisPointer: { link: [{ xAxisIndex: 'all' }] },
     tooltip: {
       trigger: 'axis',
@@ -187,7 +213,7 @@ export function renderIntradayChart(
       },
     },
     grid: [
-      { left: 48, right: 48, top: 20, bottom: '32%' },
+      { left: 48, right: 48, top: 28, bottom: '32%' },
       { left: 48, right: 48, top: '74%', bottom: 28 },
     ],
     xAxis: [

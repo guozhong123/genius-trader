@@ -1899,10 +1899,18 @@ async function refreshDetailCharts() {
     const intraHi = prices.reduce((m, v) => (Number(v) > m ? Number(v) : m), -Infinity);
     const intraLo = prices.reduce((m, v) => (Number(v) > 0 && Number(v) < m ? Number(v) : m), Infinity);
     const auto = period === 'intraday' ? {} : calcAutoLevels(mainData?.points || [], 20);
+    const base = Number(mainData?.preClose);
+    const pctOf = (price) => {
+      if (!(base > 0) || !(Number(price) > 0)) return '—';
+      const pct = ((Number(price) - base) / base) * 100;
+      return `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`;
+    };
     const markLine = buildLevelMarkLines({
       preClose: period === 'intraday' ? mainData?.preClose : null,
       resistance: period === 'intraday' ? (Number.isFinite(intraHi) ? intraHi : null) : auto.resistance,
       support: period === 'intraday' ? (Number.isFinite(intraLo) ? intraLo : null) : auto.support,
+      resistanceName: period === 'intraday' ? `最高涨幅 ${pctOf(intraHi)}` : '压力',
+      supportName: period === 'intraday' ? `最低涨幅 ${pctOf(intraLo)}` : '支撑',
     });
 
     // 清空占位后再渲染，保证容器已有尺寸
