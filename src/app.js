@@ -669,55 +669,77 @@ function parseUserPrice(raw) {
   return Number.isFinite(n) && n > 0 ? Math.round(n * 1000) / 1000 : null;
 }
 
-function shownPrice(item, field) {
+/** 手数/份额：A股按手，基金按份，其它按股 */
+function parseLots(raw) {
+  const s = String(raw ?? '').trim().replace(/,/g, '');
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null;
+}
+
+function shownField(item, field) {
   const draft = positionDrafts.get(itemKey(item));
   if (draft && Object.prototype.hasOwnProperty.call(draft, field)) return draft[field];
-  const stored = field === 'cost' ? item.cost : item.markPrice;
-  return stored == null || stored === '' ? '' : String(stored);
+  if (field === 'cost') {
+    const stored = item.cost;
+    return stored == null || stored === '' ? '' : String(stored);
+  }
+  // 手数：优先 lots；旧数据误把手数写在 markPrice 里也认
+  const lots = item.lots != null && item.lots !== '' ? item.lots : item.markPrice;
+  return lots == null || lots === '' ? '' : String(lots);
 }
 
-function holdBasis(item, costVal, markVal) {
-  const mark = markVal !== undefined ? markVal : parseUserPrice(shownPrice(item, 'mark'));
-  const cost = costVal !== undefined ? costVal : parseUserPrice(shownPrice(item, 'cost'));
-  return mark || cost || null;
+function sharesPerLot(item) {
+  if (item?.kind === 'fund' || item?.market === 'FUND') return 1;
+  if (item?.market === 'SH' || item?.market === 'SZ' || item?.market === 'BJ') return 100;
+  return 1;
 }
 
-function fmtDelta(n, market) {
+function fmtMoney(n) {
   if (n == null || !Number.isFinite(n)) return '—';
-  const digits = market === 'FUND' ? 4 : market === 'US' || market === 'HK' || market === 'KR' ? 3 : 2;
   const abs = Math.abs(n).toLocaleString('zh-CN', {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   });
   if (n > 0) return `+${abs}`;
   if (n < 0) return `-${abs}`;
   return abs;
 }
 
-function pnlHtml(basis, live, market) {
-  if (!(basis > 0) || !(live > 0)) return '';
-  const diff = live - basis;
-  const pct = (diff / basis) * 100;
-  return `<span class="pnl ${tone(pct)}"><span class="pnl-diff">${fmtDelta(diff, market)}</span><span class="pnl-pct">${fmtPct(pct)}</span></span>`;
+function pnlParts(cost, live, lots, item) {
+  if (!(cost > 0) || !(live > 0)) return null;
+  const pct = ((live - cost) / cost) * 100;
+  const perShare = live - cost;
+  const money = lots > 0 ? perShare * lots * sharesPerLot(item) : null;
+  return { pct, perShare, money };
+}
+
+function pnlHtml(cost, live, lots, item) {
+  const p = pnlParts(cost, live, lots, item);
+  if (!p) return '';
+  const moneyText = p.money != null ? fmtMoney(p.money) : fmtMoney(p.perShare);
+  return `<span class="pnl ${tone(p.pct)}"><span class="pnl-diff">${moneyText}</span><span class="pnl-pct">${fmtPct(p.pct)}</span></span>`;
+}
+
+function stopHtml(item, cost, live) {
+  if (item.kind === 'fund') return '';
+  const stop = disciplineStop(item, cost);
+  if (!stop) return '';
+  const broken = live > 0 && live <= stop.price;
+  return `<span class="stop-tag ${broken ? 'text-down' : ''}" title="成本下方 ${(stop.gap * 100).toFixed(0)}%">止损 ${stop.price.toFixed(2)}${broken ? '·已破' : ''}</span>`;
 }
 
 function costLineHtml(item, livePrice) {
   const key = escAttr(itemKey(item));
-  const cost = parseUserPrice(shownPrice(item, 'cost'));
-  const mark = parseUserPrice(shownPrice(item, 'mark'));
-  const basis = holdBasis(item, cost, mark);
+  const cost = parseUserPrice(shownField(item, 'cost'));
+  const lots = parseLots(shownField(item, 'lots'));
   const live = Number(livePrice);
-  const pnl = pnlHtml(basis, live, item.kind === 'fund' ? 'FUND' : item.market);
-  const stop = item.kind === 'fund' ? null : disciplineStop(item, basis);
-  const broken = stop && live > 0 && live <= stop.price;
-  const stopHtml = stop
-    ? `<span class="stop-tag ${broken ? 'text-down' : ''}" title="持仓价下方 ${(stop.gap * 100).toFixed(0)}%">止损 ${stop.price.toFixed(2)}${broken ? ' 已破' : ''}</span>`
-    : '';
-  return `<div class="pos-fields" data-live="${Number.isFinite(live) ? live : ''}" data-market="${escAttr(item.kind === 'fund' ? 'FUND' : item.market || '')}">
-    <label class="pos-field">成本<input data-cost="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownPrice(item, 'cost'))}" placeholder="成本" /></label>
-    <label class="pos-field">持仓价<input data-mark="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownPrice(item, 'mark'))}" placeholder="持仓价" /></label>
-    <div class="pos-pnl">${pnl}${stopHtml}</div>
-    <button type="button" data-clear-pos="${key}" class="pos-clear" title="清空成本和持仓价">清</button>
+  const market = item.kind === 'fund' ? 'FUND' : item.market || '';
+  return `<div class="pos-fields" data-live="${Number.isFinite(live) ? live : ''}" data-market="${escAttr(market)}" data-kind="${escAttr(item.kind || '')}">
+    <label class="pos-field">成本<input data-cost="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownField(item, 'cost'))}" placeholder="成本" /></label>
+    <label class="pos-field">手数<input data-lots="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownField(item, 'lots'))}" placeholder="手数" title="A股1手=100股；基金填份额" /></label>
+    <div class="pos-pnl">${pnlHtml(cost, live, lots, item)}${stopHtml(item, cost, live)}</div>
+    <button type="button" data-clear-pos="${key}" class="pos-clear" title="清空成本和手数">清</button>
   </div>`;
 }
 
@@ -782,7 +804,7 @@ function listHeaderHtml() {
       </div>
       <div class="col-num">${isFund ? '净值' : '现价'}</div>
       <div class="col-num">成本</div>
-      <div class="col-num">持仓价</div>
+      <div class="col-num">手数</div>
       <div class="pos-pnl">浮盈</div>
       <div class="pos-clear-h"></div>
       <div class="col-actions text-right text-[11px]" style="color:var(--muted)">操作</div>
@@ -810,8 +832,8 @@ function renderList() {
   const active = document.activeElement;
   const focusAttr = active?.hasAttribute?.('data-cost')
     ? 'data-cost'
-    : active?.hasAttribute?.('data-mark')
-      ? 'data-mark'
+    : active?.hasAttribute?.('data-lots')
+      ? 'data-lots'
       : '';
   const focusVal = focusAttr ? active.getAttribute(focusAttr) : '';
   const caret = focusAttr ? active.selectionStart : null;
@@ -911,72 +933,83 @@ function bindListEvents() {
     });
   });
 
-  const bindPriceInput = (el, field) => {
-    const attr = field === 'cost' ? 'data-cost' : 'data-mark';
+  const refreshPosPnl = (line, item) => {
+    if (!line) return;
+    const live = Number(line.getAttribute('data-live'));
+    const cost = parseUserPrice(line.querySelector('[data-cost]')?.value);
+    const lots = parseLots(line.querySelector('[data-lots]')?.value);
+    const box = line.querySelector('.pos-pnl') || line;
+    let pnl = box.querySelector('.pnl');
+    const parts = pnlParts(cost, live, lots, item || { market: line.getAttribute('data-market'), kind: line.getAttribute('data-kind') });
+    if (!parts) pnl?.remove();
+    else {
+      if (!pnl) {
+        pnl = document.createElement('span');
+        const stopEl = box.querySelector('.stop-tag');
+        if (stopEl) box.insertBefore(pnl, stopEl);
+        else box.appendChild(pnl);
+      }
+      const moneyText = parts.money != null ? fmtMoney(parts.money) : fmtMoney(parts.perShare);
+      pnl.className = `pnl ${tone(parts.pct)}`;
+      pnl.innerHTML = `<span class="pnl-diff">${moneyText}</span><span class="pnl-pct">${fmtPct(parts.pct)}</span>`;
+    }
+    let tag = box.querySelector('.stop-tag');
+    if (item?.kind === 'fund') {
+      tag?.remove();
+      return;
+    }
+    const stop = disciplineStop(item, cost);
+    if (!stop) {
+      tag?.remove();
+      return;
+    }
+    if (!tag) {
+      tag = document.createElement('span');
+      tag.className = 'stop-tag';
+      box.appendChild(tag);
+    }
+    const broken = live > 0 && live <= stop.price;
+    tag.className = `stop-tag ${broken ? 'text-down' : ''}`;
+    tag.title = `成本下方 ${(stop.gap * 100).toFixed(0)}%`;
+    tag.textContent = `止损 ${stop.price.toFixed(2)}${broken ? '·已破' : ''}`;
+  };
+
+  const bindPosInput = (el, field) => {
+    const attr = field === 'cost' ? 'data-cost' : 'data-lots';
     el.addEventListener('click', (e) => e.stopPropagation());
     el.addEventListener('input', () => {
       const key = el.getAttribute(attr);
       const prev = positionDrafts.get(key) || {};
       positionDrafts.set(key, { ...prev, [field]: el.value });
-      const line = el.closest('.pos-fields');
-      if (!line) return;
-      const live = Number(line.getAttribute('data-live'));
-      const market = line.getAttribute('data-market') || '';
-      const cost = parseUserPrice(line.querySelector('[data-cost]')?.value);
-      const mark = parseUserPrice(line.querySelector('[data-mark]')?.value);
-      const basis = mark || cost;
-      const box = line.querySelector('.pos-pnl') || line;
-      let pnl = box.querySelector('.pnl');
-      if (!(basis > 0) || !(live > 0)) pnl?.remove();
-      else {
-        const diff = live - basis;
-        const pct = (diff / basis) * 100;
-        if (!pnl) {
-          pnl = document.createElement('span');
-          const stopEl = box.querySelector('.stop-tag');
-          if (stopEl) box.insertBefore(pnl, stopEl);
-          else box.appendChild(pnl);
-        }
-        pnl.className = `pnl ${tone(pct)}`;
-        pnl.innerHTML = `<span class="pnl-diff">${fmtDelta(diff, market)}</span><span class="pnl-pct">${fmtPct(pct)}</span>`;
-      }
       const item = state.list.find((x) => itemKey(x) === key);
-      const stop = item?.kind === 'fund' ? null : disciplineStop(item, basis);
-      let tag = box.querySelector('.stop-tag');
-      if (!stop) {
-        tag?.remove();
-        return;
-      }
-      if (!tag) {
-        tag = document.createElement('span');
-        tag.className = 'stop-tag';
-        box.appendChild(tag);
-      }
-      const broken = live > 0 && live <= stop.price;
-      tag.className = `stop-tag ${broken ? 'text-down' : ''}`;
-      tag.title = `持仓价下方 ${(stop.gap * 100).toFixed(0)}%`;
-      tag.textContent = `止损 ${stop.price.toFixed(2)}${broken ? ' 已破' : ''}`;
+      refreshPosPnl(el.closest('.pos-fields'), item);
     });
     el.addEventListener('blur', async () => {
       const key = el.getAttribute(attr);
       const item = state.list.find((x) => itemKey(x) === key);
       if (!item) return;
-      const parsed = parseUserPrice(el.value);
+      const parsed = field === 'cost' ? parseUserPrice(el.value) : parseLots(el.value);
       el.value = parsed == null ? '' : String(parsed);
       const draft = { ...(positionDrafts.get(key) || {}) };
       delete draft[field];
-      if (draft.cost == null && draft.mark == null) positionDrafts.delete(key);
+      if (draft.cost == null && draft.lots == null) positionDrafts.delete(key);
       else positionDrafts.set(key, draft);
-      const prevVal = field === 'cost' ? (item.cost ?? null) : (item.markPrice ?? null);
+      const prevVal =
+        field === 'cost'
+          ? (item.cost ?? null)
+          : (item.lots ?? item.markPrice ?? null);
       if (prevVal === parsed) return;
-      const patch = field === 'cost' ? { cost: parsed } : { markPrice: parsed };
+      const patch =
+        field === 'cost'
+          ? { cost: parsed }
+          : { lots: parsed, markPrice: null };
       const idx = state.list.findIndex((x) => itemKey(x) === key);
       if (idx >= 0) state.list[idx] = { ...state.list[idx], ...patch };
       state.list = await updateItem(state.list[idx] || item, patch);
     });
   };
-  els.list.querySelectorAll('[data-cost]').forEach((el) => bindPriceInput(el, 'cost'));
-  els.list.querySelectorAll('[data-mark]').forEach((el) => bindPriceInput(el, 'mark'));
+  els.list.querySelectorAll('[data-cost]').forEach((el) => bindPosInput(el, 'cost'));
+  els.list.querySelectorAll('[data-lots]').forEach((el) => bindPosInput(el, 'lots'));
   els.list.querySelectorAll('[data-clear-pos]').forEach((btn) => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -984,7 +1017,7 @@ function bindListEvents() {
       const item = state.list.find((x) => itemKey(x) === key);
       if (!item) return;
       positionDrafts.delete(key);
-      const patch = { cost: null, markPrice: null };
+      const patch = { cost: null, lots: null, markPrice: null };
       const idx = state.list.findIndex((x) => itemKey(x) === key);
       if (idx >= 0) state.list[idx] = { ...state.list[idx], ...patch };
       state.list = await updateItem(state.list[idx] || item, patch);
@@ -1488,10 +1521,13 @@ async function runDeepseekForItem(item) {
   const keyId = itemKey(item);
   if (state.aiRunning?.[keyId]) return;
   const draft = positionDrafts.get(keyId);
-  if (draft && (draft.cost != null || draft.mark != null)) {
+  if (draft && (draft.cost != null || draft.lots != null)) {
     const patch = {};
     if (draft.cost != null) patch.cost = parseUserPrice(draft.cost);
-    if (draft.mark != null) patch.markPrice = parseUserPrice(draft.mark);
+    if (draft.lots != null) {
+      patch.lots = parseLots(draft.lots);
+      patch.markPrice = null;
+    }
     state.list = await updateItem(item, patch);
     positionDrafts.delete(keyId);
   }
@@ -3067,8 +3103,11 @@ function exportWatchlistJson() {
   const watchlist = (state.list || []).map((item) => {
     const q = state.quotes[quoteKey(item)] || {};
     const live = Number(q.price);
+    const lots = parseLots(item.lots ?? item.markPrice);
+    const { markPrice: _drop, ...rest } = item;
     return {
-      ...item,
+      ...rest,
+      lots: lots ?? null,
       livePrice: Number.isFinite(live) ? live : item.livePrice ?? null,
     };
   });
@@ -3358,7 +3397,7 @@ $('import-file')?.addEventListener('change', async (e) => {
   }
   const ok = await confirmDialog(
     '导入备份',
-    '将合并股票、基金、分组、成本和持仓价。已有代码会补上成本/持仓价，新代码会加进来。继续？',
+    '将合并股票、基金、分组、成本和手数。已有代码会补上成本/手数，新代码会加进来。继续？',
   );
   if (!ok) return;
   const { added, updated } = await applyImportedBundle(bundle);

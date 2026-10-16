@@ -651,12 +651,12 @@
     }
 
     .list-row .col-name-block {
-      grid-template-columns: minmax(0, 1fr) 4.6rem auto;
-      gap: 6px;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 4px;
     }
 
     .list-row .col-name-block .pct-chip {
-      min-width: 5rem;
+      min-width: 3.4rem;
     }
 
     .list-head .col-sort {
@@ -816,7 +816,12 @@
 
   .list-head.has-pos,
   .list-row.has-pos {
-    grid-template-columns: minmax(0, 1fr) 72px 108px 108px 88px 36px 100px;
+    grid-template-columns: minmax(0, 1.15fr) 64px 92px 72px 92px 28px 88px;
+  }
+
+  .list-row.has-pos {
+    padding: 4px 8px;
+    min-height: 0;
   }
 
   .pos-fields {
@@ -849,7 +854,9 @@
     flex-direction: column;
     align-items: flex-end;
     justify-content: center;
-    gap: 1px;
+    gap: 0;
+    max-height: 3.45em;
+    overflow: hidden;
     min-width: 0;
     font-size: 11px;
     font-weight: 700;
@@ -862,18 +869,31 @@
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: 1px;
+    gap: 0;
   }
 
   .pnl-diff {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 700;
+    line-height: 1.15;
   }
 
   .pnl-pct {
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 600;
+    line-height: 1.15;
     opacity: 0.92;
+  }
+
+  .stop-tag {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1.15;
   }
 
   .list-head .pos-pnl {
@@ -950,9 +970,10 @@
 
   .list-row .col-name-block {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 5.25rem auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
-    gap: 8px;
+    justify-items: start;
+    gap: 4px 6px;
     width: 100%;
     min-width: 0;
   }
@@ -964,18 +985,19 @@
   }
 
   .list-row .col-name-block .pct-chip {
-    justify-self: end;
-    min-width: 5rem;
+    justify-self: start;
+    min-width: 3.6rem;
+    padding: 2px 6px;
     text-align: center;
     box-sizing: border-box;
   }
 
   .ai-row-btn {
-    justify-self: end;
-    min-width: 2.6rem;
+    justify-self: start;
+    min-width: 2.2rem;
     border-radius: 6px;
-    padding: 3px 6px;
-    font-size: 11px;
+    padding: 2px 5px;
+    font-size: 10px;
     font-weight: 700;
     line-height: 1.2;
     color: var(--accent);

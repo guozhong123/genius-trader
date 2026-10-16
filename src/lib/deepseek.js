@@ -144,17 +144,23 @@ export function buildStockFacts({
   const name = quote?.name || snapshot?.name || item.name || '';
   const px = snapshot?.price ?? quote?.price;
   const cost = Number(item?.cost);
-  const mark = Number(item?.markPrice);
+  const lots = Number(item?.lots ?? item?.markPrice);
   const live = Number(px);
   const emTime = quote?.updatedAt
     ? new Date(quote.updatedAt).toLocaleString('zh-CN', { hour12: false })
     : '未知';
   const tx = Number(cross?.price);
   const diffPct = live > 0 && tx > 0 ? ((tx - live) / live) * 100 : null;
-  const basis = mark > 0 ? mark : cost;
-  const pnl = basis > 0 && live > 0 ? ((live - basis) / basis) * 100 : null;
-  const pnlDiff = basis > 0 && live > 0 ? live - basis : null;
-  const stop = disciplineStop(item, basis);
+  const pnl = cost > 0 && live > 0 ? ((live - cost) / cost) * 100 : null;
+  const perShare = cost > 0 && live > 0 ? live - cost : null;
+  const lotMul =
+    item?.kind === 'fund' || item?.market === 'FUND'
+      ? 1
+      : item?.market === 'SH' || item?.market === 'SZ' || item?.market === 'BJ'
+        ? 100
+        : 1;
+  const pnlMoney = perShare != null && lots > 0 ? perShare * lots * lotMul : null;
+  const stop = disciplineStop(item, cost);
   const pct = snapshot?.changePct ?? quote?.changePct;
   const s = flow?.summary || {};
   const days = flowDays || [];
@@ -206,16 +212,14 @@ export function buildStockFacts({
     tx > 0
       ? `腾讯现价 ${num(tx)}（${cross?.time || '时间未知'}），与东财相差 ${signed(diffPct)}%。以东财为准，不要把两个价平均。`
       : '腾讯对照价：未取到。',
-    cost > 0 ? `用户成本 ${num(cost)}。` : '用户成本：未填。',
-    mark > 0
-      ? `用户持仓价 ${num(mark)}。`
-      : cost > 0
-        ? '用户未另填持仓价，浮盈按成本算。'
-        : '用户持仓价：未填。不要假设他已经持仓，也不要编造止损价。',
-    basis > 0
-      ? `相对东财现价浮盈 ${signed(pnlDiff)} 元，${signed(pnl)}%。${
+    cost > 0 ? `用户成本 ${num(cost)}。` : '用户成本：未填。不要假设他已经持仓，也不要编造止损价。',
+    lots > 0
+      ? `用户手数/份额 ${num(lots, lots % 1 ? 2 : 0)}（A股按手×100股，基金按份）。`
+      : '用户手数：未填。浮盈只给百分比，不给总金额。',
+    cost > 0
+      ? `相对东财现价浮盈 ${signed(pnl)}%${pnlMoney != null ? `，约 ${signed(pnlMoney)} 元` : ''}。${
           stop
-            ? `纪律止损价 ${num(stop.price)}（持仓价下方 ${(stop.gap * 100).toFixed(0)}%）。${live > 0 && live <= stop.price ? '现价已跌破止损，action 只能是不买。' : '还没跌破止损。'}`
+            ? `纪律止损价 ${num(stop.price)}（成本下方 ${(stop.gap * 100).toFixed(0)}%）。${live > 0 && live <= stop.price ? '现价已跌破止损，action 只能是不买。' : '还没跌破止损。'}`
             : ''
         }`
       : '',

@@ -178,7 +178,14 @@ const IMPORT_SETTING_KEYS = [
   'aiModel',
 ];
 
-/** 合并导入股票/基金/分组；已有代码会补上成本和持仓价 */
+function lotsValue(item) {
+  const fromLots = posValue(item?.lots);
+  if (fromLots != null) return fromLots;
+  // 旧备份里 markPrice 实际是手数
+  return posValue(item?.lots == null ? item?.markPrice : null);
+}
+
+/** 合并导入股票/基金/分组；已有代码会补上成本和手数 */
 export async function importShenqiBundle(bundle) {
   const groups = Array.isArray(bundle?.groups) ? bundle.groups : [];
   const incoming = Array.isArray(bundle?.watchlist) ? bundle.watchlist : [];
@@ -210,7 +217,7 @@ export async function importShenqiBundle(bundle) {
     const key = itemKey(item);
     const gid = !item.groupId || item.groupId === 'default' ? 'other' : item.groupId;
     const cost = posValue(item.cost);
-    const mark = posValue(item.markPrice) ?? posValue(item.livePrice);
+    const lots = lotsValue(item);
     if (exist.has(key)) {
       const i = merged.findIndex((x) => itemKey(x) === key);
       if (i >= 0) {
@@ -221,22 +228,25 @@ export async function importShenqiBundle(bundle) {
           groupId: gid || cur.groupId,
           pinned: item.pinned != null ? !!item.pinned : cur.pinned,
           cost: cost != null ? cost : cur.cost,
-          markPrice: mark != null ? mark : cur.markPrice,
+          lots: lots != null ? lots : cur.lots,
+          markPrice: null,
         };
         updated += 1;
       }
       continue;
     }
     exist.add(key);
+    const { markPrice: _drop, ...rest } = item;
     merged.push({
-      ...item,
+      ...rest,
       name: item.name || item.code,
       groupId: gid,
       pinned: !!item.pinned,
       order: merged.length,
       addedAt: item.addedAt || Date.now(),
       cost: cost ?? null,
-      markPrice: mark ?? null,
+      lots: lots ?? null,
+      markPrice: null,
     });
     added += 1;
   }
@@ -255,7 +265,7 @@ export async function importShenqiBundle(bundle) {
   };
 }
 
-/** 导入完整备份：自选 + 分组 + 成本/持仓价 + 指数/主题等（不含密钥） */
+/** 导入完整备份：自选 + 分组 + 成本/手数 + 指数/主题等（不含密钥） */
 export async function importUserBundle(bundle) {
   const result = await importShenqiBundle(bundle);
   const incomingSettings = bundle?.settings && typeof bundle.settings === 'object' ? bundle.settings : {};
