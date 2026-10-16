@@ -134,7 +134,6 @@ export function buildStockFacts({
   news,
   cross,
   indices,
-  valuation,
   intent,
   center,
   industry,
@@ -152,8 +151,10 @@ export function buildStockFacts({
     : '未知';
   const tx = Number(cross?.price);
   const diffPct = live > 0 && tx > 0 ? ((tx - live) / live) * 100 : null;
-  const pnl = cost > 0 && live > 0 ? ((live - cost) / cost) * 100 : null;
-  const stop = disciplineStop(item, cost);
+  const basis = mark > 0 ? mark : cost;
+  const pnl = basis > 0 && live > 0 ? ((live - basis) / basis) * 100 : null;
+  const pnlDiff = basis > 0 && live > 0 ? live - basis : null;
+  const stop = disciplineStop(item, basis);
   const pct = snapshot?.changePct ?? quote?.changePct;
   const s = flow?.summary || {};
   const days = flowDays || [];
@@ -205,19 +206,21 @@ export function buildStockFacts({
     tx > 0
       ? `腾讯现价 ${num(tx)}（${cross?.time || '时间未知'}），与东财相差 ${signed(diffPct)}%。以东财为准，不要把两个价平均。`
       : '腾讯对照价：未取到。',
-    cost > 0
-      ? `用户成本 ${num(cost)}，相对东财现价浮盈 ${signed(pnl)}%。${
+    cost > 0 ? `用户成本 ${num(cost)}。` : '用户成本：未填。',
+    mark > 0
+      ? `用户持仓价 ${num(mark)}。`
+      : cost > 0
+        ? '用户未另填持仓价，浮盈按成本算。'
+        : '用户持仓价：未填。不要假设他已经持仓，也不要编造止损价。',
+    basis > 0
+      ? `相对东财现价浮盈 ${signed(pnlDiff)} 元，${signed(pnl)}%。${
           stop
-            ? `纪律止损价 ${num(stop.price)}（成本下方 ${(stop.gap * 100).toFixed(0)}%）。${live > 0 && live <= stop.price ? '现价已跌破止损，action 只能是不买。' : '还没跌破止损。'}`
+            ? `纪律止损价 ${num(stop.price)}（持仓价下方 ${(stop.gap * 100).toFixed(0)}%）。${live > 0 && live <= stop.price ? '现价已跌破止损，action 只能是不买。' : '还没跌破止损。'}`
             : ''
         }`
-      : '用户成本：未填。不要假设他已经持仓，也不要编造止损价。',
-    mark > 0
-      ? `用户另外填写的价格 ${num(mark)}，与东财现价相差 ${live > 0 ? signed(((mark - live) / live) * 100) : '—'}%。这是他关心的价，不是行情。`
-      : '用户未另填价格。',
+      : '',
     `成交额 ${num(snapshot?.amountYi)} 亿，换手 ${num(snapshot?.turnover)}%，振幅 ${num(snapshot?.amplitude)}%，量比 ${num(snapshot?.volumeRatio)}`,
     `市盈率 ${num(snapshot?.pe)}，市净率 ${num(snapshot?.pb)}，总市值 ${num(snapshot?.totalMvYi, 0)} 亿，流通市值 ${num(snapshot?.floatMvYi, 0)} 亿`,
-    `今日价位：${valuation?.label || '未知'}（${valuation?.tip || '无'}）`,
     ...describeTrend(dayK, limitBand(item, name)),
     `今日主力（亿元，累计）：主力 ${signed(s.main)}，超大 ${signed(s.huge)}，大单 ${signed(s.large)}，中单 ${signed(s.mid)}，小单 ${signed(s.small)}`,
     `本地粗判：${intent?.label || '—'}。${intent?.detail || ''}`,

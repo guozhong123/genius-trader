@@ -67,7 +67,6 @@ import { getTodayEvents, getUpcomingEvents, getMajorUpcomingEvents } from './lib
 import { buildLevelMarkLines } from './lib/levels.js';
 import { normalizeGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
-import { calcValuationBias } from './lib/valuation.js';
 import { askDeepseekReport, askMarketReport, askSeatReport, buildMarketFacts, buildSeatFacts, buildStockFacts, disciplineStop } from './lib/deepseek.js';
 import { OVERNIGHT_LINKS, buildOvernight, marketClock, moodLabel, planText, reviewCalls, scoreMainLines, shYmd, sheetBrief, tradingSlot } from './lib/trend.js';
 import { isLoggedIn, login, logout, currentUser } from './lib/auth.js';
@@ -195,7 +194,6 @@ const els = {
   eventCalendarBtn: $('event-calendar-btn'),
   eventDismissBtn: $('event-dismiss-btn'),
   calendarBtn: $('calendar-btn'),
-  valuationToggle: $('valuation-toggle'),
   loginRoot: $('login-root'),
   loginForm: $('login-form'),
   loginUser: $('login-user'),
@@ -678,25 +676,48 @@ function shownPrice(item, field) {
   return stored == null || stored === '' ? '' : String(stored);
 }
 
+function holdBasis(item, costVal, markVal) {
+  const mark = markVal !== undefined ? markVal : parseUserPrice(shownPrice(item, 'mark'));
+  const cost = costVal !== undefined ? costVal : parseUserPrice(shownPrice(item, 'cost'));
+  return mark || cost || null;
+}
+
+function fmtDelta(n, market) {
+  if (n == null || !Number.isFinite(n)) return '—';
+  const digits = market === 'FUND' ? 4 : market === 'US' || market === 'HK' || market === 'KR' ? 3 : 2;
+  const abs = Math.abs(n).toLocaleString('zh-CN', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+  if (n > 0) return `+${abs}`;
+  if (n < 0) return `-${abs}`;
+  return abs;
+}
+
+function pnlHtml(basis, live, market) {
+  if (!(basis > 0) || !(live > 0)) return '';
+  const diff = live - basis;
+  const pct = (diff / basis) * 100;
+  return `<span class="pnl ${tone(pct)}"><span class="pnl-diff">${fmtDelta(diff, market)}</span><span class="pnl-pct">${fmtPct(pct)}</span></span>`;
+}
+
 function costLineHtml(item, livePrice) {
   const key = escAttr(itemKey(item));
   const cost = parseUserPrice(shownPrice(item, 'cost'));
+  const mark = parseUserPrice(shownPrice(item, 'mark'));
+  const basis = holdBasis(item, cost, mark);
   const live = Number(livePrice);
-  let pnl = '';
-  if (cost && live > 0) {
-    const pct = ((live - cost) / cost) * 100;
-    pnl = `<span class="pnl ${tone(pct)}">浮盈 ${fmtPct(pct)}</span>`;
-  }
-  const stop = item.kind === 'fund' ? null : disciplineStop(item, cost);
+  const pnl = pnlHtml(basis, live, item.kind === 'fund' ? 'FUND' : item.market);
+  const stop = item.kind === 'fund' ? null : disciplineStop(item, basis);
   const broken = stop && live > 0 && live <= stop.price;
   const stopHtml = stop
-    ? `<span class="stop-tag ${broken ? 'text-down' : ''}" title="成本下方 ${(stop.gap * 100).toFixed(0)}%">止损 ${stop.price.toFixed(2)}${broken ? ' 已破' : ''}</span>`
+    ? `<span class="stop-tag ${broken ? 'text-down' : ''}" title="持仓价下方 ${(stop.gap * 100).toFixed(0)}%">止损 ${stop.price.toFixed(2)}${broken ? ' 已破' : ''}</span>`
     : '';
-  return `<div class="pos-fields" data-live="${Number.isFinite(live) ? live : ''}">
+  return `<div class="pos-fields" data-live="${Number.isFinite(live) ? live : ''}" data-market="${escAttr(item.kind === 'fund' ? 'FUND' : item.market || '')}">
     <label class="pos-field">成本<input data-cost="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownPrice(item, 'cost'))}" placeholder="成本" /></label>
-    <label class="pos-field">价格<input data-mark="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownPrice(item, 'mark'))}" placeholder="价格" /></label>
+    <label class="pos-field">持仓价<input data-mark="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownPrice(item, 'mark'))}" placeholder="持仓价" /></label>
     <div class="pos-pnl">${pnl}${stopHtml}</div>
-    <button type="button" data-clear-pos="${key}" class="pos-clear" title="清空现价和成本">清</button>
+    <button type="button" data-clear-pos="${key}" class="pos-clear" title="清空成本和持仓价">清</button>
   </div>`;
 }
 
@@ -708,30 +729,6 @@ function aiRowBtn(item) {
   const label = running ? '分析中' : report?.action || 'AI';
   const toneCls = report?.action === '买入' ? 'up' : report?.action === '不买' ? 'down' : '';
   return `<button type="button" data-ai="${escAttr(key)}" class="ai-row-btn ${toneCls}" title="${report ? '重新分析，点股票看报告' : 'DeepSeek 分析'}">${esc(label)}</button>`;
-}
-
-function valuationBadgeHtml(item, q) {
-  if (state.settings?.showValuationBias === false) return '';
-  if (item.kind === 'fund') return '';
-  const bias = calcValuationBias(q);
-  if (!bias.label) return '';
-  const style =
-    bias.label === '偏高'
-      ? 'background:color-mix(in oklab,var(--up) 14%,transparent);color:var(--up)'
-      : bias.label === '偏低'
-        ? 'background:color-mix(in oklab,var(--down) 14%,transparent);color:var(--down)'
-        : 'background:color-mix(in oklab,var(--muted) 12%,transparent);color:var(--muted)';
-  return `<span class="shrink-0 rounded px-1 text-[9px] font-semibold" style="${style}" title="${escAttr(bias.tip)}">${bias.label}</span>`;
-}
-
-function syncValuationToggle() {
-  const on = state.settings?.showValuationBias !== false;
-  const btn = els.valuationToggle;
-  if (!btn) return;
-  btn.classList.toggle('bg-accent', on);
-  btn.classList.toggle('text-white', on);
-  btn.style.color = on ? '#fff' : 'var(--muted)';
-  btn.textContent = on ? '估值·开' : '估值·关';
 }
 
 function rowHtml(item) {
@@ -755,7 +752,6 @@ function rowHtml(item) {
         <div class="flex min-w-0 items-center gap-1">
             ${item.pinned ? '<span class="shrink-0 text-[9px] text-accent">顶</span>' : ''}
             <h3 class="truncate text-[13px] font-medium leading-none">${esc(name)}</h3>
-            ${valuationBadgeHtml(item, q)}
             ${gname ? `<span class="shrink-0 rounded px-1 text-[9px]" style="background:color-mix(in oklab,var(--muted) 12%,transparent);color:var(--muted)">${esc(gname)}</span>` : ''}
         </div>
           <p class="mt-0.5 truncate text-[10px] leading-none" style="color:var(--muted)">${esc(item.code)}${isFund && q.asOf ? ` · ${esc(q.asOf)}` : ''}</p>
@@ -786,8 +782,8 @@ function listHeaderHtml() {
       </div>
       <div class="col-num">${isFund ? '净值' : '现价'}</div>
       <div class="col-num">成本</div>
-      <div class="col-num">价格</div>
-      <div class="pos-pnl">盈亏</div>
+      <div class="col-num">持仓价</div>
+      <div class="pos-pnl">浮盈</div>
       <div class="pos-clear-h"></div>
       <div class="col-actions text-right text-[11px]" style="color:var(--muted)">操作</div>
     </div>`;
@@ -922,16 +918,19 @@ function bindListEvents() {
       const key = el.getAttribute(attr);
       const prev = positionDrafts.get(key) || {};
       positionDrafts.set(key, { ...prev, [field]: el.value });
-      if (field !== 'cost') return;
       const line = el.closest('.pos-fields');
       if (!line) return;
       const live = Number(line.getAttribute('data-live'));
-      const cost = parseUserPrice(el.value);
+      const market = line.getAttribute('data-market') || '';
+      const cost = parseUserPrice(line.querySelector('[data-cost]')?.value);
+      const mark = parseUserPrice(line.querySelector('[data-mark]')?.value);
+      const basis = mark || cost;
       const box = line.querySelector('.pos-pnl') || line;
       let pnl = box.querySelector('.pnl');
-      if (!(cost > 0) || !(live > 0)) pnl?.remove();
+      if (!(basis > 0) || !(live > 0)) pnl?.remove();
       else {
-        const pct = ((live - cost) / cost) * 100;
+        const diff = live - basis;
+        const pct = (diff / basis) * 100;
         if (!pnl) {
           pnl = document.createElement('span');
           const stopEl = box.querySelector('.stop-tag');
@@ -939,10 +938,10 @@ function bindListEvents() {
           else box.appendChild(pnl);
         }
         pnl.className = `pnl ${tone(pct)}`;
-        pnl.textContent = `浮盈 ${fmtPct(pct)}`;
+        pnl.innerHTML = `<span class="pnl-diff">${fmtDelta(diff, market)}</span><span class="pnl-pct">${fmtPct(pct)}</span>`;
       }
       const item = state.list.find((x) => itemKey(x) === key);
-      const stop = disciplineStop(item, cost);
+      const stop = item?.kind === 'fund' ? null : disciplineStop(item, basis);
       let tag = box.querySelector('.stop-tag');
       if (!stop) {
         tag?.remove();
@@ -955,7 +954,7 @@ function bindListEvents() {
       }
       const broken = live > 0 && live <= stop.price;
       tag.className = `stop-tag ${broken ? 'text-down' : ''}`;
-      tag.title = `成本下方 ${(stop.gap * 100).toFixed(0)}%`;
+      tag.title = `持仓价下方 ${(stop.gap * 100).toFixed(0)}%`;
       tag.textContent = `止损 ${stop.price.toFixed(2)}${broken ? ' 已破' : ''}`;
     });
     el.addEventListener('blur', async () => {
@@ -1503,7 +1502,7 @@ async function runDeepseekForItem(item) {
   renderList();
   if (state.detail && itemKey(state.detail) === keyId && els.aiAdviceBody) {
     els.aiAdviceBody.innerHTML =
-      '<div class="text-[12px]" style="color:var(--muted)">正在拉日K、近5日主力、估值和这只股票的消息…</div>';
+      '<div class="text-[12px]" style="color:var(--muted)">正在拉日K、近5日主力和这只股票的消息…</div>';
   }
   try {
     const secid = item.secid || toSecid(item.market, item.code, item.marketNo);
@@ -1525,7 +1524,6 @@ async function runDeepseekForItem(item) {
     const industry = await fetchIndustryMove(snapshot?.industry).catch(() => null);
     if (!state.center?.overview) await loadDataCenter().catch(() => {});
     const q = { ...(state.quotes[quoteKey(item)] || {}), ...(snapshot || {}) };
-    const valuation = calcValuationBias(q);
     const intent = analyzeMainForceIntent(flow?.summary || {});
     const facts = buildStockFacts({
       item,
@@ -1538,7 +1536,6 @@ async function runDeepseekForItem(item) {
       announcements,
       news: news || [],
       indices: state.indices || [],
-      valuation,
       intent,
       center: state.center,
       cross: tencent,
@@ -3084,7 +3081,6 @@ function exportWatchlistJson() {
     settings: {
       theme: s.theme,
       sortBy: s.sortBy,
-      showValuationBias: s.showValuationBias,
       chartAxisMode: s.chartAxisMode,
       funFlowNames: s.funFlowNames,
       predictOpen: s.predictOpen,
@@ -3262,13 +3258,6 @@ els.eventDismissBtn?.addEventListener('click', async () => {
   state.settings = await saveSettings({ eventBannerDismissDate: todayStr() });
   renderEventBanner();
 });
-els.valuationToggle?.addEventListener('click', async () => {
-  const next = state.settings?.showValuationBias === false;
-  state.settings = await saveSettings({ showValuationBias: next });
-  syncValuationToggle();
-  renderList();
-});
-
 document.querySelectorAll('.board-tab').forEach((tab) => {
   tab.addEventListener('click', () => {
     state.boardType = tab.dataset.board;
@@ -3369,7 +3358,7 @@ $('import-file')?.addEventListener('change', async (e) => {
   }
   const ok = await confirmDialog(
     '导入备份',
-    '将合并股票、基金、分组、成本与现价。已有代码会补上成本/价格，新代码会加进来。继续？',
+    '将合并股票、基金、分组、成本和持仓价。已有代码会补上成本/持仓价，新代码会加进来。继续？',
   );
   if (!ok) return;
   const { added, updated } = await applyImportedBundle(bundle);
@@ -3497,7 +3486,6 @@ async function bootApp() {
   }
   applyTheme(state.settings.theme);
   syncAxisModeButtons();
-  syncValuationToggle();
   if (state.settings?.funFlowNames && els.funNamesBtn) {
     els.funNamesBtn.classList.add('bg-accent', 'text-white');
   }

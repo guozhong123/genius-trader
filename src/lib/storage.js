@@ -59,8 +59,6 @@ export const DEFAULT_SETTINGS = {
   funFlowNames: false,
   predictOpen: true,
   briefModalTab: 'insight',
-  /** 列表显示估值偏高/偏低，默认开 */
-  showValuationBias: true,
   newsSidebarOpen: true,
   dismissedNewsIds: [],
   readNewsIds: [],
@@ -170,7 +168,6 @@ function posValue(v) {
 const IMPORT_SETTING_KEYS = [
   'theme',
   'sortBy',
-  'showValuationBias',
   'chartAxisMode',
   'funFlowNames',
   'predictOpen',
@@ -181,7 +178,7 @@ const IMPORT_SETTING_KEYS = [
   'aiModel',
 ];
 
-/** 合并导入股票/基金/分组；已有代码会补上成本、现价（价格） */
+/** 合并导入股票/基金/分组；已有代码会补上成本和持仓价 */
 export async function importShenqiBundle(bundle) {
   const groups = Array.isArray(bundle?.groups) ? bundle.groups : [];
   const incoming = Array.isArray(bundle?.watchlist) ? bundle.watchlist : [];
@@ -258,7 +255,7 @@ export async function importShenqiBundle(bundle) {
   };
 }
 
-/** 导入完整备份：自选 + 分组 + 成本/现价 + 指数/主题等（不含密钥） */
+/** 导入完整备份：自选 + 分组 + 成本/持仓价 + 指数/主题等（不含密钥） */
 export async function importUserBundle(bundle) {
   const result = await importShenqiBundle(bundle);
   const incomingSettings = bundle?.settings && typeof bundle.settings === 'object' ? bundle.settings : {};
