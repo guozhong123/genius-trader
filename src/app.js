@@ -804,6 +804,7 @@ function scanBarHtml() {
   return `<div class="scan-bar">
     <button type="button" data-scan-all ${dis} class="scan-btn">${esc(label)}</button>
   </div>`;
+}
 
 function rowHtml(item) {
   const q = state.quotes[quoteKey(item)] || {};
