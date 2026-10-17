@@ -1,10 +1,18 @@
 /**
  * 把本机已拉到的行情、主力、均线、个股消息交给 DeepSeek。
  * 密钥只存在本机 storage，不写入仓库。
- * 实时性来自东财数据，不靠模型自己上网。
+ * 原则：数据源负责「看」（带时间戳的东财/腾讯），模型只负责「想」。
  */
 
 const ENDPOINT = 'https://api.deepseek.com/chat/completions';
+
+/** 所有 DeepSeek 角色共用：禁止把语言模型当行情终端 */
+const FACTS_GROUNDING = [
+  '你没有实时行情通道。禁止凭训练记忆报出现价、涨跌幅、成交额、资金流向或臆造数字。',
+  '用户消息里的数字才是唯一依据；每条事实若带「行情时间/北京时间」，解读时必须沿用，不要改成「大概」。',
+  '缺字段就写「未提供」。看起来合理但事实里没有的价格，一律视为编造，禁止输出。',
+  '你的工作是推理与纪律（做不做、跟哪条主线、买/等/不买、仓位与放弃条件），不是充当行情软件。',
+].join('');
 
 function num(n, d = 2) {
   const x = Number(n);
@@ -243,6 +251,7 @@ export function buildStockFacts({
 }
 
 const SYSTEM = [
+  FACTS_GROUNDING,
   '你是个人A股交易参谋，方法只有一条：跟着主力，但先分清真买和诱多，再谈买不买。',
   '只根据用户给出的数字和标题下结论。缺的数据写「未提供」，禁止编造财报、龙虎榜、北向持股、内幕或未列出的新闻。',
   '判断顺序：',
@@ -378,6 +387,7 @@ export async function askDeepseekReport(apiKey, facts, modelPref) {
 }
 
 const MARKET_SYSTEM = [
+  FACTS_GROUNDING,
   '你是个人A股短线参谋。用户当天看盘、当天决定做哪些板块，不做中长线配置。',
   '只根据给出的指数、涨跌家数、资金和板块涨跌说话。禁止编造没列出的板块和涨幅。',
   '短线要跟当天最强、主力还在进的方向，已经大涨的板块写明是接力还是不宜再追。',
@@ -412,7 +422,17 @@ export function buildMarketFacts({ indices, center, boards, tape, prior, sheet, 
   ranked.sort((a, b) => Number(b.changePct) - Number(a.changePct));
   const top = ranked.slice(0, 8).map((b) => `${b.name} ${signed(b.changePct)}%`).join('，');
   const bottom = ranked.slice(-5).map((b) => `${b.name} ${signed(b.changePct)}%`).join('，');
+  const bjNow = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date());
   return [
+    `本机拉取事实的北京时间 ${bjNow}。以下指数/涨跌家数/资金/板块均来自东财等公开接口，不是模型记忆。`,
     calendar || '',
     `大盘：${idx || '暂无'}`,
     `环境：${tape || '未知'}`,
@@ -485,6 +505,7 @@ export async function askMarketReport(apiKey, facts, modelPref) {
 }
 
 const SEAT_SYSTEM = [
+  FACTS_GROUNDING,
   '你是个人A股短线参谋。用户给你的是期货交易所公布的会员持仓增减，单位是手，不是股票股数。',
   '加多单的意思：这家期货公司当天的多头持仓比上一交易日多了这么多手。加空单是空头持仓增加。',
   '名字里带「代客」的是客户的单，不是期货公司拿自有资金在押方向。不带代客的商品席位，常常是会员合计，同样不是它的自营底仓。',
@@ -611,6 +632,7 @@ export function buildHoldingsFacts(rows) {
 }
 
 const HOLDINGS_SYSTEM = [
+  FACTS_GROUNDING,
   '你是个人短线参谋。用户已经持有下面这些股票，要你判断：哪些今天还适合买（加仓或今天才值得动手），已经拿着的应该什么时候卖。',
   '只根据给出的现价、涨跌、成本和日K位置。缺的数据写未提供，禁止编造主力、消息和目标价。',
   '适合今天买：现价不在20日高点附近、没有远离均线追高、没有跌破纪律止损。已经浮盈很大的不要再建议买。',
@@ -697,6 +719,7 @@ function clampPct(n) {
 }
 
 const SCAN_SYSTEM = [
+  FACTS_GROUNDING,
   '你给一批自选股同时打分，只输出买入、继续等、不买的概率。',
   '只根据给出的现价、涨跌、成本、止损和日K位置。禁止编造主力、新闻和目标价。',
   '远离20日高点、均线之上追高、或已经跌破纪律止损：买入概率要低。',
@@ -756,6 +779,7 @@ export async function askScanBatch(apiKey, facts) {
 }
 
 const FORCE_SYSTEM = [
+  FACTS_GROUNDING,
   '你判断今天A股主力盘中可能怎么走，给短线用。',
   '只根据给出的日历、资金、涨跌家数和板块涨跌。禁止编造市盈率、目标点位和没列出的新闻。',
   '早上强、下午转弱要写成条件，不要写成已经发生。',

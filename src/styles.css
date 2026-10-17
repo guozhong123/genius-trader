@@ -1712,6 +1712,179 @@ button.pick-card {
   text-align: center;
 }
 
+/* 今日作战室：环境 → 主线 → 计划池 */
+.strategy-desk {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.strategy-desk-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 10px;
+}
+
+.strategy-desk-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.strategy-desk-note {
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.strategy-env {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+}
+
+.strategy-env-label {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.strategy-env-detail {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.strategy-env-tip {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.strategy-ai {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.strategy-ai b {
+  font-weight: 700;
+}
+
+.strategy-section-label {
+  margin: 0 0 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+
+.strategy-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.strategy-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  border-radius: 8px;
+  padding: 5px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: left;
+  background: color-mix(in oklab, var(--accent) 8%, var(--panel-solid));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--line) 85%, transparent);
+}
+
+.strategy-chip:hover {
+  background: color-mix(in oklab, var(--accent) 14%, var(--panel-solid));
+}
+
+.strategy-chip .tag {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.strategy-chip.warn .tag {
+  color: var(--up);
+}
+
+.strategy-chip .meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+
+.strategy-chip .pct {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.strategy-plan-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.strategy-plan-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 8px;
+  padding: 4px 6px 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--panel-solid);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.strategy-plan-item button {
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.strategy-plan-item button:hover {
+  color: var(--up);
+}
+
+.strategy-empty {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.strategy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.strategy-actions button {
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 30%, transparent);
+}
+
 @media (max-width: 900px) {
   .market-tone {
     flex: 1 1 100%;
