@@ -83,6 +83,11 @@ export const DEFAULT_SETTINGS = {
   lastView: 'watch',
   lastPrimary: 'stock',
   lastGroup: 'all',
+  /**
+   * 今日计划池（与自选分离）：今天/明天可能动手的短名单，最多 5 条
+   * { id, name, code, market, theme, tag, addedAt }
+   */
+  planPool: [],
 };
 
 export async function getWatchlist() {

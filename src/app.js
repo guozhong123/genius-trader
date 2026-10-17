@@ -151,6 +151,7 @@ const els = {
   pulseBoardsEl: $('pulse-boards'),
   trendSheet: $('trend-sheet'),
   trendStrip: $('trend-strip'),
+  strategyDesk: $('strategy-desk'),
   pulseSession: $('pulse-session'),
   pulseHint: $('pulse-hint'),
   searchInput: $('search-input'),
@@ -382,6 +383,7 @@ function setView(view) {
   });
   els.indicesBar?.classList.toggle('hidden', view !== 'watch');
   els.watchSubnav?.classList.toggle('hidden', view !== 'watch');
+  if (view === 'watch') renderStrategyDesk();
   document.querySelectorAll('.view-tab').forEach((tab) => {
     const on = tab.dataset.view === view;
     tab.classList.toggle('bg-accent', on);
@@ -1224,12 +1226,222 @@ function renderMarketTone() {
   if (!tape) {
     el.classList.add('hidden');
     el.textContent = '';
+    renderStrategyDesk();
     return;
   }
   el.classList.remove('hidden');
   el.textContent = `今天${tape.label} · ${tape.detail}`;
   el.title = tape.tip;
   el.style.color = tape.label === '宜等' ? 'var(--down)' : tape.label === '可找买点' ? 'var(--up)' : 'var(--muted)';
+  renderStrategyDesk();
+}
+
+function latestMarketAi() {
+  return (reportHistory() || []).find((r) => r?.kind === 'market') || null;
+}
+
+function planPoolList() {
+  return Array.isArray(state.settings?.planPool) ? state.settings.planPool : [];
+}
+
+function marketOfCode(code) {
+  const c = String(code || '');
+  if (/^(6|9)/.test(c)) return 'SH';
+  if (/^(0|1|2|3)/.test(c)) return 'SZ';
+  if (/^[48]/.test(c)) return 'BJ';
+  return 'SH';
+}
+
+async function savePlanPool(next) {
+  state.settings = await saveSettings({ planPool: next.slice(0, 5) });
+  renderStrategyDesk();
+}
+
+function flashStatus(msg) {
+  if (els.statusText) els.statusText.textContent = msg;
+}
+
+async function addPlanPoolItem(entry) {
+  const id = entry.id || (entry.code ? `stock:${entry.market || ''}:${entry.code}` : `theme:${entry.theme || entry.name}`);
+  const cur = planPoolList().filter((x) => x.id !== id);
+  if (cur.length >= 5) {
+    flashStatus('计划池最多 5 只，先去掉一只再加');
+    return;
+  }
+  await savePlanPool([
+    {
+      id,
+      name: entry.name || entry.theme || entry.code,
+      code: entry.code || '',
+      market: entry.market || (entry.code ? marketOfCode(entry.code) : ''),
+      theme: entry.theme || '',
+      tag: entry.tag || '',
+      addedAt: Date.now(),
+    },
+    ...cur,
+  ]);
+  flashStatus(`已加入计划池：${entry.name || entry.theme}`);
+}
+
+async function removePlanPoolItem(id) {
+  await savePlanPool(planPoolList().filter((x) => x.id !== id));
+}
+
+async function addPlanToWatch(id) {
+  const row = planPoolList().find((x) => x.id === id);
+  if (!row?.code) {
+    flashStatus('这条只有板块名，请顶部搜索具体股票再加自选');
+    return;
+  }
+  await addItem({
+    kind: 'stock',
+    code: row.code,
+    market: row.market || marketOfCode(row.code),
+    name: row.name,
+    groupId: state.secondaryGroup !== 'all' ? state.secondaryGroup : 'other',
+  });
+  state.list = await getWatchlist();
+  renderList();
+  flashStatus(`已加入自选：${row.name}`);
+}
+
+function strategyMainCandidates() {
+  const mains = state.trend?.mains || [];
+  const overnight = [];
+  for (const row of state.trend?.overnight || []) {
+    for (const t of row.targets || []) {
+      if (!t?.name) continue;
+      overnight.push({
+        theme: t.name,
+        tag: t.tag || '观察',
+        name: t.name,
+        pct: t.changePct,
+        from: row.from,
+      });
+    }
+  }
+  const fromMains = mains
+    .filter((m) => m && (m.tag === '还在进' || m.tag === '有资金' || m.tag === '价已走弱'))
+    .slice(0, 5)
+    .map((m) => ({
+      theme: m.name,
+      tag: m.tag,
+      name: m.leader || m.name,
+      code: m.leaderCode || '',
+      market: m.leaderCode ? marketOfCode(m.leaderCode) : '',
+      pct: m.leaderPct ?? m.changePct,
+      boardCode: m.code,
+    }));
+  const seen = new Set(fromMains.map((x) => x.theme));
+  for (const o of overnight) {
+    if (seen.has(o.theme) || o.tag === '不宜再追') continue;
+    fromMains.push({
+      theme: o.theme,
+      tag: o.tag,
+      name: o.theme,
+      code: '',
+      market: '',
+      pct: o.pct,
+    });
+    if (fromMains.length >= 6) break;
+  }
+  return fromMains;
+}
+
+function renderStrategyDesk() {
+  const el = els.strategyDesk;
+  if (!el) return;
+  if (state.view !== 'watch' || state.primaryKind === 'fund') {
+    el.classList.add('hidden');
+    return;
+  }
+  el.classList.remove('hidden');
+  const tape = judgeTape(state.center);
+  const ai = latestMarketAi();
+  const candidates = strategyMainCandidates();
+  const pool = planPoolList();
+  const envColor =
+    tape?.label === '宜等' ? 'var(--down)' : tape?.label === '可找买点' ? 'var(--up)' : 'var(--accent)';
+  const aiAge = ai?.generatedAt
+    ? new Intl.DateTimeFormat('zh-CN', {
+        timeZone: 'Asia/Shanghai',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).format(ai.generatedAt)
+    : '';
+  const candHtml = candidates.length
+    ? `<div class="strategy-chips">${candidates
+        .map((c) => {
+          const warn = c.tag === '价已走弱' || c.tag === '不宜再追';
+          const pct =
+            c.pct == null || !Number.isFinite(Number(c.pct)) ? '' : `<span class="pct">${fmtPct(c.pct)}</span>`;
+          const payload = encodeURIComponent(
+            JSON.stringify({
+              name: c.name,
+              code: c.code || '',
+              market: c.market || '',
+              theme: c.theme,
+              tag: c.tag,
+            }),
+          );
+          return `<button type="button" class="strategy-chip${warn ? ' warn' : ''}" data-plan-add="${escAttr(
+            payload,
+          )}" title="加入今日计划池（不代表立刻买入）">
+            <span class="tag">${esc(c.tag)}</span>
+            <span class="meta">${esc(c.theme)}${c.name && c.name !== c.theme ? ` · ${esc(c.name)}` : ''}</span>
+            ${pct}
+          </button>`;
+        })
+        .join('')}</div>`
+    : `<p class="strategy-empty">${
+        state.trendLoading ? '主线加载中…' : '暂无主线候选。可先点「AI盘」或打开盘况看顺势。'
+      }</p>`;
+  const poolHtml = pool.length
+    ? `<div class="strategy-plan-row">${pool
+        .map(
+          (p) => `<span class="strategy-plan-item">
+            <span>${esc(p.name)}${p.theme && p.theme !== p.name ? ` · ${esc(p.theme)}` : ''}</span>
+            ${p.code ? `<button type="button" data-plan-watch="${escAttr(p.id)}" title="加入自选">自选</button>` : ''}
+            <button type="button" data-plan-remove="${escAttr(p.id)}" title="移出计划池">×</button>
+          </span>`,
+        )
+        .join('')}</div>`
+    : `<p class="strategy-empty">计划池空着。点上方主线候选加入（最多 5 只），和自选分开。</p>`;
+
+  el.innerHTML = `
+    <div class="strategy-desk-head">
+      <div class="strategy-desk-title">今日作战室</div>
+      <div class="strategy-desk-note">价格来自东财/腾讯轮询；AI 只解读本机事实，不编造现价</div>
+    </div>
+    <div class="strategy-env">
+      <span class="strategy-env-label" style="color:${envColor}">${esc(tape?.label || '环境待定')}</span>
+      ${tape?.detail ? `<span class="strategy-env-detail">${esc(tape.detail)}</span>` : ''}
+      <p class="strategy-env-tip">${esc(
+        tape?.tip || '涨跌家数不足时先看指数与资金页，再决定做不做。',
+      )}</p>
+    </div>
+    <div class="strategy-ai">
+      ${
+        ai
+          ? `<b>${esc(ai.action || 'AI盘')}</b> · ${esc((ai.follow || ai.summary || '').slice(0, 120))}${
+              aiAge ? ` <span style="color:var(--muted)">（${esc(aiAge)}）</span>` : ''
+            }`
+          : '还没有 AI盘 结论。点顶部「AI盘」，用本机拉取的涨跌家数与板块再判断主线。'
+      }
+    </div>
+    <div>
+      <p class="strategy-section-label">主线候选 · 点一下进计划池</p>
+      ${candHtml}
+    </div>
+    <div>
+      <p class="strategy-section-label">计划池 ${pool.length}/5</p>
+      ${poolHtml}
+    </div>
+    <div class="strategy-actions">
+      <button type="button" data-strategy-ai>跑 AI盘</button>
+      <button type="button" data-strategy-pulse>看盘况顺势</button>
+    </div>`;
 }
 
 function renderPredictCard() {
@@ -1958,6 +2170,7 @@ async function runMarketAi() {
   } finally {
     state.marketAiRunning = false;
     syncMarketAiBtn();
+    renderStrategyDesk();
   }
 }
 
@@ -2770,6 +2983,7 @@ async function loadTrendSheet(force = false) {
         if (!list[0]) return;
         row.leader = list[0].name;
         row.leaderPct = list[0].changePct;
+        row.leaderCode = list[0].code || '';
       }),
     );
     const tape = judgeTape(state.center);
@@ -2800,6 +3014,7 @@ async function loadTrendSheet(force = false) {
     state.trendTask = null;
     hydrateSessionReports();
     renderTrend();
+    renderStrategyDesk();
   }
   })();
   return state.trendTask;
@@ -3533,6 +3748,7 @@ document.querySelectorAll('.primary-tab').forEach((tab) => {
     renderGroupTabs();
     renderList();
     renderStatus();
+    renderStrategyDesk();
     if (state.briefOpen && state.briefTab === 'insight') renderBriefBody();
   });
 });
@@ -3785,6 +4001,34 @@ els.aiAdviceHistory?.addEventListener('click', () => {
 });
 els.reportOpenBtn?.addEventListener('click', () => openReportDrawer());
 els.marketAiBtn?.addEventListener('click', () => runMarketAi());
+
+els.strategyDesk?.addEventListener('click', async (e) => {
+  const t = e.target.closest('[data-plan-add],[data-plan-remove],[data-plan-watch],[data-strategy-ai],[data-strategy-pulse]');
+  if (!t || !els.strategyDesk.contains(t)) return;
+  if (t.hasAttribute('data-strategy-ai')) {
+    runMarketAi();
+    return;
+  }
+  if (t.hasAttribute('data-strategy-pulse')) {
+    setView('pulse');
+    return;
+  }
+  if (t.hasAttribute('data-plan-remove')) {
+    await removePlanPoolItem(t.getAttribute('data-plan-remove'));
+    return;
+  }
+  if (t.hasAttribute('data-plan-watch')) {
+    await addPlanToWatch(t.getAttribute('data-plan-watch'));
+    return;
+  }
+  const raw = t.getAttribute('data-plan-add');
+  if (!raw) return;
+  try {
+    await addPlanPoolItem(JSON.parse(decodeURIComponent(raw)));
+  } catch (err) {
+    console.error(err);
+  }
+});
 els.reportDrawerClose?.addEventListener('click', () => closeReportDrawer());
 els.reportBackdrop?.addEventListener('click', () => closeReportDrawer());
 els.reportBack?.addEventListener('click', () => {
