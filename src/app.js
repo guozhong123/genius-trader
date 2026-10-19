@@ -933,7 +933,7 @@ function stopHtml(item, cost, live) {
   const stop = disciplineStop(item, cost);
   if (!stop) return '';
   const broken = live > 0 && live <= stop.price;
-  return `<span class="stop-tag ${broken ? 'text-down' : ''}" title="成本下方 ${(stop.gap * 100).toFixed(0)}%">止损 ${stop.price.toFixed(2)}${broken ? '·已破' : ''}</span>`;
+  return `<span class="stop-tag${broken ? ' is-broken text-down' : ''}" title="成本下方 ${(stop.gap * 100).toFixed(0)}%"><span class="stop-label">${broken ? '已破' : '止损'}</span><span class="stop-price">${stop.price.toFixed(2)}</span></span>`;
 }
 
 function costLineHtml(item, livePrice) {
@@ -1218,9 +1218,9 @@ function bindListEvents() {
       box.appendChild(tag);
     }
     const broken = live > 0 && live <= stop.price;
-    tag.className = `stop-tag ${broken ? 'text-down' : ''}`;
+    tag.className = `stop-tag${broken ? ' is-broken text-down' : ''}`;
     tag.title = `成本下方 ${(stop.gap * 100).toFixed(0)}%`;
-    tag.textContent = `止损 ${stop.price.toFixed(2)}${broken ? '·已破' : ''}`;
+    tag.innerHTML = `<span class="stop-label">${broken ? '已破' : '止损'}</span><span class="stop-price">${stop.price.toFixed(2)}</span>`;
   };
 
   const bindPosInput = (el, field) => {
