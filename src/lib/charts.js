@@ -108,6 +108,34 @@ function forwardFillUntilLast(values) {
   });
 }
 
+function isMultiDayLabel(t) {
+  const s = String(t || '');
+  return /\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}/.test(s) || /\d{4}-\d{2}-\d{2}/.test(s);
+}
+
+/** 五日分时：丢掉午休/隔夜空洞标签以外的周末杂点（若接口误带） */
+function filterIntradayPoints(times, prices, avgs, volumes) {
+  const outT = [];
+  const outP = [];
+  const outA = [];
+  const outV = [];
+  for (let i = 0; i < (times || []).length; i += 1) {
+    const label = String(times[i] || '');
+    const clock = label.includes(' ') ? label.split(' ').pop() : label;
+    const m = clock.match(/(\d{1,2}):(\d{2})/);
+    if (!m) continue;
+    const mins = Number(m[1]) * 60 + Number(m[2]);
+    // 只保留 A 股连续竞价时段，去掉放假空档与午休
+    if ((mins >= 9 * 60 + 30 && mins <= 11 * 60 + 30) || (mins >= 13 * 60 && mins <= 15 * 60)) {
+      outT.push(label);
+      outP.push(prices?.[i] ?? null);
+      outA.push(avgs?.[i] ?? null);
+      outV.push(volumes?.[i] ?? null);
+    }
+  }
+  return { times: outT, prices: outP, avgs: outA, volumes: outV };
+}
+
 export function renderIntradayChart(
   el,
   { times, prices, avgs, volumes, preClose, markLine },
@@ -118,7 +146,16 @@ export function renderIntradayChart(
   let chartPrices = prices || [];
   let chartAvgs = avgs || [];
   let chartVolumes = volumes || [];
-  if (axisMode === 'full' && chartTimes.length) {
+  // 带日期标签，或点数明显超过一个交易日（约 241 分钟）→ 按多日处理
+  const multiDay = chartTimes.some(isMultiDayLabel) || chartTimes.length > 300;
+  // 五日/多日：绝不压成单日全日轴；并滤掉非交易分钟与放假空档
+  if (multiDay || axisMode === 'live') {
+    const filtered = filterIntradayPoints(chartTimes, chartPrices, chartAvgs, chartVolumes);
+    chartTimes = filtered.times;
+    chartPrices = filtered.prices;
+    chartAvgs = filtered.avgs;
+    chartVolumes = filtered.volumes;
+  } else if (axisMode === 'full' && chartTimes.length) {
     const padded = padSeriesToSession(chartTimes, chartPrices, chartAvgs, chartVolumes);
     chartTimes = padded.times;
     [chartPrices, chartAvgs, chartVolumes] = padded.series;
@@ -132,13 +169,15 @@ export function renderIntradayChart(
   const base = Number(preClose) || 0;
   const last =
     [...chartPrices].reverse().find((v) => v != null) ?? chartPrices[chartPrices.length - 1];
-  const color = last >= base ? up : down;
+  const color = !base || last == null ? up : last >= base ? up : down;
   const mute = axisMute();
 
-  // 右轴涨跌幅（相对昨收）
-  const pcts = chartPrices.map((p) =>
-    p == null || !base ? null : +(((p - base) / base) * 100).toFixed(2),
-  );
+  // 右轴涨跌幅：单日相对昨收；五日多日不作跨日昨收百分比（易误导）
+  const pcts = multiDay
+    ? chartPrices.map(() => null)
+    : chartPrices.map((p) =>
+        p == null || !base ? null : +(((p - base) / base) * 100).toFixed(2),
+      );
   const pctVals = pcts.filter((v) => v != null);
   const maxAbsPct = Math.max(2, ...(pctVals.map((v) => Math.abs(v)) || [2]));
 
@@ -152,21 +191,22 @@ export function renderIntradayChart(
     return { value: v, itemStyle: { color: barColor } };
   });
 
-  const defaultMark = base
-    ? {
-        symbol: 'none',
-        label: { formatter: '昨收', color: mute, fontSize: 10 },
-        lineStyle: { type: 'dashed', color: mute, width: 1 },
-        data: [{ yAxis: base }],
-      }
-    : undefined;
+  const defaultMark =
+    !multiDay && base
+      ? {
+          symbol: 'none',
+          label: { formatter: '昨收', color: mute, fontSize: 10 },
+          lineStyle: { type: 'dashed', color: mute, width: 1 },
+          data: [{ yAxis: base }],
+        }
+      : undefined;
 
-  const interval = Math.max(1, Math.ceil(chartTimes.length / 5));
+  const interval = Math.max(1, Math.ceil(chartTimes.length / (multiDay ? 8 : 5)));
   const priced = chartPrices.filter((v) => v != null && Number(v) > 0).map(Number);
   const hi = priced.length ? Math.max(...priced) : null;
   const lo = priced.length ? Math.min(...priced) : null;
   const pctText = (price) => {
-    if (!(base > 0) || !(price > 0)) return '—';
+    if (!(base > 0) || !(price > 0) || multiDay) return '—';
     const pct = ((price - base) / base) * 100;
     return `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`;
   };
@@ -176,19 +216,32 @@ export function renderIntradayChart(
 
   chart.setOption({
     animationDuration: 280,
-    title: hi
-      ? {
-          text: `{hi|最高涨幅 ${hiPct}}    {lo|最低涨幅 ${loPct}}`,
-          left: 48,
-          top: 0,
-          textStyle: {
-            rich: {
-              hi: { color: up, fontSize: 12, fontWeight: 700 },
-              lo: { color: loColor, fontSize: 12, fontWeight: 700 },
+    title:
+      hi && !multiDay
+        ? {
+            text: `{hi|最高涨幅 ${hiPct}}    {lo|最低涨幅 ${loPct}}`,
+            left: 48,
+            top: 0,
+            textStyle: {
+              rich: {
+                hi: { color: up, fontSize: 12, fontWeight: 700 },
+                lo: { color: loColor, fontSize: 12, fontWeight: 700 },
+              },
             },
-          },
-        }
-      : undefined,
+          }
+        : hi && multiDay
+          ? {
+              text: `{hi|区间高 ${Number(hi).toFixed(2)}}    {lo|区间低 ${Number(lo).toFixed(2)}}`,
+              left: 48,
+              top: 0,
+              textStyle: {
+                rich: {
+                  hi: { color: up, fontSize: 12, fontWeight: 700 },
+                  lo: { color: down, fontSize: 12, fontWeight: 700 },
+                },
+              },
+            }
+          : undefined,
     axisPointer: { link: [{ xAxisIndex: 'all' }] },
     tooltip: {
       trigger: 'axis',
@@ -230,7 +283,22 @@ export function renderIntradayChart(
         type: 'category',
         data: chartTimes,
         boundaryGap: true,
-        axisLabel: { color: mute, fontSize: 10, interval },
+        axisLabel: {
+          color: mute,
+          fontSize: 10,
+          interval: multiDay ? 'auto' : interval,
+          hideOverlap: true,
+          formatter: multiDay
+            ? (v, idx) => {
+                const s = String(v || '');
+                const day = s.slice(0, 5);
+                const prev = idx > 0 ? String(chartTimes[idx - 1] || '').slice(0, 5) : '';
+                if (day !== prev) return day;
+                const clock = s.includes(' ') ? s.split(' ').pop() : s;
+                return clock === '09:30' || clock === '13:00' || clock === '15:00' ? clock : '';
+              }
+            : undefined,
+        },
         axisLine: { lineStyle: { color: splitLine() } },
         gridIndex: 1,
       },
@@ -246,6 +314,7 @@ export function renderIntradayChart(
       {
         type: 'value',
         gridIndex: 0,
+        show: !multiDay,
         min: -maxAbsPct,
         max: maxAbsPct,
         splitLine: { show: false },
