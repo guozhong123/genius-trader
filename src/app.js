@@ -252,6 +252,7 @@ const els = {
   predictTa: $('predict-ta'),
   predictIndexName: $('predict-index-name'),
   chartPredictK: $('chart-predict-k'),
+  chartPredictFlow: $('chart-predict-flow'),
   simAiBtn: $('sim-ai-btn'),
   simMarkBtn: $('sim-mark-btn'),
   simResetBtn: $('sim-reset-btn'),
@@ -400,7 +401,90 @@ function scrollPageTop() {
   document.querySelector('.page-shell')?.scrollTo?.(0, 0);
 }
 
-const APP_VIEWS = ['watch', 'pulse', 'predict', 'sim', 'data', 'etf'];
+const APP_VIEWS = ['watch', 'pulse', 'predict', 'data', 'etf', 'sim'];
+const SIM_FEE_RATE = 0.0005; // 万五
+const SIM_FEE_MIN = 5;
+
+/** A股休市（周末另判）。逐年补节假日，避免预测K落到放假日 */
+const CN_HOLIDAYS = new Set([
+  // 2025
+  '2025-01-01',
+  '2025-01-28',
+  '2025-01-29',
+  '2025-01-30',
+  '2025-01-31',
+  '2025-02-01',
+  '2025-02-02',
+  '2025-02-03',
+  '2025-02-04',
+  '2025-04-04',
+  '2025-04-05',
+  '2025-04-06',
+  '2025-05-01',
+  '2025-05-02',
+  '2025-05-03',
+  '2025-05-04',
+  '2025-05-05',
+  '2025-05-31',
+  '2025-06-01',
+  '2025-06-02',
+  '2025-10-01',
+  '2025-10-02',
+  '2025-10-03',
+  '2025-10-04',
+  '2025-10-05',
+  '2025-10-06',
+  '2025-10-07',
+  '2025-10-08',
+  // 2026
+  '2026-01-01',
+  '2026-01-02',
+  '2026-02-15',
+  '2026-02-16',
+  '2026-02-17',
+  '2026-02-18',
+  '2026-02-19',
+  '2026-02-20',
+  '2026-02-21',
+  '2026-02-22',
+  '2026-02-23',
+  '2026-04-04',
+  '2026-04-05',
+  '2026-04-06',
+  '2026-05-01',
+  '2026-05-02',
+  '2026-05-03',
+  '2026-05-04',
+  '2026-05-05',
+  '2026-06-19',
+  '2026-06-20',
+  '2026-06-21',
+  '2026-10-01',
+  '2026-10-02',
+  '2026-10-03',
+  '2026-10-04',
+  '2026-10-05',
+  '2026-10-06',
+  '2026-10-07',
+]);
+
+function ymdOfDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function isCnTradeDay(d) {
+  const wd = d.getDay();
+  if (wd === 0 || wd === 6) return false;
+  return !CN_HOLIDAYS.has(ymdOfDate(d));
+}
+
+function simFee(amount) {
+  const a = Math.abs(Number(amount) || 0);
+  return Math.max(SIM_FEE_MIN, +(a * SIM_FEE_RATE).toFixed(2));
+}
 
 function setView(view) {
   state.view = APP_VIEWS.includes(view) ? view : 'watch';
@@ -435,7 +519,10 @@ function setView(view) {
     refreshPulse();
     loadTrendSheet();
   }
-  if (state.view === 'predict') renderPredictView();
+  if (state.view === 'predict') {
+    renderPredictView();
+    void loadPredictFlow();
+  }
   if (state.view === 'sim') {
     ensureSimBook();
     renderSimView();
@@ -1640,20 +1727,47 @@ function ensureHeatmap() {
   frame.src = 'https://52etf.site/';
 }
 
-/** 从某日起向后取 n 个交易日标签（跳过周六日；节假日粗略忽略） */
+/** 从某日起向后取 n 个交易日标签（跳过周末与节假日） */
 function nextTradeDates(fromYmd, n = 5) {
   const out = [];
-  const d = new Date(`${fromYmd}T12:00:00+08:00`);
+  let raw = String(fromYmd || '').trim();
+  if (/^\d{2}-\d{2}$/.test(raw)) {
+    const y = new Date().getFullYear();
+    raw = `${y}-${raw}`;
+  }
+  const d = new Date(`${raw}T12:00:00+08:00`);
   if (Number.isNaN(d.getTime())) return out;
-  while (out.length < n) {
+  let guard = 0;
+  while (out.length < n && guard < 40) {
+    guard += 1;
     d.setDate(d.getDate() + 1);
-    const wd = d.getDay();
-    if (wd === 0 || wd === 6) continue;
+    if (!isCnTradeDay(d)) continue;
     const mm = String(d.getMonth() + 1).padStart(2, '0');
     const dd = String(d.getDate()).padStart(2, '0');
     out.push(`${mm}-${dd}`);
   }
   return out;
+}
+
+async function loadPredictFlow() {
+  const el = $('chart-predict-flow');
+  if (!el) return;
+  try {
+    const flow = state.center?.flow || (await fetchMarketMoneyFlow());
+    if (flow && !state.center?.flow) {
+      state.center = { ...(state.center || {}), flow };
+    }
+    if (flow?.times?.length) {
+      const asof = $('predict-flow-asof');
+      if (asof) asof.textContent = flow.date ? `截至 ${flow.date}` : '';
+      renderFlowChart(el, flow, { axisMode: chartAxisMode(), legendNames: flowLegendNames() });
+    } else {
+      el.innerHTML = '<div class="flex h-full items-center justify-center text-[12px]" style="color:var(--muted)">暂无主力资金分时</div>';
+    }
+  } catch (e) {
+    console.error(e);
+    el.innerHTML = '<div class="flex h-full items-center justify-center text-[12px]" style="color:var(--muted)">主力资金加载失败</div>';
+  }
 }
 
 function materializeForecastBars(lastClose, bars, dates) {
@@ -1717,10 +1831,12 @@ function renderPredictView() {
     : pack.history || [];
   const forecast = pack.forecast || [];
   if (els.chartPredictK && (hist.length || forecast.length)) {
-    renderForecastKline(els.chartPredictK, hist.slice(-40), forecast, {
+    renderForecastKline(els.chartPredictK, hist, forecast, {
       title: `${pack.indexName || '指数'} · 预测`,
+      focusTomorrow: true,
     });
   }
+  void loadPredictFlow();
 }
 
 async function runPredictAi() {
@@ -1838,7 +1954,7 @@ function renderSimView() {
   if (els.simNote) {
     els.simNote.textContent = book.note
       ? book.note
-      : '点「AI 操盘」：AI 会优先考虑你的持仓票，也可自选 A 股；只在手动点击时下单。';
+      : '点「AI 操盘」：按现价成交，手续费万五（最低 5 元）计入成本；刚买入浮盈应为小亏（扣费），不会凭空赚钱。';
   }
   if (els.simPositions) {
     const rows = book.positions || [];
@@ -1849,7 +1965,7 @@ function renderSimView() {
             const u = (mark - Number(p.avgCost || 0)) * Number(p.shares || 0);
             return `<div class="sim-row">
               <div class="sim-row-head"><span>${esc(p.name)} ${esc(p.code)}</span><b class="${tone(u)}">${u >= 0 ? '+' : ''}${simMoney(u)} 元</b></div>
-              <div class="sim-row-meta">${Number(p.shares)} 股 · 成本 ${Number(p.avgCost).toFixed(2)} · 现价 ${mark ? mark.toFixed(2) : '—'} · 计划卖 ${esc(p.planSell || '—')} · 拿到 ${esc(p.holdUntil || '—')}</div>
+              <div class="sim-row-meta">${Number(p.shares)} 股 · 成本(含费) ${Number(p.avgCost).toFixed(3)} · 现价 ${mark ? mark.toFixed(2) : '—'} · 计划卖 ${esc(p.planSell || '—')} · 拿到 ${esc(p.holdUntil || '—')}</div>
               <div class="sim-row-meta">为什么：${esc(p.why || '—')}</div>
             </div>`;
           })
@@ -1864,12 +1980,13 @@ function renderSimView() {
           .map((t) => {
             const sideCls = t.side === 'buy' ? 'sim-side-buy' : 'sim-side-sell';
             const sideLabel = t.side === 'buy' ? '买入' : '卖出';
+            const fee = Number(t.fee) || 0;
             return `<div class="sim-row">
               <div class="sim-row-head">
                 <span><b class="${sideCls}">${sideLabel}</b> ${esc(t.name)} ${esc(t.code)}</span>
                 <span>${formatAiTime(t.at) || ''}</span>
               </div>
-              <div class="sim-row-meta">${Number(t.shares)} 股 · 价 ${Number(t.price).toFixed(2)} · 金额 ${simMoney(t.amount)} 元</div>
+              <div class="sim-row-meta">${Number(t.shares)} 股 · 价 ${Number(t.price).toFixed(2)} · 金额 ${simMoney(t.amount)} 元 · 手续费 ${fee.toFixed(2)} 元（万五）</div>
               <div class="sim-row-meta">预计买：${esc(t.planBuy || '—')} · 预计卖：${esc(t.planSell || '—')} · 拿到：${esc(t.holdUntil || '—')}</div>
               <div class="sim-row-meta">为什么：${esc(t.why || '—')}</div>
             </div>`;
@@ -1898,15 +2015,27 @@ async function markSimToMarket() {
     }));
     const map = await fetchQuotes(items);
     const nextPos = positions.map((p) => {
-      const q = map[quoteKey(items.find((i) => i.code === p.code) || p)] || Object.values(map).find((x) => String(x.code) === String(p.code));
+      const q = quoteFromMap(map, p.code, p.market);
       const mark = Number(q?.price);
-      return { ...p, mark: mark > 0 ? mark : p.mark };
+      // 无新行情时保持原 mark；有行情则更新。成本已含万五，现价不变时浮盈≈-手续费
+      return { ...p, mark: mark > 0 ? mark : Number(p.mark) || Number(p.avgCost) };
     });
     await persistSimBook({ ...book, positions: nextPos });
   } catch (e) {
     console.error(e);
   }
   renderSimView();
+}
+
+function quoteFromMap(quoteMap, code, market) {
+  const key = quoteKey({ kind: 'stock', market: market || '', code });
+  const direct = quoteMap?.[key];
+  if (Number(direct?.price) > 0) return direct;
+  const code6 = String(code || '').replace(/\D/g, '').slice(-6);
+  return (
+    Object.values(quoteMap || {}).find((q) => String(q.code || '').replace(/\D/g, '').slice(-6) === code6) ||
+    null
+  );
 }
 
 function applySimOrders(book, orders, quoteMap) {
@@ -1917,28 +2046,29 @@ function applySimOrders(book, orders, quoteMap) {
   const now = Date.now();
 
   const findPos = (code) => positions.findIndex((p) => p.code === code);
-  const livePrice = (order) => {
-    const hit = Object.values(quoteMap || {}).find((q) => String(q.code).replace(/\D/g, '').slice(-6) === order.code);
-    const p = Number(hit?.price);
-    return p > 0 ? p : order.price;
-  };
 
   for (const order of orders) {
-    const px = livePrice(order);
+    // 必须有现价才成交，避免 AI 报价与刷新市值不一致导致「刚买就赚」
+    const q = quoteFromMap(quoteMap, order.code, order.market);
+    const px = Number(q?.price);
+    if (!(px > 0)) continue;
     const shares = order.lots * 100;
-    const amount = +(px * shares).toFixed(2);
+    const notional = +(px * shares).toFixed(2);
+    const fee = simFee(notional);
     if (order.side === 'buy') {
-      if (amount > cash + 0.01) continue;
-      cash -= amount;
+      const debit = +(notional + fee).toFixed(2);
+      if (debit > cash + 0.01) continue;
+      cash -= debit;
       const idx = findPos(order.code);
       if (idx >= 0) {
         const cur = positions[idx];
         const totalShares = cur.shares + shares;
-        const avgCost = (cur.avgCost * cur.shares + px * shares) / totalShares;
+        // 成本含手续费
+        const avgCost = (cur.avgCost * cur.shares + debit) / totalShares;
         positions[idx] = {
           ...cur,
           shares: totalShares,
-          avgCost: +avgCost.toFixed(3),
+          avgCost: +avgCost.toFixed(4),
           mark: px,
           planSell: order.planSell || cur.planSell,
           holdUntil: order.holdUntil || cur.holdUntil,
@@ -1951,7 +2081,7 @@ function applySimOrders(book, orders, quoteMap) {
           market: order.market,
           secid: toSecid(order.market, order.code),
           shares,
-          avgCost: px,
+          avgCost: +(debit / shares).toFixed(4),
           mark: px,
           planSell: order.planSell,
           holdUntil: order.holdUntil,
@@ -1967,7 +2097,8 @@ function applySimOrders(book, orders, quoteMap) {
         market: order.market,
         price: px,
         shares,
-        amount,
+        amount: notional,
+        fee,
         planBuy: order.planBuy,
         planSell: order.planSell,
         holdUntil: order.holdUntil,
@@ -1981,9 +2112,11 @@ function applySimOrders(book, orders, quoteMap) {
       const sellShares = Math.min(shares, cur.shares);
       if (!(sellShares > 0)) continue;
       const proceed = +(px * sellShares).toFixed(2);
+      const feeSell = simFee(proceed);
+      const net = +(proceed - feeSell).toFixed(2);
       const costBasis = cur.avgCost * sellShares;
-      realized += proceed - costBasis;
-      cash += proceed;
+      realized += net - costBasis;
+      cash += net;
       const left = cur.shares - sellShares;
       if (left <= 0) positions.splice(idx, 1);
       else positions[idx] = { ...cur, shares: left, mark: px };
@@ -1996,6 +2129,7 @@ function applySimOrders(book, orders, quoteMap) {
         price: px,
         shares: sellShares,
         amount: proceed,
+        fee: feeSell,
         planBuy: order.planBuy,
         planSell: order.planSell,
         holdUntil: order.holdUntil,

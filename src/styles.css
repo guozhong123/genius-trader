@@ -252,23 +252,26 @@
     backdrop-filter: blur(16px);
   }
 
+  /* 左搜索 | 中 tab 居中 | 右操作，三列对称 */
   .top-toolbar {
     display: grid;
-    grid-template-columns: 260px minmax(0, 1fr) auto;
+    grid-template-columns: minmax(160px, 1fr) auto minmax(160px, 1fr);
     align-items: center;
     gap: 0.5rem;
   }
 
-  /* 搜索框固定宽度，切换 tab / 导航变宽时不再被挤扁或拉长 */
   .top-search {
-    width: 260px;
-    max-width: 260px;
+    width: 220px;
+    max-width: 220px;
     min-width: 0;
     flex: none;
+    justify-self: start;
   }
 
   .top-nav {
+    justify-self: center;
     min-width: 0;
+    max-width: 100%;
     overflow-x: auto;
     scrollbar-width: none;
   }
@@ -280,6 +283,13 @@
   .top-nav .view-tab {
     white-space: nowrap;
     flex: 0 0 auto;
+    padding: 0.28rem 0.5rem;
+    font-size: 11px;
+    line-height: 1.2;
+  }
+
+  .top-actions {
+    justify-self: end;
   }
 
   .news-dot {
