@@ -954,6 +954,22 @@ export async function fetchIndices(list) {
   });
 }
 
+function formatTrendTime(rawTime, ndays = 1) {
+  const raw = String(rawTime || '').trim();
+  if (!raw) return '';
+  // 五日：保留 MM-DD HH:MM，方便图表按交易日切开，并丢掉周末空档
+  if (ndays > 1) {
+    const m = raw.match(/(\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}:\d{2})/);
+    if (m) {
+      const mm = m[2].padStart(2, '0');
+      const dd = m[3].padStart(2, '0');
+      return `${mm}-${dd} ${m[4]}`;
+    }
+    if (raw.includes(' ')) return raw.slice(5, 16) || raw.split(' ').pop() || raw;
+  }
+  return raw.split(' ')[1] || raw;
+}
+
 function parseTrendsPayload(data, ndays = 1) {
   if (!data?.trends?.length) return null;
   const points = data.trends.map((line) => {
@@ -962,14 +978,13 @@ function parseTrendsPayload(data, ndays = 1) {
     const price = Number(p[1]);
     const avg = Number(p[7] ?? p[1]);
     const rawTime = p[0] || '';
-    const clock = rawTime.split(' ')[1] || rawTime;
     return {
-      time: ndays > 1 ? rawTime.slice(5, 16) || clock : clock,
+      time: formatTrendTime(rawTime, ndays),
       price,
       avg: Number.isFinite(avg) ? avg : price,
       volume: Number(p[5] || 0),
     };
-  }).filter((p) => Number.isFinite(p.price));
+  }).filter((p) => Number.isFinite(p.price) && p.time);
 
   if (!points.length) return null;
   return {
@@ -977,15 +992,18 @@ function parseTrendsPayload(data, ndays = 1) {
     code: data.code || '',
     preClose: Number(data.preClose || data.prePrice || points[0].price || 0),
     points,
+    ndays,
   };
 }
 
 /** 分时走势。ndays=5 为近五个交易日的分时。 */
 export async function fetchIntraday(secid, ndays = 1) {
   const days = ndays > 1 ? 5 : 1;
+  // 五日约 5×241 分钟，mpi=1000 会截断成「像当日」；提高到 2400
+  const mpi = days > 1 ? 2400 : 1000;
   const q =
     `fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13` +
-    `&fields2=f51,f52,f53,f54,f55,f56,f57,f58&mpi=1000&ut=fa5fd1943c7b386f172d6893dbfba10b` +
+    `&fields2=f51,f52,f53,f54,f55,f56,f57,f58&mpi=${mpi}&ut=fa5fd1943c7b386f172d6893dbfba10b` +
     `&secid=${encodeURIComponent(secid)}&ndays=${days}&iscr=0&iscca=0`;
 
   const urls = [

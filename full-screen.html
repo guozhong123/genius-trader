@@ -51,7 +51,6 @@
               <button data-view="watch" class="view-tab rounded-md bg-accent px-2 py-1.5 text-white">自选</button>
               <button data-view="pulse" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">盘况</button>
               <button data-view="data" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">资金</button>
-              <button data-view="force" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">主力</button>
               <button data-view="etf" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">热力图</button>
             </div>
 
@@ -66,7 +65,7 @@
               </button>
               <div id="theme-picker" class="hidden" aria-hidden="true"></div>
               <button id="report-open-btn" type="button" class="glass shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-accent" title="历史报告，新的在最上面">报告</button>
-              <button id="market-ai-btn" type="button" class="glass shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-accent" title="点了才分析今天大盘。顺势和期货席位每个交易日自动三次：开盘、盘中、尾盘">AI盘</button>
+              <button id="market-ai-btn" type="button" class="glass shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold text-accent" title="手动分析今天大盘与主线；只有你点才会调用 AI">大盘分析</button>
               <div class="more-menu">
                 <button type="button" id="more-btn" class="glass shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-semibold" style="color: var(--muted)">更多</button>
                 <div id="more-panel" class="more-panel hidden">
@@ -185,25 +184,6 @@
           </div>
         </section>
 
-        <section id="view-force" class="view-pane hidden space-y-2">
-          <div class="glass rounded-xl p-3">
-            <div class="flex flex-wrap items-center justify-between gap-2">
-              <div class="min-w-0">
-                <div class="text-sm font-semibold">今天主力可能怎么走</div>
-                <p class="text-[11px]" style="color: var(--muted)">看节假日、会议、今天的资金和板块。下午可以再点一次。</p>
-              </div>
-              <button type="button" id="force-run" class="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white">看今天</button>
-            </div>
-            <div id="force-cal" class="mt-2 text-[12px] leading-relaxed"></div>
-            <div id="force-body" class="mt-2 text-[13px] leading-relaxed"></div>
-          </div>
-          <div class="glass rounded-xl p-3">
-            <div class="text-sm font-semibold">位置靠后的方向</div>
-            <p class="mt-0.5 text-[11px]" style="color: var(--muted)">按今天涨跌看谁没被追。没有市盈率，不当成估值。</p>
-            <div id="force-boards" class="mt-2"></div>
-          </div>
-        </section>
-
         <section id="view-etf" class="view-pane hidden">
           <div class="glass mb-1.5 rounded-lg px-2.5 py-1.5 text-[10px]" style="color: var(--muted)">
             热力图来自 <a href="https://52etf.site/" target="_blank" rel="noreferrer" class="text-accent underline">52etf.site</a>。手机上如果空白，点链接打开。
@@ -294,14 +274,14 @@
               <div class="mb-2 flex items-center justify-between gap-2">
                 <div>
                   <div class="text-sm font-semibold">个股报告</div>
-                  <div class="text-[10px]" style="color: var(--muted)">先看卖不卖、卖多少、什么价买。依据默认收起</div>
+                  <div class="text-[10px]" style="color: var(--muted)">本弹窗唯一 AI 入口；「重新分析」只更新这里，不会弹出抽屉</div>
                 </div>
                 <div class="flex shrink-0 gap-1">
                   <button type="button" id="ai-advice-history" class="rounded-md px-2 py-0.5 text-[10px] font-semibold ring-soft" style="color: var(--muted)">历史</button>
                   <button type="button" id="ai-advice-refresh" class="rounded-md px-2 py-0.5 text-[10px] font-semibold ring-soft" style="color: var(--muted)">分析</button>
                 </div>
               </div>
-              <div id="ai-advice-body" class="text-[12px] leading-relaxed" style="color: var(--muted)">点「分析」才会调用 DeepSeek。</div>
+              <div id="ai-advice-body" class="text-[12px] leading-relaxed" style="color: var(--muted)">点「分析」才会调用 DeepSeek；刷新页面不会自动分析。</div>
             </div>
           </div>
         </div>

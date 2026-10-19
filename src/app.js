@@ -67,7 +67,7 @@ import { getTodayEvents, getUpcomingEvents, getMajorUpcomingEvents, marketCalend
 import { buildLevelMarkLines, calcAutoLevels } from './lib/levels.js';
 import { normalizeGroups, repairStockGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
-import { askDeepseekReport, askForceOutlook, askLhbReport, askMarketReport, askScanBatch, askSeatReport, buildLhbFacts, buildMarketFacts, buildScanFacts, buildSeatFacts, buildStockFacts, disciplineStop } from './lib/deepseek.js';
+import { askDeepseekReport, askLhbReport, askMarketReport, askScanBatch, askSeatReport, buildLhbFacts, buildMarketFacts, buildScanFacts, buildSeatFacts, buildStockFacts, disciplineStop } from './lib/deepseek.js';
 import { OVERNIGHT_LINKS, buildOvernight, marketClock, moodLabel, planText, reviewCalls, scoreMainLines, shYmd, sheetBrief, tradingSlot } from './lib/trend.js';
 import { isLoggedIn, login, logout, currentUser } from './lib/auth.js';
 
@@ -369,7 +369,7 @@ function scrollPageTop() {
 function setView(view) {
   state.view = view;
   scrollPageTop();
-  ['watch', 'pulse', 'data', 'etf', 'force'].forEach((v) => {
+  ['watch', 'pulse', 'data', 'etf'].forEach((v) => {
     const el = $(`view-${v}`);
     if (!el) return;
     const on = v === view;
@@ -399,15 +399,15 @@ function setView(view) {
     refreshPulse();
     loadTrendSheet();
   }
-  if (view === 'force') loadForce();
   if (view === 'etf') ensureHeatmap();
+  syncMarketAiBtn();
   requestAnimationFrame(() => resizeAllCharts());
   rememberPlace();
 }
 
 function rememberPlace() {
   if (!state.settings) return;
-  const lastView = ['watch', 'pulse', 'data', 'etf', 'force'].includes(state.view) ? state.view : 'watch';
+  const lastView = ['watch', 'pulse', 'data', 'etf'].includes(state.view) ? state.view : 'watch';
   const lastPrimary = state.primaryKind === 'fund' ? 'fund' : 'stock';
   const lastGroup = state.secondaryGroup || 'all';
   if (
@@ -647,25 +647,75 @@ function priorContext(match, limit = 6) {
     .join('\n');
 }
 
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+function trimReportHistory(list, keepMs = WEEK_MS) {
+  const cutoff = Date.now() - keepMs;
+  return (list || []).filter((r) => Number(r?.generatedAt || 0) >= cutoff).slice(0, 80);
+}
+
+function pruneAiReports(map, keepMs = WEEK_MS) {
+  const cutoff = Date.now() - keepMs;
+  const next = {};
+  for (const [key, report] of Object.entries(map || {})) {
+    if (Number(report?.generatedAt || 0) >= cutoff) next[key] = report;
+  }
+  return next;
+}
+
 async function pushReport(entry) {
   const row = {
     ...entry,
     id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
     generatedAt: entry.generatedAt || Date.now(),
   };
-  const aiHistory = [row, ...reportHistory()].slice(0, 160);
+  const aiHistory = trimReportHistory([row, ...reportHistory()]);
   const patch = { aiHistory, aiHistoryMigrated: true };
   if (row.kind === 'stock' && row.itemKey) {
-    patch.aiReports = { ...(state.settings?.aiReports || {}), [row.itemKey]: row };
+    patch.aiReports = pruneAiReports({
+      ...(state.settings?.aiReports || {}),
+      [row.itemKey]: row,
+    });
+    // 列表概率与弹窗统一：完整报告覆盖扫描缓存
+    patch.aiScan = {
+      ...(state.settings?.aiScan || {}),
+      [row.itemKey]: {
+        action: row.action,
+        buyProb: row.buyProb,
+        waitProb: row.waitProb,
+        avoidProb: row.avoidProb,
+        generatedAt: row.generatedAt,
+      },
+    };
   }
   state.settings = await saveSettings(patch);
   return row;
 }
 
+/** 启动时清掉超过一周的报告，避免本地越积越多 */
+async function pruneStaleReports() {
+  const history = reportHistory();
+  const trimmed = trimReportHistory(history);
+  const reports = state.settings?.aiReports || {};
+  const prunedReports = pruneAiReports(reports);
+  const historyChanged = trimmed.length !== history.length;
+  const reportsChanged = Object.keys(prunedReports).length !== Object.keys(reports).length;
+  if (!historyChanged && !reportsChanged) return;
+  state.settings = await saveSettings({
+    aiHistory: trimmed,
+    aiReports: prunedReports,
+    aiHistoryMigrated: true,
+  });
+}
+
 async function ensureReportHistory() {
-  if (state.settings?.aiHistoryMigrated) return;
+  if (state.settings?.aiHistoryMigrated) {
+    await pruneStaleReports();
+    return;
+  }
   if (reportHistory().length) {
     state.settings = await saveSettings({ aiHistoryMigrated: true });
+    await pruneStaleReports();
     return;
   }
   const seeded = Object.entries(state.settings?.aiReports || {})
@@ -680,7 +730,11 @@ async function ensureReportHistory() {
       generatedAt: report.generatedAt || 0,
     }))
     .sort((a, b) => (b.generatedAt || 0) - (a.generatedAt || 0));
-  state.settings = await saveSettings({ aiHistory: seeded, aiHistoryMigrated: true });
+  state.settings = await saveSettings({
+    aiHistory: trimReportHistory(seeded),
+    aiHistoryMigrated: true,
+  });
+  await pruneStaleReports();
 }
 
 const positionDrafts = new Map();
@@ -766,22 +820,12 @@ function costLineHtml(item, livePrice) {
   </div>`;
 }
 
-function aiRowBtn(item) {
-  if (item.kind === 'fund') return '';
-  const key = itemKey(item);
-  const running = !!state.aiRunning?.[key];
-  const report = aiReportOf(item);
-  const label = running ? '分析中' : report?.action || 'AI';
-  const toneCls = report?.action === '买入' ? 'up' : report?.action === '不买' ? 'down' : '';
-  return `<button type="button" data-ai="${escAttr(key)}" class="ai-row-btn ${toneCls}" title="${report ? '重新分析，点股票看报告' : 'DeepSeek 分析'}">${esc(label)}</button>`;
-}
-
 function probSnapshot(item) {
   const key = itemKey(item);
-  const scan = state.settings?.aiScan?.[key];
   const report = aiReportOf(item);
-  if (scan && (!report || (scan.generatedAt || 0) >= (report.generatedAt || 0))) return scan;
-  return report;
+  // 弹窗完整报告优先，避免列表仍显示旧的「分析全部」扫描概率
+  if (report && (report.buyProb != null || report.action)) return report;
+  return state.settings?.aiScan?.[key] || null;
 }
 
 function aiProbCell(item) {
@@ -794,10 +838,12 @@ function aiProbCell(item) {
   if (!report) return '<div class="ai-probs"><span style="color:var(--muted)">—</span></div>';
   const line = (name, pct, on, bad) =>
     `<span class="${on ? `on${bad ? ' down' : ''}` : ''}">${name} ${pct ?? 0}%</span>`;
-  return `<div class="ai-probs" title="买入 / 继续等 / 不买">
+  const when = formatAiTime(report.generatedAt);
+  return `<div class="ai-probs" title="${when ? `分析于 ${when} · ` : ''}买入 / 继续等 / 不买（与个股弹窗同源）">
     ${line('买入', report.buyProb, report.action === '买入', false)}
     ${line('继续等', report.waitProb, report.action === '继续等', false)}
     ${line('不买', report.avoidProb, report.action === '不买', true)}
+    ${when ? `<span class="ai-prob-time">${esc(when)}</span>` : ''}
   </div>`;
 }
 
@@ -808,7 +854,8 @@ function scanBarHtml() {
     : '分析全部';
   const dis = state.scanRunning ? 'disabled' : '';
   return `<div class="scan-bar">
-    <button type="button" data-scan-all ${dis} class="scan-btn">${esc(label)}</button>
+    <button type="button" data-scan-all ${dis} class="scan-btn" title="本页唯一批量 AI：只在你点时调用">${esc(label)}</button>
+    <span class="scan-hint">点股票打开详情可单独分析；刷新不会自动调用 AI</span>
   </div>`;
 }
 
@@ -840,7 +887,6 @@ function rowHtml(item) {
           <p class="mt-0.5 truncate text-[10px] leading-none" style="color:var(--muted)">${esc(item.code)}${isFund && q.asOf ? ` · ${esc(q.asOf)}` : ''}</p>
         </div>
         <span class="pct-chip shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular-nums" style="${chip(pct)}">${fmtPct(pct)}</span>
-        ${aiRowBtn(item)}
       </div>
       <div class="col-num live-price text-[13px] font-semibold leading-none ${tone(pct)}">${priceLabel}</div>
       ${costLineHtml(item, price)}
@@ -1003,14 +1049,6 @@ function bindListEvents() {
       e.stopPropagation();
       const item = state.list.find((x) => itemKey(x) === btn.getAttribute('data-move-group'));
       if (item) await moveItemGroup(item);
-    });
-  });
-
-  els.list.querySelectorAll('[data-ai]').forEach((btn) => {
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const item = state.list.find((x) => itemKey(x) === btn.getAttribute('data-ai'));
-      if (item) await runDeepseekForItem(item);
     });
   });
 
@@ -1395,7 +1433,7 @@ function renderStrategyDesk() {
         })
         .join('')}</div>`
     : `<p class="strategy-empty">${
-        state.trendLoading ? '主线加载中…' : '暂无主线候选。可先点「AI盘」或打开盘况看顺势。'
+        state.trendLoading ? '主线加载中…' : '暂无主线候选。可先点「大盘分析」或打开盘况。'
       }</p>`;
   const poolHtml = pool.length
     ? `<div class="strategy-plan-row">${pool
@@ -1424,10 +1462,10 @@ function renderStrategyDesk() {
     <div class="strategy-ai">
       ${
         ai
-          ? `<b>${esc(ai.action || 'AI盘')}</b> · ${esc((ai.follow || ai.summary || '').slice(0, 120))}${
+          ? `<b>${esc(ai.action || '大盘')}</b> · ${esc((ai.follow || ai.summary || '').slice(0, 120))}${
               aiAge ? ` <span style="color:var(--muted)">（${esc(aiAge)}）</span>` : ''
             }`
-          : '还没有 AI盘 结论。点顶部「AI盘」，用本机拉取的涨跌家数与板块再判断主线。'
+          : '还没有大盘结论。点顶部「大盘分析」（仅手动，刷新不会自动调用）。'
       }
     </div>
     <div>
@@ -1439,8 +1477,8 @@ function renderStrategyDesk() {
       ${poolHtml}
     </div>
     <div class="strategy-actions">
-      <button type="button" data-strategy-ai>跑 AI盘</button>
-      <button type="button" data-strategy-pulse>看盘况顺势</button>
+      <button type="button" data-strategy-pulse>看盘况</button>
+      <span class="strategy-ai-tip">AI 仅顶部「大盘分析」一处；刷新不会自动调用</span>
     </div>`;
 }
 
@@ -1550,128 +1588,6 @@ async function loadRank() {
     renderRank();
   } catch (e) {
     console.error(e);
-  }
-}
-
-const FORCE_NAMES = ['煤炭', '传媒', '半导体', 'CPO', '光模块', '电网', '电力', '创新药'];
-
-function boardHit(name) {
-  const rows = [...(state.forceConcept || []), ...(state.forceIndustry || [])];
-  return rows.find((b) => String(b.name || '').includes(name)) || null;
-}
-
-function renderForce() {
-  const btn = $('force-run');
-  if (btn) {
-    btn.disabled = !!state.forceRunning;
-    btn.textContent = state.forceRunning ? '看盘中…' : '看今天';
-  }
-  const cal = $('force-cal');
-  if (cal) {
-    const facts = marketCalendarFacts(new Date(), { center: state.center });
-    cal.textContent = (facts.lines || []).slice(0, 3).join('');
-  }
-  const body = $('force-body');
-  if (body) {
-    const saved = state.settings?.forceOutlook;
-    if (state.forceRunning) {
-      body.innerHTML = '<div style="color:var(--muted)">正在看今天的资金、板块和日历…</div>';
-    } else if (saved?.now) {
-      const when = saved.generatedAt
-        ? new Date(saved.generatedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
-        : '';
-      const chips = (saved.watch || []).map((x) => `<span class="force-chip">${esc(x)}</span>`).join('');
-      const soft = (saved.soft || [])
-        .map((row) => `<div class="force-line"><b>${esc(row.name)}</b> ${esc(row.why)}</div>`)
-        .join('');
-      body.innerHTML = `
-        <div class="text-[11px]" style="color:var(--muted)">${esc(when)} · 盘中倾向，不是买卖指令</div>
-        <div class="force-now">${esc(saved.now)}</div>
-        <div class="mt-1">${esc(saved.later || '')}</div>
-        ${saved.turn ? `<div class="mt-1 text-down">${esc(saved.turn)}</div>` : ''}
-        ${chips ? `<div class="force-chips">${chips}</div>` : ''}
-        ${soft}`;
-    } else {
-      body.innerHTML = '<div style="color:var(--muted)">点「看今天」。根据此刻的资金、涨跌和日历，判断下午会不会转弱。</div>';
-    }
-  }
-  const boards = $('force-boards');
-  if (boards) {
-    const watched = FORCE_NAMES.map((name) => {
-      const hit = boardHit(name);
-      const pct = hit?.changePct;
-      return `<div class="force-line"><span>${esc(hit?.name || name)}</span><b class="${tone(pct)}">${fmtPct(pct)}</b></div>`;
-    }).join('');
-    const weak = [...(state.forceIndustry || [])]
-      .filter((b) => Number.isFinite(Number(b.changePct)))
-      .sort((a, b) => a.changePct - b.changePct)
-      .slice(0, 6)
-      .map((b) => `<div class="force-line"><span>${esc(b.name)}</span><b class="${tone(b.changePct)}">${fmtPct(b.changePct)}</b></div>`)
-      .join('');
-    boards.innerHTML = `
-      <div class="force-sub">常看的方向</div>
-      ${watched}
-      <div class="force-sub">今天行业里偏弱的</div>
-      ${weak || '<div class="text-[12px]" style="color:var(--muted)">正在取板块…</div>'}`;
-  }
-}
-
-function buildForceFacts() {
-  const cal = marketCalendarFacts(new Date(), { center: state.center });
-  const s = state.center.flow?.summary;
-  const zd = state.center.updown;
-  const flow = s
-    ? `主力 ${fmtYi(s.main)} 亿，超大单 ${fmtYi(s.huge)} 亿，大单 ${fmtYi(s.large)} 亿。涨 ${zd?.up ?? '—'} 跌 ${zd?.down ?? '—'} 涨停 ${zd?.limitUp ?? '—'} 跌停 ${zd?.limitDown ?? '—'}。`
-    : '资金未取到。';
-  const line = (rows) =>
-    (rows || [])
-      .filter((b) => Number.isFinite(Number(b.changePct)))
-      .slice(0, 8)
-      .map((b) => `${b.name} ${fmtPct(b.changePct)}`)
-      .join('，');
-  const industry = [...(state.forceIndustry || [])].sort((a, b) => (b.changePct || 0) - (a.changePct || 0));
-  const watched = FORCE_NAMES.map((name) => {
-    const hit = boardHit(name);
-    return hit ? `${hit.name} ${fmtPct(hit.changePct)}` : `${name} 无行情`;
-  }).join('，');
-  return [cal.text, flow, `行业涨得多：${line(industry) || '无'}`, `行业跌得多：${line([...industry].reverse()) || '无'}`, `指定方向：${watched}`].join('\n');
-}
-
-async function loadForce() {
-  renderForce();
-  try {
-    await loadDataCenter();
-    const [industry, concept] = await Promise.all([
-      fetchBoards('industry').catch(() => state.forceIndustry || []),
-      fetchBoards('concept').catch(() => state.forceConcept || []),
-    ]);
-    state.forceIndustry = industry;
-    state.forceConcept = concept;
-  } catch (e) {
-    console.error(e);
-  }
-  renderForce();
-}
-
-async function runForce() {
-  if (state.forceRunning) return;
-  const apiKey = await ensureDeepseekKey();
-  if (!apiKey) return;
-  state.forceRunning = true;
-  renderForce();
-  try {
-    if (!state.forceIndustry?.length) await loadForce();
-    const report = await askForceOutlook(apiKey, buildForceFacts());
-    state.settings = await saveSettings({ forceOutlook: { ...report, generatedAt: Date.now() } });
-  } catch (e) {
-    console.error(e);
-    const msg = String(e?.message || e);
-    if (/401|invalid|api key|密钥/i.test(msg)) {
-      state.settings = await saveSettings({ deepseekApiKey: '' });
-    }
-  } finally {
-    state.forceRunning = false;
-    renderForce();
   }
 }
 
@@ -1811,7 +1727,12 @@ function reportArticleHtml(report) {
 
 function renderDeepseekReport(report) {
   if (!els.aiAdviceBody || !report) return;
-  els.aiAdviceBody.innerHTML = reportArticleHtml(report);
+  const when = formatAiTime(report.generatedAt);
+  els.aiAdviceBody.innerHTML = `${reportArticleHtml(report)}${
+    when
+      ? `<p class="ai-advice-meta">分析时间 ${esc(when)} · 点「重新分析」只更新本弹窗，不会弹出报告抽屉</p>`
+      : ''
+  }`;
   if (els.aiAdviceRefresh) els.aiAdviceRefresh.textContent = '重新分析';
 }
 
@@ -1870,7 +1791,7 @@ function renderReportDrawer() {
     ? '<div class="mb-2 text-[12px]" style="color:var(--muted)">正在看今天的指数、涨跌家数和板块…</div>'
     : '';
   if (!rows.length) {
-    els.reportDrawerBody.innerHTML = `${pending}<div class="text-[12px] leading-relaxed" style="color:var(--muted)">还没有报告。点顶部 <b>AI盘</b> 看今天哪些板块适合短线，或在自选里点股票旁边的 AI。生成过的都会留在这里，新的在最上面。</div>`;
+    els.reportDrawerBody.innerHTML = `${pending}<div class="text-[12px] leading-relaxed" style="color:var(--muted)">还没有报告。点顶部 <b>大盘分析</b> 或个股里的「分析」。只保留近一周，避免占内存。</div>`;
     return;
   }
   const card = (r) => {
@@ -1930,8 +1851,26 @@ function closeReportDrawer() {
 
 function syncMarketAiBtn() {
   if (!els.marketAiBtn) return;
-  els.marketAiBtn.textContent = state.marketAiRunning ? '分析中' : 'AI盘';
+  // 每个 tab 最多一个 AI：盘况页用页内「AI 解读盘况」，其它页用顶栏「大盘分析」
+  const showTop = state.view === 'watch' || state.view === 'data' || state.view === 'etf';
+  els.marketAiBtn.classList.toggle('hidden', state.view === 'pulse');
+  els.marketAiBtn.textContent = state.marketAiRunning ? '分析中' : '大盘分析';
   els.marketAiBtn.disabled = !!state.marketAiRunning;
+  els.marketAiBtn.title = showTop
+    ? '手动分析今天大盘与主线；只有你点才会调用 AI'
+    : '盘况页请用页内「AI 解读盘况」';
+}
+
+function formatAiTime(ts) {
+  if (!ts) return '';
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(ts);
 }
 
 async function openModelSettings() {
@@ -2047,7 +1986,10 @@ async function runDeepseekForItem(item, opts = {}) {
       title: displayName || item.name || item.code,
     });
     if (state.detail && itemKey(state.detail) === keyId) renderDeepseekReport(saved);
-    if (!opts.quiet) openReportDrawer({ focusId: saved.id });
+    // 详情弹窗内重新分析（quiet）只更新弹窗；列表外触发才开报告抽屉
+    if (!opts.quiet && !(state.detail && itemKey(state.detail) === keyId)) {
+      openReportDrawer({ focusId: saved.id });
+    }
   } catch (e) {
     console.error(e);
     const msg = String(e?.message || e);
@@ -2062,7 +2004,8 @@ async function runDeepseekForItem(item, opts = {}) {
     const next = { ...state.aiRunning };
     delete next[keyId];
     state.aiRunning = next;
-    if (!opts.quiet) renderList();
+    // 无论 quiet 与否都刷新列表，保证概率与弹窗一致
+    renderList();
   }
 }
 
@@ -2137,11 +2080,11 @@ async function loadDetailAiAdvice(force = false) {
     return;
   }
   if (force) {
-    await runDeepseekForItem(item);
+    await runDeepseekForItem(item, { quiet: true });
     return;
   }
   els.aiAdviceBody.innerHTML =
-    '<div class="text-[12px] leading-relaxed" style="color:var(--muted)">还没有这份报告。点「分析」才会调用 DeepSeek。看的是持仓怎么处理，以及跟不跟主力。</div>';
+    '<div class="text-[12px] leading-relaxed" style="color:var(--muted)">还没有这份报告。点右上「分析」才会调用 DeepSeek（只更新本弹窗）。看持仓怎么处理，以及跟不跟主力。</div>';
   if (els.aiAdviceRefresh) els.aiAdviceRefresh.textContent = '分析';
 }
 
@@ -2251,7 +2194,7 @@ async function openDetail(item) {
     if (saved) renderDeepseekReport(saved);
     else {
       els.aiAdviceBody.innerHTML =
-        '<div class="text-[12px] leading-relaxed" style="color:var(--muted)">点右上角「分析」才会调用 DeepSeek。这里看两件事：你这只票的持仓怎么处理，以及跟不跟它的主力。</div>';
+        '<div class="text-[12px] leading-relaxed" style="color:var(--muted)">点右上「分析」才会调用 DeepSeek（不会弹出抽屉）。看持仓怎么处理，以及跟不跟主力。</div>';
       if (els.aiAdviceRefresh) els.aiAdviceRefresh.textContent = '分析';
     }
   }
@@ -2663,13 +2606,11 @@ function renderTrend() {
         `<div class="trend-item"><div class="trend-item-k">${row.tag ? `<b>${esc(row.tag)}</b> ` : ''}${esc(row.stock)}</div><div class="trend-sub"><span>${esc(row.name)}</span><b class="${tone(row.netYi)}">${row.netYi.toFixed(2)}亿</b></div></div>`,
     )
     .join('');
-  const lhbAdviceHtml = state.lhbAiRunning
-    ? '<p class="trend-empty">正在根据刚拉取的龙虎榜出结论…</p>'
-    : state.lhbAiError
-      ? `<p class="trend-hot">${esc(state.lhbAiError)}</p>`
-      : state.lhbAdvice
-        ? `<div class="trend-ai-box">${reportArticleHtml(state.lhbAdvice)}</div>`
-        : '<p class="trend-empty">点「用 AI 出结论」会先刷新东财龙虎榜，再用模型解读（不编造金额）。</p>';
+  const lhbAdviceHtml = state.lhbAiError
+    ? `<p class="trend-hot">${esc(state.lhbAiError)}</p>`
+    : state.lhbAdvice
+      ? `<div class="trend-ai-box">${reportArticleHtml(state.lhbAdvice)}<p class="trend-hint">上次龙虎榜解读 ${esc(formatAiTime(state.lhbAdvice.generatedAt))}（已并入上方「AI 解读盘况」）</p></div>`
+      : '';
   const reviewRows = (sheet.review?.rows || [])
     .map(
       (row) =>
@@ -2696,91 +2637,80 @@ function renderTrend() {
     </div>`;
   const futRows = [...(fut?.indexRows || []), ...(fut?.commodityRows || [])];
   const futHtml = futRows.map(futLine).join('');
-  const futAdviceHtml = state.futAiRunning
-    ? '<p class="trend-empty">正在看这些席位是偏多、偏空，还是对冲…</p>'
-    : state.futAiError
-      ? `<p class="trend-hot">${esc(state.futAiError)}</p>`
-      : state.futAdvice
-        ? `<div class="trend-ai-box">${reportArticleHtml(state.futAdvice)}</div>`
-        : '<p class="trend-empty">席位结论还没有。保存过密钥的话，开盘、盘中、尾盘各自动写一次。</p>';
   const advice = state.trendAdvice;
   const adviceHtml = state.trendAiRunning
-    ? '<p class="trend-empty">正在调用模型，只根据上面这张纸…</p>'
+    ? '<p class="trend-empty">正在根据本页事实调用 AI…</p>'
     : state.trendAiError
       ? `<p class="trend-hot">${esc(state.trendAiError)}</p>`
       : advice
-        ? `<div class="trend-ai-box">${reportArticleHtml(advice)}</div>`
-        : '<p class="trend-empty">模型结论还没有。保存过密钥的话，开盘、盘中、尾盘各自动写一次。</p>';
-  const aiBtn = (attr, running, has) =>
-    `<button type="button" ${attr} class="trend-ai-btn" ${running ? 'disabled' : ''}>${running ? '分析中' : has ? '重新分析' : '用 AI 出结论'}</button>`;
+        ? `<div class="trend-ai-box">${reportArticleHtml(advice)}<p class="trend-hint">分析时间 ${esc(formatAiTime(advice.generatedAt))} · 仅手动触发</p></div>`
+        : '<p class="trend-empty">本页只有 1 个 AI 按钮。点右上「AI 解读盘况」才会调用；刷新页面不会自动分析。</p>';
+  const cal = marketCalendarFacts(new Date(), { indices: state.indices || [], center: state.center });
+  const lhbToday = clock.today;
+  const lhbDate = sheet.seatDate || '';
+  const lhbPending = !lhbDate || lhbDate < lhbToday;
+  const lhbBanner = lhbPending
+    ? `<p class="trend-banner warn">今日龙虎榜通常在收盘后晚些才披露${
+        lhbDate ? `；当前仍是 <b>${esc(lhbDate)}</b> 的数据` : '；东财还没有给出名单'
+      }。可点刷新再试，未出时不要当作成交依据。</p>`
+    : `<p class="trend-banner">以下为 <b>${esc(lhbDate)}</b> 收盘后披露的营业部净买入（亿元）。机构/北向/游资标签来自席位名称粗分，不是官方分类。</p>`;
   const lhbActions = `<div class="trend-card-actions">
-      <button type="button" data-lhb-refresh class="trend-refresh-btn" ${state.lhbRefreshing || state.lhbAiRunning ? 'disabled' : ''}>${state.lhbRefreshing ? '刷新中' : '刷新'}</button>
-      ${aiBtn('data-lhb-ai', state.lhbAiRunning, !!state.lhbAdvice)}
+      <button type="button" data-lhb-refresh class="trend-refresh-btn" ${state.lhbRefreshing || state.trendAiRunning ? 'disabled' : ''}>${state.lhbRefreshing ? '刷新中' : '刷新龙虎榜'}</button>
     </div>`;
+  const pulseAiBtn = `<button type="button" data-trend-ai class="trend-ai-btn" ${state.trendAiRunning ? 'disabled' : ''}>${
+    state.trendAiRunning ? '分析中' : advice ? '重新解读盘况' : 'AI 解读盘况'
+  }</button>`;
   els.trendSheet.innerHTML = `
     <div class="trend-head">
       <div>
-        <div class="trend-head-title">顺势</div>
+        <div class="trend-head-title">盘况 · 顺势</div>
         <div class="trend-head-meta">北京 ${esc(clock.beijing)} · 下一交易日 ${esc(clock.next)} · 美东 ${esc(clock.eastern)}</div>
       </div>
       <div class="trend-head-tags">
         <span class="trend-mood ${moodCls}">${esc(mood)}</span>
-        ${sheet.tapeWeak ? '<span class="trend-hot">跌家占优，外盘降权</span>' : ''}
+        ${sheet.tapeWeak ? '<span class="trend-hot">跌家占优</span>' : ''}
+        ${pulseAiBtn}
       </div>
     </div>
-    ${trendCard('总结', trendPlanHtml(sheet.plan), '', 'trend-summary')}
-    ${(() => {
-      const cal = marketCalendarFacts(new Date(), { indices: state.indices || [], center: state.center });
-      return trendCard(
-        '日历',
-        cal.lines.map((line) => `<p class="trend-summary-line">${highlightTrend(line)}</p>`).join(''),
-      );
-    })()}
     ${trendCard(
-      '情绪',
-      `<div class="trend-metrics">
+      '① 今日怎么看',
+      `${trendPlanHtml(sheet.plan)}
+      ${cal.lines.map((line) => `<p class="trend-summary-line">${highlightTrend(line)}</p>`).join('')}
+      <div class="trend-metrics">
         <div><span>高度</span><b>${s?.height ?? '—'}板</b></div>
         <div><span>炸板率</span><b>${s?.zbRate == null ? '—' : `${Math.round(s.zbRate * 100)}%`}</b></div>
         <div><span>昨涨停溢价</span><b class="${tone(s?.premium)}">${s?.premium == null ? '—' : pctText(s.premium)}</b></div>
         <div><span>首板晋级</span><b>${s?.promoRate == null ? '—' : `${Math.round(s.promoRate * 100)}%`}</b></div>
       </div>
-      <p class="trend-hint">高度看连板。炸板率高说明封不住。溢价为负说明昨板今天亏。晋级低就不宜追新板。</p>`,
+      <p class="trend-hint">高度看连板；炸板率高说明封不住；溢价为负说明昨板今天亏。</p>
+      ${adviceHtml}`,
+      '',
+      'trend-summary',
     )}
     ${trendCard(
-      `隔夜映射 · 美东 ${esc(clock.eastern)} → 大A ${esc(clock.next)}`,
+      `② 方向与资金 · 外盘 ${esc(clock.eastern)} → 大A ${esc(clock.next)}`,
       `${overnight || '<p class="trend-empty">外盘没有明显强于 1% 的方向。</p>'}
-      <p class="trend-hint">外盘涨了，对照大A可能被带着看的板块。已经大涨就标不宜再追。</p>`,
-    )}
-    ${trendCard('主线', mains || '<p class="trend-empty">没有还在进的主题。</p>')}
-    ${trendCard(
-      '主题资金',
-      `<div class="trend-flow-label">净流入</div><div class="trend-chips">${flowLine(inflow) || '—'}</div>
-      <div class="trend-flow-label">净流出</div><div class="trend-chips">${flowLine(outflow) || '—'}</div>`,
+      <div class="trend-flow-label">主线</div>
+      ${mains || '<p class="trend-empty">没有还在进的主题。</p>'}
+      <div class="trend-flow-label">主题资金净流入</div><div class="trend-chips">${flowLine(inflow) || '—'}</div>
+      <div class="trend-flow-label">净流出</div><div class="trend-chips">${flowLine(outflow) || '—'}</div>
+      <p class="trend-hint">外盘只是线索；已标「不宜再追」的不要接力。</p>`,
     )}
     ${trendCard(
-      `龙虎榜${sheet.seatDate ? ` · ${esc(sheet.seatDate)}` : ''}`,
-      `${seats || '<p class="trend-empty">这天的席位还没出来。点刷新再拉东财。</p>'}
-      <p class="trend-hint">净买入靠前的营业部。刷新拉最新交易日；AI 只解读本机刚拉到的名单。</p>
-      ${lhbAdviceHtml}`,
+      `③ 席位 · 龙虎榜${lhbDate ? ` ${esc(lhbDate)}` : ''}${fut?.date ? ` · 期货 ${esc(fut.date)}` : ''}`,
+      `${lhbBanner}
+      ${seats || '<p class="trend-empty">名单未出或未取到。</p>'}
+      ${lhbAdviceHtml}
+      <div class="trend-flow-label">期货席位增减（手）</div>
+      ${futHtml || '<p class="trend-empty">这天的期货席位还没出来。</p>'}
+      <p class="trend-hint">代客=客户单；多空一起加更像对冲，不要当成单边看多。</p>`,
       lhbActions,
     )}
     ${trendCard(
-      `期货席位${fut?.date ? ` · 持仓日 ${esc(fut.date)}` : ''}`,
-      `${futHtml || '<p class="trend-empty">这天的期货席位还没出来。</p>'}
-      <p class="trend-hint">括号是当日增减手数。代客是客户的单。多空一起加更像对冲。</p>
-      ${futAdviceHtml}`,
-      aiBtn('data-fut-ai', state.futAiRunning, !!state.futAdvice),
-    )}
-    ${trendCard(
-      `报告对照 · ${esc(sheet.review?.day || '还没有')} → ${esc(clock.today)}`,
+      `④ 报告对照 · ${esc(sheet.review?.day || '还没有')} → ${esc(clock.today)}`,
       `${sheet.review?.summary ? `<p class="trend-summary-line">${highlightTrend(sheet.review.summary)}</p>` : '<p class="trend-empty">还没有可对照的报告。</p>'}${reviewRows}`,
     )}
-    ${trendCard(
-      `最终建议 · 对着大A ${esc(clock.next)}`,
-      adviceHtml,
-      aiBtn('data-trend-ai', state.trendAiRunning, !!advice),
-    )}
-    <p class="trend-foot">外盘、连板和席位是公开数据的粗判，不是机构底仓。不构成买卖承诺。</p>`;
+    <p class="trend-foot">公开数据粗判，不构成投资建议。AI 不会自动跑，只有你点「AI 解读盘况」或顶部「大盘分析」。</p>`;
 }
 
 function marketFacts(extra = '') {
@@ -2807,24 +2737,36 @@ function slotNote(slot) {
 }
 
 async function runTrendAi(opts = {}) {
+  if (opts.auto) return false; // 禁止自动调用
   if (state.trendAiRunning) return false;
-  const apiKey = opts.auto ? String(state.settings?.deepseekApiKey || '').trim() : await ensureDeepseekKey();
+  const apiKey = await ensureDeepseekKey();
   if (!apiKey) return false;
   if (!state.trend) await loadTrendSheet();
   state.trendAiRunning = true;
   state.trendAiError = '';
   renderTrend();
   try {
+    // 解读前尽量刷新龙虎榜，未出则在 facts 里照实写
+    await refreshLhbSeats().catch(() => false);
     const clock = marketClock();
-    const report = await askMarketReport(apiKey, marketFacts(slotNote(opts.slot)), state.settings?.aiModel);
+    const lhbNote =
+      state.trend?.seatDate && state.trend.seatDate < clock.today
+        ? `\n龙虎榜说明：今日名单可能尚未披露，当前本机数据日期为 ${state.trend.seatDate}。`
+        : state.trend?.seats?.length
+          ? `\n龙虎榜本机已拉到 ${state.trend.seatDate}，共 ${state.trend.seats.length} 条营业部净买入。`
+          : '\n龙虎榜：本机未取到名单。';
+    const report = await askMarketReport(
+      apiKey,
+      marketFacts(`${slotNote(opts.slot)}${lhbNote}`),
+      state.settings?.aiModel,
+    );
     state.trendAdvice = await pushReport({
       ...report,
       kind: 'market',
-      title: opts.slot ? `顺势 ${opts.day} ${opts.slot.label}` : `顺势 ${clock.beijing} 手动`,
+      title: `盘况解读 ${clock.beijing}`,
       itemKey: '',
       code: '',
-      slot: opts.slot?.id || '',
-      sessionDay: opts.day || clock.today,
+      sessionDay: clock.today,
     });
     return true;
   } catch (e) {
@@ -2969,44 +2911,6 @@ function hydrateSessionReports() {
   if (!state.lhbAdvice) {
     const hit = reportHistory().find((r) => r.kind === 'lhb');
     if (hit) state.lhbAdvice = hit;
-  }
-}
-
-async function markAutoSlot(key) {
-  const aiAutoDone = [key, ...(state.settings?.aiAutoDone || []).filter((item) => item !== key)].slice(0, 24);
-  state.settings = await saveSettings({ aiAutoDone });
-}
-
-/** 顺势和期货席位：开盘、盘中、尾盘各一次。没有密钥不弹窗。失败等 20 分钟再试。 */
-async function maybeAutoSessionAi() {
-  if (state.autoSessionRunning) return;
-  const slot = tradingSlot();
-  if (!slot) return;
-  if (!String(state.settings?.deepseekApiKey || '').trim()) return;
-  const done = new Set(state.settings?.aiAutoDone || []);
-  const trendKey = `${slot.day}|${slot.id}|trend`;
-  const seatKey = `${slot.day}|${slot.id}|seat`;
-  const needTrend = !done.has(trendKey);
-  const needSeat = !done.has(seatKey);
-  if (!needTrend && !needSeat) return;
-  if (state.autoSessionFailAt && Date.now() - state.autoSessionFailAt < 20 * 60 * 1000) return;
-  state.autoSessionRunning = true;
-  try {
-    if (!state.trend || Date.now() - (state.trendAt || 0) > 3 * 60 * 1000) await loadTrendSheet(true);
-    hydrateSessionReports();
-    renderTrend();
-    const seatRows = [...(state.trend?.futures?.indexRows || []), ...(state.trend?.futures?.commodityRows || [])];
-    if (needSeat) {
-      if (!seatRows.length) state.autoSessionFailAt = Date.now();
-      else if (await runFuturesAi({ auto: true, slot, day: slot.day })) await markAutoSlot(seatKey);
-      else state.autoSessionFailAt = Date.now();
-    }
-    if (needTrend) {
-      if (await runTrendAi({ auto: true, slot, day: slot.day })) await markAutoSlot(trendKey);
-      else state.autoSessionFailAt = Date.now();
-    }
-  } finally {
-    state.autoSessionRunning = false;
   }
 }
 
@@ -3265,7 +3169,6 @@ async function refreshAll() {
     if (state.view === 'data') {
       await Promise.all([loadDataCenter(), loadBoards(), loadRank()]);
     }
-    if (state.view === 'force') await loadForce();
     if (state.detail && state.period !== 'week' && state.period !== 'month') {
       if (state.detail.kind === 'fund') await openDetail(state.detail);
       else await refreshDetailCharts();
@@ -3833,9 +3736,7 @@ document.querySelectorAll('.view-tab').forEach((tab) => {
 els.trendStrip?.addEventListener('click', () => setView('pulse'));
 els.trendSheet?.addEventListener('click', (e) => {
   if (e.target.closest?.('[data-trend-ai]')) runTrendAi();
-  if (e.target.closest?.('[data-fut-ai]')) runFuturesAi();
   if (e.target.closest?.('[data-lhb-refresh]')) refreshLhbSeats();
-  if (e.target.closest?.('[data-lhb-ai]')) runLhbAi();
 });
 
 document.querySelectorAll('.primary-tab').forEach((tab) => {
@@ -4001,7 +3902,6 @@ $('more-btn')?.addEventListener('click', (e) => {
 $('more-panel')?.addEventListener('click', () => {
   $('more-panel')?.classList.add('hidden');
 });
-$('force-run')?.addEventListener('click', () => runForce());
 
 document.addEventListener('click', (e) => {
   if (!e.target.closest('.more-menu')) $('more-panel')?.classList.add('hidden');
@@ -4103,12 +4003,8 @@ els.reportOpenBtn?.addEventListener('click', () => openReportDrawer());
 els.marketAiBtn?.addEventListener('click', () => runMarketAi());
 
 els.strategyDesk?.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-plan-add],[data-plan-remove],[data-plan-watch],[data-strategy-ai],[data-strategy-pulse]');
+  const t = e.target.closest('[data-plan-add],[data-plan-remove],[data-plan-watch],[data-strategy-pulse]');
   if (!t || !els.strategyDesk.contains(t)) return;
-  if (t.hasAttribute('data-strategy-ai')) {
-    runMarketAi();
-    return;
-  }
   if (t.hasAttribute('data-strategy-pulse')) {
     setView('pulse');
     return;
@@ -4233,14 +4129,12 @@ async function bootApp() {
   };
   renderPulseBoards();
   await Promise.all([refreshAll(), refreshMajorNews(false), loadDataCenter()]);
-  void maybeAutoSessionAi();
+  syncMarketAiBtn();
+  // 不自动调用 AI：刷新 / 开盘定时器都不请求模型，只在用户点按钮时调用
   if (!state.timersStarted) {
     state.timersStarted = true;
     setInterval(refreshAll, REFRESH_MS);
     setInterval(() => refreshMajorNews(false), NEWS_REFRESH_MS);
-    setInterval(() => {
-      void maybeAutoSessionAi();
-    }, 60 * 1000);
   }
 }
 

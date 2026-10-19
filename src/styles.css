@@ -1080,7 +1080,7 @@
     justify-content: center;
     gap: 0;
     min-width: 0;
-    max-height: 3.45em;
+    max-height: 4.4em;
     overflow: hidden;
     font-size: 10px;
     font-weight: 600;
@@ -1097,6 +1097,14 @@
 
   .ai-probs .on.down {
     color: var(--down);
+  }
+
+  .ai-probs .ai-prob-time {
+    margin-top: 1px;
+    font-size: 9px;
+    font-weight: 500;
+    color: var(--muted);
+    opacity: 0.85;
   }
 
   .list-head .ai-probs,
@@ -1543,6 +1551,21 @@ button.pick-card {
   color: var(--muted);
 }
 
+.trend-banner {
+  margin: 0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  background: color-mix(in oklab, var(--accent) 8%, transparent);
+  color: var(--ink);
+}
+
+.trend-banner.warn {
+  background: color-mix(in oklab, var(--up) 10%, transparent);
+  color: var(--ink);
+}
+
 .trend-foot {
   padding: 0 2px 4px;
 }
@@ -1894,6 +1917,7 @@ button.pick-card {
 .strategy-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
 }
 
@@ -1905,6 +1929,20 @@ button.pick-card {
   color: var(--accent);
   background: color-mix(in oklab, var(--accent) 10%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 30%, transparent);
+}
+
+.strategy-ai-tip,
+.ai-advice-meta {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.ai-advice-meta {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in oklab, var(--line) 80%, transparent);
 }
 
 @media (max-width: 900px) {
