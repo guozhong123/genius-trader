@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#0f766e" />
     <meta name="mobile-web-app-capable" content="yes" />
     <title>天才交易员</title>
-    <script type="module" crossorigin src="/genius-trader/assets/full-screen-CtNEBGcH.js"></script>
-    <link rel="modulepreload" crossorigin href="/genius-trader/assets/styles-zrAbLtCe.js">
-    <link rel="stylesheet" crossorigin href="/genius-trader/assets/styles-DaIGUg2b.css">
+    <script type="module" crossorigin src="/genius-trader/assets/full-screen-DIe4a42w.js"></script>
+    <link rel="modulepreload" crossorigin href="/genius-trader/assets/styles-CUtt1FfM.js">
+    <link rel="stylesheet" crossorigin href="/genius-trader/assets/styles-CerQUO7u.css">
   </head>
   <body>
     <!-- 登录门禁 -->
@@ -51,12 +51,12 @@
             </section>
 
             <div class="top-nav flex shrink-0 rounded-lg p-0.5 text-xs font-semibold" style="background: var(--panel-solid); border: 1px solid var(--line)">
-              <button data-view="watch" class="view-tab rounded-md bg-accent px-2 py-1 text-white">自选</button>
-              <button data-view="pulse" class="view-tab rounded-md px-2 py-1" style="color: var(--muted)">盘况</button>
-              <button data-view="predict" class="view-tab rounded-md px-2 py-1" style="color: var(--muted)">预测</button>
-              <button data-view="data" class="view-tab rounded-md px-2 py-1" style="color: var(--muted)">资金</button>
-              <button data-view="etf" class="view-tab rounded-md px-2 py-1" style="color: var(--muted)">热力图</button>
-              <button data-view="sim" class="view-tab rounded-md px-2 py-1" style="color: var(--muted)">模拟盘</button>
+              <button data-view="watch" class="view-tab rounded-md bg-accent px-2 py-1.5 text-white">自选</button>
+              <button data-view="pulse" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">盘况</button>
+              <button data-view="predict" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">预测</button>
+              <button data-view="data" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">资金</button>
+              <button data-view="etf" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">热力图</button>
+              <button data-view="sim" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">模拟盘</button>
             </div>
 
             <div class="top-actions flex shrink-0 items-center gap-1.5">
@@ -219,10 +219,11 @@
           </div>
           <div class="glass rounded-xl p-3">
             <div class="mb-1 flex flex-wrap items-center gap-2">
-              <div class="text-sm font-semibold">沪深主力资金</div>
+              <div class="text-sm font-semibold">沪深主力资金（预测）</div>
               <span id="predict-flow-asof" class="text-[10px]" style="color: var(--muted)"></span>
             </div>
             <div id="chart-predict-flow" class="h-56 w-full sm:h-64"></div>
+            <p class="mt-1 text-[10px]" style="color: var(--muted)">实线为今日已走出的主力净流入；虚线为 AI 对后续时段的推演（点「AI 预测」后生成）。</p>
           </div>
         </section>
 
