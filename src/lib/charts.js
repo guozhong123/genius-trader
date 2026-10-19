@@ -598,6 +598,82 @@ export function renderForecastKline(el, history, forecast, { title = '日K+预�
   return chart;
 }
 
+/**
+ * 沪深主力：今日实盘 + AI 预测续段（预测用虚线）
+ * real: { times, main }
+ * forecast: [{ time, main }]
+ */
+export function renderPredictFlowChart(el, real, forecast) {
+  if (!el) return;
+  const realTimes = real?.times || [];
+  const realMain = real?.main || [];
+  const fut = forecast || [];
+  if (!realTimes.length && !fut.length) return;
+  const chart = getChart(el);
+  const mute = axisMute();
+  const times = [...realTimes, ...fut.map((p) => `预 ${p.time}`)];
+  const realSeries = [...realMain, ...fut.map(() => null)];
+  const predSeries = [
+    ...realMain.map((v, i) => (i === realMain.length - 1 ? v : null)),
+    ...fut.map((p) => p.main),
+  ];
+  // 若无真实点，预测单独成线
+  const hasReal = realMain.some((v) => v != null);
+  chart.setOption({
+    animationDuration: 280,
+    legend: {
+      top: 0,
+      textStyle: { color: mute, fontSize: 11 },
+      data: hasReal ? ['今日主力', 'AI预测'] : ['AI预测'],
+    },
+    grid: { left: 48, right: 16, top: 36, bottom: 28 },
+    tooltip: { trigger: 'axis' },
+    xAxis: {
+      type: 'category',
+      data: times,
+      boundaryGap: false,
+      axisLabel: {
+        color: mute,
+        fontSize: 10,
+        interval: Math.max(1, Math.ceil(times.length / 6)),
+      },
+      axisLine: { lineStyle: { color: splitLine() } },
+    },
+    yAxis: {
+      type: 'value',
+      name: '亿',
+      nameTextStyle: { color: mute, fontSize: 10 },
+      splitLine: { lineStyle: { color: splitLine() } },
+      axisLabel: { color: mute, fontSize: 10 },
+    },
+    series: [
+      ...(hasReal
+        ? [
+            {
+              name: '今日主力',
+              type: 'line',
+              showSymbol: false,
+              connectNulls: false,
+              data: realSeries,
+              lineStyle: { width: 2.2, color: '#e11d48' },
+              itemStyle: { color: '#e11d48' },
+            },
+          ]
+        : []),
+      {
+        name: 'AI预测',
+        type: 'line',
+        showSymbol: false,
+        connectNulls: true,
+        data: hasReal ? predSeries : fut.map((p) => p.main),
+        lineStyle: { width: 2, type: 'dashed', color: '#0ea5e9' },
+        itemStyle: { color: '#0ea5e9' },
+      },
+    ],
+  });
+  return chart;
+}
+
 /** 卡片迷你分时 */
 export function renderSparkline(el, prices, preClose) {
   if (!el || !prices?.length) return;

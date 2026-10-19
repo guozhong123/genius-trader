@@ -63,6 +63,7 @@ import {
   renderIntradayChart,
   renderKlineChart,
   renderNorthboundChart,
+  renderPredictFlowChart,
   renderUpDownChart,
   resizeAllCharts,
 } from './lib/charts.js';
@@ -1757,16 +1758,38 @@ async function loadPredictFlow() {
     if (flow && !state.center?.flow) {
       state.center = { ...(state.center || {}), flow };
     }
-    if (flow?.times?.length) {
-      const asof = $('predict-flow-asof');
-      if (asof) asof.textContent = flow.date ? `截至 ${flow.date}` : '';
-      renderFlowChart(el, flow, { axisMode: chartAxisMode(), legendNames: flowLegendNames() });
+    const pack = state.settings?.predictPack;
+    const forecast = pack?.forecastFlow || [];
+    const asof = $('predict-flow-asof');
+    if (asof) {
+      asof.textContent = forecast.length
+        ? `${flow?.date ? `实盘 ${flow.date} · ` : ''}含 AI 推演 ${formatAiTime(pack.generatedAt) || ''}`
+        : flow?.date
+          ? `实盘 ${flow.date} · 点「AI 预测」生成后续推演`
+          : '点「AI 预测」生成主力资金推演';
+    }
+    if (flow?.times?.length || forecast.length) {
+      // 实盘抽稀，避免点太密
+      const step = Math.max(1, Math.ceil((flow?.times?.length || 1) / 60));
+      const times = [];
+      const main = [];
+      for (let i = 0; i < (flow?.times?.length || 0); i += step) {
+        times.push(flow.times[i]);
+        main.push(flow.main?.[i] ?? null);
+      }
+      if (flow?.times?.length && (times.length === 0 || times[times.length - 1] !== flow.times[flow.times.length - 1])) {
+        times.push(flow.times[flow.times.length - 1]);
+        main.push(flow.main?.[flow.main.length - 1] ?? null);
+      }
+      renderPredictFlowChart(el, { times, main }, forecast);
     } else {
-      el.innerHTML = '<div class="flex h-full items-center justify-center text-[12px]" style="color:var(--muted)">暂无主力资金分时</div>';
+      el.innerHTML =
+        '<div class="flex h-full items-center justify-center text-[12px]" style="color:var(--muted)">暂无主力资金。点「AI 预测」可生成推演折线。</div>';
     }
   } catch (e) {
     console.error(e);
-    el.innerHTML = '<div class="flex h-full items-center justify-center text-[12px]" style="color:var(--muted)">主力资金加载失败</div>';
+    el.innerHTML =
+      '<div class="flex h-full items-center justify-center text-[12px]" style="color:var(--muted)">主力资金加载失败</div>';
   }
 }
 
@@ -1847,6 +1870,14 @@ async function runPredictAi() {
   renderPredictView();
   try {
     if (!state.center?.overview) await loadDataCenter().catch(() => {});
+    if (!state.center?.flow) {
+      try {
+        const f = await fetchMarketMoneyFlow();
+        if (f) state.center = { ...(state.center || {}), flow: f };
+      } catch {
+        /* optional */
+      }
+    }
     const indexMeta = { name: '上证指数', code: '000001', market: 'SH', marketNo: 1, secid: '1.000001' };
     const k = await fetchKline(indexMeta.secid, 101, 60);
     const points = k?.points || [];
@@ -1866,6 +1897,18 @@ async function runPredictAi() {
     const flow = s
       ? `主力 ${fmtYi(s.main)} 亿，超大单 ${fmtYi(s.huge)} 亿。涨跌家 ${state.center?.updown?.up ?? '—'}/${state.center?.updown?.down ?? '—'}`
       : '';
+    const flowRaw = state.center?.flow;
+    const flowSeries = [];
+    if (flowRaw?.times?.length) {
+      const step = Math.max(1, Math.ceil(flowRaw.times.length / 20));
+      for (let i = 0; i < flowRaw.times.length; i += step) {
+        flowSeries.push({ time: flowRaw.times[i], main: Number(flowRaw.main?.[i]) || 0 });
+      }
+      const lastIdx = flowRaw.times.length - 1;
+      if (flowSeries.length && flowSeries[flowSeries.length - 1].time !== flowRaw.times[lastIdx]) {
+        flowSeries.push({ time: flowRaw.times[lastIdx], main: Number(flowRaw.main?.[lastIdx]) || 0 });
+      }
+    }
     const mains = (state.trend?.mains || [])
       .slice(0, 4)
       .map((m) => `${m.name || m.theme} ${m.tag || ''}`)
@@ -1878,6 +1921,7 @@ async function runPredictAi() {
         recentBars: state.predictHistory,
         tape: judgeTape(state.center)?.label || '',
         flow,
+        flowSeries,
         mains,
         clock: clock.line,
       }),
@@ -1891,6 +1935,7 @@ async function runPredictAi() {
       lastClose,
       history: state.predictHistory.slice(-40),
       forecast,
+      forecastFlow: pack.forecastFlow || [],
     };
     state.settings = await saveSettings({ predictPack: saved });
   } catch (e) {
@@ -2149,12 +2194,49 @@ function applySimOrders(book, orders, quoteMap) {
   };
 }
 
+function toQuoteItem(row) {
+  const code = String(row.code || '').replace(/\D/g, '').slice(-6);
+  const market = row.market || (code.startsWith('6') ? 'SH' : code.startsWith('4') || code.startsWith('8') ? 'BJ' : 'SZ');
+  return {
+    kind: 'stock',
+    code,
+    market,
+    marketNo: market === 'SH' ? 1 : 0,
+    secid: row.secid || toSecid(market, code),
+    name: row.name || code,
+  };
+}
+
 async function runSimAi() {
   if (state.simRunning) return;
-  const apiKey = await ensureDeepseekKey();
-  if (!apiKey) return;
+  if (els.simNote) els.simNote.textContent = '正在准备密钥与行情…';
+  if (els.simAiBtn) {
+    els.simAiBtn.disabled = true;
+    els.simAiBtn.textContent = '操盘中…';
+  }
+  let apiKey = '';
+  try {
+    apiKey = await ensureDeepseekKey();
+  } catch (e) {
+    console.error(e);
+    if (els.simNote) els.simNote.textContent = String(e?.message || e || '密钥读取失败');
+    if (els.simAiBtn) {
+      els.simAiBtn.disabled = false;
+      els.simAiBtn.textContent = 'AI 操盘';
+    }
+    return;
+  }
+  if (!apiKey) {
+    if (els.simNote) els.simNote.textContent = '未配置 DeepSeek 密钥，无法操盘。点右上「更多 → 模型」填写。';
+    if (els.simAiBtn) {
+      els.simAiBtn.disabled = false;
+      els.simAiBtn.textContent = 'AI 操盘';
+    }
+    return;
+  }
   state.simRunning = true;
   renderSimView();
+  if (els.simNote) els.simNote.textContent = 'AI 操盘中：拉行情 → 决策 → 按现价下单…';
   try {
     let book = state.settings?.simBook || ensureSimBook();
     if (!state.settings?.simBook) book = await persistSimBook(book);
@@ -2176,8 +2258,8 @@ async function runSimAi() {
       .filter((h) => h.code);
 
     const watchCands = state.list
-      .filter((x) => x.kind === 'stock' && !isHeld(x))
-      .slice(0, 12)
+      .filter((x) => x.kind === 'stock')
+      .slice(0, 20)
       .map((item) => {
         const q = state.quotes[quoteKey(item)] || {};
         return {
@@ -2195,7 +2277,7 @@ async function runSimAi() {
       movers = (rows || []).slice(0, 8).map((r) => ({
         name: r.name,
         code: String(r.code).replace(/\D/g, '').slice(-6),
-        market: r.market,
+        market: r.market || (String(r.code || '').startsWith('6') ? 'SH' : 'SZ'),
         price: Number(r.price),
         changePct: Number(r.changePct),
       }));
@@ -2203,39 +2285,58 @@ async function runSimAi() {
       /* optional */
     }
 
-    const candidates = [...watchCands, ...movers].filter((c) => c.code && c.price > 0).slice(0, 16);
-    const needQuote = [
-      ...holdings.map((h) => ({ kind: 'stock', code: h.code, market: h.market, marketNo: h.market === 'SH' ? 1 : 0, secid: toSecid(h.market, h.code), name: h.name })),
-      ...candidates.map((c) => ({ kind: 'stock', code: c.code, market: c.market, marketNo: c.market === 'SH' ? 1 : 0, secid: toSecid(c.market, c.code), name: c.name })),
-      ...(book.positions || []).map((p) => ({ kind: 'stock', code: p.code, market: p.market, marketNo: p.market === 'SH' ? 1 : 0, secid: p.secid || toSecid(p.market, p.code), name: p.name })),
-    ];
+    const seed = [...holdings, ...watchCands, ...movers, ...(book.positions || [])];
     const uniq = [];
     const seen = new Set();
-    for (const row of needQuote) {
-      const k = `${row.market}:${row.code}`;
+    for (const row of seed) {
+      if (!row?.code) continue;
+      const item = toQuoteItem(row);
+      const k = `${item.market}:${item.code}`;
       if (seen.has(k)) continue;
       seen.add(k);
-      uniq.push(row);
+      uniq.push(item);
     }
-    const quoteMap = uniq.length ? await fetchQuotes(uniq) : {};
 
-    // 刷新持仓/候选现价进事实
-    const holdingsLive = holdings.map((h) => {
-      const q = quoteMap[quoteKey({ kind: 'stock', market: h.market, code: h.code })] || {};
-      return { ...h, price: Number(q.price) > 0 ? Number(q.price) : h.price, changePct: Number.isFinite(Number(q.changePct)) ? Number(q.changePct) : h.changePct };
-    });
-    const candLive = candidates.map((c) => {
-      const q = quoteMap[quoteKey({ kind: 'stock', market: c.market, code: c.code })] || {};
-      return { ...c, price: Number(q.price) > 0 ? Number(q.price) : c.price, changePct: Number.isFinite(Number(q.changePct)) ? Number(q.changePct) : c.changePct };
-    });
+    let quoteMap = {};
+    if (uniq.length) {
+      try {
+        quoteMap = await fetchQuotes(uniq);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    const priceOf = (code, market) => {
+      const q = quoteFromMap(quoteMap, code, market);
+      return Number(q?.price) > 0 ? Number(q.price) : 0;
+    };
+
+    const holdingsLive = holdings.map((h) => ({
+      ...h,
+      price: priceOf(h.code, h.market) || h.price,
+      changePct: Number(quoteFromMap(quoteMap, h.code, h.market)?.changePct ?? h.changePct),
+    }));
+    const candLive = [...watchCands, ...movers]
+      .map((c) => ({
+        ...c,
+        price: priceOf(c.code, c.market) || c.price,
+        changePct: Number(quoteFromMap(quoteMap, c.code, c.market)?.changePct ?? c.changePct),
+      }))
+      .filter((c) => c.code && c.price > 0)
+      .slice(0, 16);
+
+    if (!holdingsLive.length && !candLive.length) {
+      throw new Error('没有可用行情（自选/涨幅榜都取不到价）。先在自选加几只股票，或稍后重试。');
+    }
+
     const posMarked = (book.positions || []).map((p) => {
-      const q = quoteMap[quoteKey({ kind: 'stock', market: p.market, code: p.code })] || {};
-      const mark = Number(q.price) > 0 ? Number(q.price) : p.mark;
+      const mark = priceOf(p.code, p.market) || Number(p.mark) || Number(p.avgCost);
       return { ...p, mark, unrealized: (mark - p.avgCost) * p.shares };
     });
     book = { ...book, positions: posMarked };
 
     const clock = marketClock();
+    if (els.simNote) els.simNote.textContent = '正在调用 DeepSeek 决策…';
     const decision = await askSimOrders(
       apiKey,
       buildSimFacts({
@@ -2248,9 +2349,42 @@ async function runSimAi() {
       state.settings?.aiModel,
     );
 
-    const next = applySimOrders({ ...book, note: decision.note || book.note }, decision.orders, quoteMap);
+    // AI 可能下了名单外的票：补拉现价后再成交
+    const extra = [];
+    for (const order of decision.orders || []) {
+      if (priceOf(order.code, order.market) > 0) continue;
+      extra.push(toQuoteItem(order));
+    }
+    if (extra.length) {
+      try {
+        const more = await fetchQuotes(extra);
+        quoteMap = { ...quoteMap, ...more };
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    const beforeTrades = (book.trades || []).length;
+    const next = applySimOrders(
+      { ...book, note: decision.note || book.note },
+      decision.orders || [],
+      quoteMap,
+    );
+    const filled = (next.trades || []).length - beforeTrades;
     await persistSimBook(next);
     await markSimToMarket();
+
+    if (!(decision.orders || []).length) {
+      if (els.simNote) {
+        els.simNote.textContent = `${decision.note || '今日空仓。'}（AI 未下单）`;
+      }
+    } else if (filled <= 0) {
+      if (els.simNote) {
+        els.simNote.textContent = `${decision.note || ''} 有意向但未成交：缺现价或现金不足。可点「刷新市值」后再试。`.trim();
+      }
+    } else if (els.simNote) {
+      els.simNote.textContent = `${decision.note || ''}（成交 ${filled} 笔，含万五手续费）`.trim();
+    }
   } catch (e) {
     console.error(e);
     const msg = String(e?.message || e || '操盘失败');
@@ -4675,9 +4809,22 @@ els.aiAdviceHistory?.addEventListener('click', () => {
 els.reportOpenBtn?.addEventListener('click', () => openReportDrawer());
 els.marketAiBtn?.addEventListener('click', () => runMarketAi());
 els.predictAiBtn?.addEventListener('click', () => runPredictAi());
-els.simAiBtn?.addEventListener('click', () => runSimAi());
+// 模拟盘按钮：直接绑 + 容器委托，避免取不到节点时无反应
+els.simAiBtn?.addEventListener('click', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  void runSimAi();
+});
 els.simMarkBtn?.addEventListener('click', () => markSimToMarket());
 els.simResetBtn?.addEventListener('click', () => resetSimBook());
+$('view-sim')?.addEventListener('click', (e) => {
+  const btn = e.target.closest?.('#sim-ai-btn, #sim-mark-btn, #sim-reset-btn');
+  if (!btn) return;
+  e.preventDefault();
+  if (btn.id === 'sim-ai-btn') void runSimAi();
+  else if (btn.id === 'sim-mark-btn') void markSimToMarket();
+  else if (btn.id === 'sim-reset-btn') void resetSimBook();
+});
 
 els.strategyDesk?.addEventListener('click', async (e) => {
   const t = e.target.closest('[data-plan-add],[data-plan-remove],[data-plan-watch],[data-strategy-pulse]');
