@@ -492,15 +492,20 @@ export function renderKlineChart(el, points, { markLine, title = '日K' } = {}) 
  * history: [{date,open,high,low,close}]
  * forecast: 同上，date 已标好
  */
-export function renderForecastKline(el, history, forecast, { title = '日K+预测' } = {}) {
+export function renderForecastKline(el, history, forecast, { title = '日K+预测', focusTomorrow = true } = {}) {
   if (!el) return;
-  const hist = history || [];
+  const histAll = history || [];
   const fut = forecast || [];
+  // 默认只留少量真实日K作对照，视觉重心落在「明天」起的推演
+  const hist = focusTomorrow ? histAll.slice(-8) : histAll;
   if (!hist.length && !fut.length) return;
   const chart = getChart(el);
   const mute = axisMute();
   const splitAt = hist.length ? hist.length - 1 : -1;
-  const dates = [...hist.map((p) => p.date), ...fut.map((p) => p.date)];
+  const dates = [
+    ...hist.map((p) => p.date),
+    ...fut.map((p, i) => (i === 0 ? `${p.date} 明` : p.date)),
+  ];
   const ohlc = [
     ...hist.map((p) => [p.open, p.close, p.low, p.high]),
     ...fut.map((p) => [p.open, p.close, p.low, p.high]),
@@ -520,6 +525,10 @@ export function renderForecastKline(el, history, forecast, { title = '日K+预�
       borderWidth: 1.5,
     })),
   ];
+  const total = dates.length || 1;
+  // 窗口起点尽量贴近预测段，默认就能看到明天
+  const windowStart = Math.max(0, hist.length - 3);
+  const startPct = Math.max(0, Math.min(90, (windowStart / total) * 100));
   chart.setOption({
     animationDuration: 280,
     legend: {
@@ -534,7 +543,7 @@ export function renderForecastKline(el, history, forecast, { title = '日K+预�
         if (!params?.length) return '';
         const idx = params[0].dataIndex;
         const head = params[0].axisValueLabel || '';
-        const tag = idx > splitAt ? '（预测）' : '';
+        const tag = idx > splitAt ? (idx === splitAt + 1 ? '（明天·预测）' : '（预测）') : '';
         const [open, close, low, high] = ohlc[idx] || [];
         const fmt = (v) => (v == null || Number.isNaN(Number(v)) ? '—' : Number(v).toFixed(2));
         const note = idx > splitAt ? fut[idx - hist.length]?.note || '' : '';
@@ -548,7 +557,10 @@ export function renderForecastKline(el, history, forecast, { title = '日K+预�
           .join('<br/>');
       },
     },
-    dataZoom: [{ type: 'inside' }, { type: 'slider', height: 18, bottom: 8 }],
+    dataZoom: [
+      { type: 'inside', start: startPct, end: 100 },
+      { type: 'slider', height: 18, bottom: 8, start: startPct, end: 100 },
+    ],
     xAxis: {
       type: 'category',
       data: dates,
@@ -575,7 +587,7 @@ export function renderForecastKline(el, history, forecast, { title = '日K+预�
           splitAt >= 0 && fut.length
             ? {
                 symbol: 'none',
-                label: { formatter: '预测→', color: '#0ea5e9', fontSize: 10 },
+                label: { formatter: '明天→', color: '#0ea5e9', fontSize: 10 },
                 lineStyle: { type: 'dashed', color: '#0ea5e9', width: 1 },
                 data: [{ xAxis: dates[splitAt] }],
               }
