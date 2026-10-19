@@ -283,9 +283,10 @@
   .top-nav .view-tab {
     white-space: nowrap;
     flex: 0 0 auto;
-    padding: 0.28rem 0.5rem;
-    font-size: 11px;
-    line-height: 1.2;
+    /* 保持与原先一致的正常尺寸，只居中不缩小 */
+    padding: 0.375rem 0.5rem;
+    font-size: 0.75rem;
+    line-height: 1.25;
   }
 
   .top-actions {

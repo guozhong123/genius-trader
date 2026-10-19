@@ -980,15 +980,18 @@ const PREDICT_SYSTEM = [
   '只根据用户给出的指数日K、涨跌家数、主力资金、主线。禁止编造未提供的现价和新闻。',
   'forecastBars 必须正好 5 根，每根相对「上一根收盘」的开高低收涨跌幅（百分比小数，如 -0.8 表示跌 0.8%）。',
   'pctHigh ≥ max(pctOpen,pctClose)，pctLow ≤ min(pctOpen,pctClose)。幅度要克制，单日 |pctClose| 一般不超过 2.5。',
+  'forecastFlow 必须给出后续交易时段的「主力净流入（亿元）」推演曲线，大约 12～16 个点。',
+  'time 用 HH:MM；若已收盘则推明天 09:35 起；若盘中则从下一时刻续写到 15:00。main 是累计主力净流入（亿），要与事实里最近主力值衔接，不要跳变。',
   'scenarios 写 2～4 个可执行情景（做T、低吸、空仓等），trigger/action/exit 各一句。',
   '禁止承诺收益。输出严格 JSON：',
   '{"summary":"两到三句总看法",',
   '"ta":{"scenario":"主情景名","advice":"怎么做","buyZone":"买点","sellZone":"卖点","avoid":"别做什么"},',
   '"scenarios":[{"title":"","trigger":"","action":"","exit":""}],',
-  '"forecastBars":[{"pctOpen":0,"pctHigh":0,"pctLow":0,"pctClose":0,"note":"一句"}]}',
+  '"forecastBars":[{"pctOpen":0,"pctHigh":0,"pctLow":0,"pctClose":0,"note":"一句"}],',
+  '"forecastFlow":[{"time":"09:35","main":0.0}]}',
 ].join('');
 
-export function buildPredictFacts({ indexName, lastClose, recentBars, tape, flow, mains, clock }) {
+export function buildPredictFacts({ indexName, lastClose, recentBars, tape, flow, flowSeries, mains, clock }) {
   const bars = (recentBars || [])
     .slice(-20)
     .map(
@@ -996,15 +999,20 @@ export function buildPredictFacts({ indexName, lastClose, recentBars, tape, flow
         `${p.date} 开${num(p.open)} 高${num(p.high)} 低${num(p.low)} 收${num(p.close)} 涨跌${signed(p.changePct)}%`,
     )
     .join('\n');
+  const flowPts = (flowSeries || [])
+    .slice(-20)
+    .map((p) => `${p.time} 主力${num(p.main)}亿`)
+    .join('；');
   return [
     clock || '',
     `指数 ${indexName || '上证指数'} 最近收盘 ${num(lastClose)}。`,
     tape ? `市场情绪：${tape}` : '',
     flow || '',
+    flowPts ? `今日主力分时（抽样，单位亿）：${flowPts}` : '今日主力分时未提供。',
     mains ? `主线线索：${mains}` : '',
     '近20根日K（只许用这些数字推演未来5根）：',
     bars || '日K未提供。',
-    '请给出做T/低吸情景，以及未来5个交易日的预测K涨跌幅。',
+    '请给出：1) 做T/低吸情景 2) 未来5个交易日预测K 3) 后续主力资金分时推演 forecastFlow。',
   ]
     .filter(Boolean)
     .join('\n');
@@ -1037,6 +1045,16 @@ export async function askPredictPack(apiKey, facts, modelPref) {
         Number.isFinite(row.pctLow) &&
         Number.isFinite(row.pctClose),
     );
+  const forecastFlow = (Array.isArray(report.forecastFlow) ? report.forecastFlow : [])
+    .map((row) => {
+      const time = String(row?.time || '').trim();
+      const main = Number(row?.main);
+      if (!/^\d{1,2}:\d{2}$/.test(time) || !Number.isFinite(main)) return null;
+      const [hh, mm] = time.split(':');
+      return { time: `${hh.padStart(2, '0')}:${mm}`, main: +main.toFixed(2) };
+    })
+    .filter(Boolean)
+    .slice(0, 24);
   const ta = report.ta && typeof report.ta === 'object' ? report.ta : {};
   return {
     kind: 'predict',
@@ -1050,6 +1068,7 @@ export async function askPredictPack(apiKey, facts, modelPref) {
     },
     scenarios,
     forecastBars,
+    forecastFlow,
     generatedAt: Date.now(),
     source,
   };
