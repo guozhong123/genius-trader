@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#0f766e" />
     <meta name="mobile-web-app-capable" content="yes" />
     <title>天才交易员</title>
-    <script type="module" crossorigin src="/genius-trader/assets/full-screen-C8LGoQkm.js"></script>
-    <link rel="modulepreload" crossorigin href="/genius-trader/assets/styles-BH_NJp6d.js">
-    <link rel="stylesheet" crossorigin href="/genius-trader/assets/styles-hz5apmb0.css">
+    <script type="module" crossorigin src="/genius-trader/assets/full-screen-CtNEBGcH.js"></script>
+    <link rel="modulepreload" crossorigin href="/genius-trader/assets/styles-zrAbLtCe.js">
+    <link rel="stylesheet" crossorigin href="/genius-trader/assets/styles-DaIGUg2b.css">
   </head>
   <body>
     <!-- 登录门禁 -->
@@ -51,12 +51,12 @@
             </section>
 
             <div class="top-nav flex shrink-0 rounded-lg p-0.5 text-xs font-semibold" style="background: var(--panel-solid); border: 1px solid var(--line)">
-              <button data-view="watch" class="view-tab rounded-md bg-accent px-2 py-1.5 text-white">自选</button>
-              <button data-view="pulse" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">盘况</button>
-              <button data-view="predict" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">预测</button>
-              <button data-view="sim" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">模拟盘</button>
-              <button data-view="data" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">资金</button>
-              <button data-view="etf" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">热力图</button>
+              <button data-view="watch" class="view-tab rounded-md bg-accent px-2 py-1 text-white">自选</button>
+              <button data-view="pulse" class="view-tab rounded-md px-2 py-1" style="color: var(--muted)">盘况</button>
+              <button data-view="predict" class="view-tab rounded-md px-2 py-1" style="color: var(--muted)">预测</button>
+              <button data-view="data" class="view-tab rounded-md px-2 py-1" style="color: var(--muted)">资金</button>
+              <button data-view="etf" class="view-tab rounded-md px-2 py-1" style="color: var(--muted)">热力图</button>
+              <button data-view="sim" class="view-tab rounded-md px-2 py-1" style="color: var(--muted)">模拟盘</button>
             </div>
 
             <div class="top-actions flex shrink-0 items-center gap-1.5">
@@ -211,22 +211,36 @@
             <div class="glass rounded-xl p-3">
               <div class="mb-1 flex items-center justify-between gap-2">
                 <div class="text-sm font-semibold">大盘预测 K 线</div>
-                <span id="predict-index-name" class="text-[10px]" style="color: var(--muted)">上证指数</span>
+                <span id="predict-index-name" class="text-[10px]" style="color: var(--muted)">上证指数 · 默认看明天</span>
               </div>
               <div id="chart-predict-k" class="h-72 w-full sm:h-80"></div>
-              <p class="mt-1 text-[10px]" style="color: var(--muted)">实线左侧为真实日K，虚影/标注段为 AI 推演的未来 5 个交易日。</p>
+              <p class="mt-1 text-[10px]" style="color: var(--muted)">默认聚焦「明天」起的推演段（已跳过周末/节假日）；左侧少量真实日K作对照。</p>
             </div>
+          </div>
+          <div class="glass rounded-xl p-3">
+            <div class="mb-1 flex flex-wrap items-center gap-2">
+              <div class="text-sm font-semibold">沪深主力资金</div>
+              <span id="predict-flow-asof" class="text-[10px]" style="color: var(--muted)"></span>
+            </div>
+            <div id="chart-predict-flow" class="h-56 w-full sm:h-64"></div>
           </div>
         </section>
 
-        <!-- AI 模拟炒股：独立账本，跟持仓或自选 -->
+        <section id="view-etf" class="view-pane hidden">
+          <div class="glass mb-1.5 rounded-lg px-2.5 py-1.5 text-[10px]" style="color: var(--muted)">
+            热力图来自 <a href="https://52etf.site/" target="_blank" rel="noreferrer" class="text-accent underline">52etf.site</a>。手机上如果空白，点链接打开。
+          </div>
+          <iframe id="etf-frame" title="热力图" class="etf-frame w-full rounded-xl border-0 ring-soft"></iframe>
+        </section>
+
+        <!-- AI 模拟炒股：放最后 -->
         <section id="view-sim" class="view-pane hidden space-y-2">
           <div class="glass rounded-xl p-3">
             <div class="flex flex-wrap items-start justify-between gap-2">
               <div class="min-w-0">
                 <div class="text-sm font-semibold">AI 模拟盘</div>
                 <p class="mt-0.5 text-[11px] leading-relaxed" style="color: var(--muted)">
-                  初始 10 万虚拟本金。AI 可买你持仓里的票，也可自己选 A 股；只在你点按钮时下单。不是实盘。
+                  初始 10 万虚拟本金；成交按现价，手续费万五（最低 5 元）。买入后浮盈从扣费后成本算起，不会「刚买就赚」。
                 </p>
               </div>
               <div class="flex shrink-0 flex-wrap gap-1.5">
@@ -246,13 +260,6 @@
             <div class="text-sm font-semibold mb-2">交易记录</div>
             <div id="sim-trades" class="text-[12px]" style="color: var(--muted)">还没有成交</div>
           </div>
-        </section>
-
-        <section id="view-etf" class="view-pane hidden">
-          <div class="glass mb-1.5 rounded-lg px-2.5 py-1.5 text-[10px]" style="color: var(--muted)">
-            热力图来自 <a href="https://52etf.site/" target="_blank" rel="noreferrer" class="text-accent underline">52etf.site</a>。手机上如果空白，点链接打开。
-          </div>
-          <iframe id="etf-frame" title="热力图" class="etf-frame w-full rounded-xl border-0 ring-soft"></iframe>
         </section>
 
         <footer class="mt-4 text-center text-[10px]" style="color: var(--muted)">行情仅供参考，不构成投资建议。</footer>
