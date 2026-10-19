@@ -67,7 +67,7 @@ import { getTodayEvents, getUpcomingEvents, getMajorUpcomingEvents, marketCalend
 import { buildLevelMarkLines, calcAutoLevels } from './lib/levels.js';
 import { normalizeGroups, repairStockGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
-import { askDeepseekReport, askForceOutlook, askMarketReport, askScanBatch, askSeatReport, buildMarketFacts, buildScanFacts, buildSeatFacts, buildStockFacts, disciplineStop } from './lib/deepseek.js';
+import { askDeepseekReport, askForceOutlook, askLhbReport, askMarketReport, askScanBatch, askSeatReport, buildLhbFacts, buildMarketFacts, buildScanFacts, buildSeatFacts, buildStockFacts, disciplineStop } from './lib/deepseek.js';
 import { OVERNIGHT_LINKS, buildOvernight, marketClock, moodLabel, planText, reviewCalls, scoreMainLines, shYmd, sheetBrief, tradingSlot } from './lib/trend.js';
 import { isLoggedIn, login, logout, currentUser } from './lib/auth.js';
 
@@ -1767,7 +1767,7 @@ function reportArticleHtml(report) {
     : '';
   const cls = actionClass(report.action);
   const probs =
-    report.kind === 'market' || report.kind === 'seat'
+    report.kind === 'market' || report.kind === 'seat' || report.kind === 'lhb'
       ? ''
       : `<div class="mb-2 grid grid-cols-3 gap-1.5 text-center">
       <div class="rounded-lg px-1 py-1.5 ring-soft"><div class="text-[10px]" style="color:var(--muted)">买入</div><div class="text-sm font-semibold text-up">${report.buyProb ?? 0}%</div></div>
@@ -1777,16 +1777,24 @@ function reportArticleHtml(report) {
   const points =
     report.kind === 'market'
       ? `${reportPoint('做', report.leaders)}${reportPoint('避开', report.avoid)}${reportPoint('节奏', report.rhythm || report.hold)}`
-      : report.kind === 'seat'
+      : report.kind === 'seat' || report.kind === 'lhb'
         ? `${reportPoint('席位', report.read || report.summary)}${reportPoint('持仓', report.hold)}`
         : `${reportPoint('怎么处理', report.hold || report.position)}${reportPoint('卖 / 买点', report.exit || report.today)}${reportPoint('跟主力', report.follow)}`;
   const detail =
     report.kind === 'market'
       ? `${reportBlock('风险', report.risk)}${reportBlock('和前几天比', report.consistency)}`
-      : report.kind === 'seat'
+      : report.kind === 'seat' || report.kind === 'lhb'
         ? `${reportBlock('容易看错的地方', report.risk)}`
         : `${checksLine(report)}${reportBlock('今天怎么做', report.today)}${reportBlock('板块', report.sector)}${reportBlock('持仓', report.position)}${reportBlock('主力', report.mainForce)}${reportBlock('量价', report.trend)}${reportBlock('消息', report.news)}${reportBlock('位置', report.valuation)}${reportBlock('大盘', report.market)}${reportBlock('仓位', report.plan)}${reportBlock('离场', report.exit)}${reportBlock('放弃', report.stop)}${reportBlock('风险', report.risk)}${reportBlock('和前几天比', report.consistency)}`;
-  const title = report.title || (report.kind === 'market' ? '今日大盘' : report.kind === 'seat' ? '期货席位' : '个股');
+  const title =
+    report.title ||
+    (report.kind === 'market'
+      ? '今日大盘'
+      : report.kind === 'seat'
+        ? '期货席位'
+        : report.kind === 'lhb'
+          ? '龙虎榜'
+          : '个股');
   return `
     <div class="mb-2">
       <div class="text-lg font-semibold ${cls}">${esc(report.action || '继续等')}</div>
@@ -1902,8 +1910,8 @@ function renderReportDrawer() {
     els.reportDrawerBody.innerHTML = pending + byDay(rows);
     return;
   }
-  const market = rows.filter((r) => r.kind === 'market' || r.kind === 'seat');
-  const stocks = rows.filter((r) => r.kind !== 'market' && r.kind !== 'seat');
+  const market = rows.filter((r) => r.kind === 'market' || r.kind === 'seat' || r.kind === 'lhb');
+  const stocks = rows.filter((r) => r.kind !== 'market' && r.kind !== 'seat' && r.kind !== 'lhb');
   els.reportDrawerBody.innerHTML = `${pending}<div class="report-split">
     <section><h3 class="report-col-title">大盘</h3>${byDay(market)}</section>
     <section><h3 class="report-col-title">股票</h3>${byDay(stocks)}</section>
@@ -2655,6 +2663,13 @@ function renderTrend() {
         `<div class="trend-item"><div class="trend-item-k">${row.tag ? `<b>${esc(row.tag)}</b> ` : ''}${esc(row.stock)}</div><div class="trend-sub"><span>${esc(row.name)}</span><b class="${tone(row.netYi)}">${row.netYi.toFixed(2)}亿</b></div></div>`,
     )
     .join('');
+  const lhbAdviceHtml = state.lhbAiRunning
+    ? '<p class="trend-empty">正在根据刚拉取的龙虎榜出结论…</p>'
+    : state.lhbAiError
+      ? `<p class="trend-hot">${esc(state.lhbAiError)}</p>`
+      : state.lhbAdvice
+        ? `<div class="trend-ai-box">${reportArticleHtml(state.lhbAdvice)}</div>`
+        : '<p class="trend-empty">点「用 AI 出结论」会先刷新东财龙虎榜，再用模型解读（不编造金额）。</p>';
   const reviewRows = (sheet.review?.rows || [])
     .map(
       (row) =>
@@ -2698,6 +2713,10 @@ function renderTrend() {
         : '<p class="trend-empty">模型结论还没有。保存过密钥的话，开盘、盘中、尾盘各自动写一次。</p>';
   const aiBtn = (attr, running, has) =>
     `<button type="button" ${attr} class="trend-ai-btn" ${running ? 'disabled' : ''}>${running ? '分析中' : has ? '重新分析' : '用 AI 出结论'}</button>`;
+  const lhbActions = `<div class="trend-card-actions">
+      <button type="button" data-lhb-refresh class="trend-refresh-btn" ${state.lhbRefreshing || state.lhbAiRunning ? 'disabled' : ''}>${state.lhbRefreshing ? '刷新中' : '刷新'}</button>
+      ${aiBtn('data-lhb-ai', state.lhbAiRunning, !!state.lhbAdvice)}
+    </div>`;
   els.trendSheet.innerHTML = `
     <div class="trend-head">
       <div>
@@ -2740,7 +2759,10 @@ function renderTrend() {
     )}
     ${trendCard(
       `龙虎榜${sheet.seatDate ? ` · ${esc(sheet.seatDate)}` : ''}`,
-      seats || '<p class="trend-empty">这天的席位还没出来。</p>',
+      `${seats || '<p class="trend-empty">这天的席位还没出来。点刷新再拉东财。</p>'}
+      <p class="trend-hint">净买入靠前的营业部。刷新拉最新交易日；AI 只解读本机刚拉到的名单。</p>
+      ${lhbAdviceHtml}`,
+      lhbActions,
     )}
     ${trendCard(
       `期货席位${fut?.date ? ` · 持仓日 ${esc(fut.date)}` : ''}`,
@@ -2863,6 +2885,78 @@ async function runFuturesAi(opts = {}) {
   }
 }
 
+/** 只刷新盘况龙虎榜席位（东财），不整页重算顺势 */
+async function refreshLhbSeats() {
+  if (state.lhbRefreshing) return false;
+  state.lhbRefreshing = true;
+  state.lhbAiError = '';
+  renderTrend();
+  try {
+    const data = await fetchSeatHighlights(10);
+    if (!state.trend) state.trend = {};
+    state.trend.seats = data?.rows || [];
+    state.trend.seatDate = data?.date || '';
+    if (!(state.trend.seats || []).length) {
+      state.lhbAiError = '东财还没给出这一天的龙虎榜席位。';
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error(e);
+    state.lhbAiError = String(e?.message || e || '龙虎榜刷新失败');
+    return false;
+  } finally {
+    state.lhbRefreshing = false;
+    renderTrend();
+  }
+}
+
+/** 先拉最新龙虎榜，再用 DeepSeek 解读本机事实 */
+async function runLhbAi() {
+  if (state.lhbAiRunning) return false;
+  const apiKey = await ensureDeepseekKey();
+  if (!apiKey) return false;
+  state.lhbAiRunning = true;
+  state.lhbAiError = '';
+  renderTrend();
+  try {
+    const ok = await refreshLhbSeats();
+    const rows = state.trend?.seats || [];
+    if (!ok || !rows.length) {
+      if (!state.lhbAiError) state.lhbAiError = '没有龙虎榜数据，无法分析。';
+      return false;
+    }
+    const clock = marketClock();
+    const report = await askLhbReport(
+      apiKey,
+      buildLhbFacts({
+        date: state.trend?.seatDate || '',
+        rows,
+        clock: clock.line,
+      }),
+      state.settings?.aiModel,
+    );
+    state.lhbAdvice = await pushReport({
+      ...report,
+      title: `龙虎榜 ${state.trend?.seatDate || clock.today} 手动`,
+      itemKey: '',
+      code: '',
+      sessionDay: clock.today,
+    });
+    return true;
+  } catch (e) {
+    console.error(e);
+    state.lhbAiError = String(e?.message || e || '分析失败');
+    if (/401|invalid|api key|密钥/i.test(state.lhbAiError)) {
+      state.settings = await saveSettings({ deepseekApiKey: '' });
+    }
+    return false;
+  } finally {
+    state.lhbAiRunning = false;
+    renderTrend();
+  }
+}
+
 function hydrateSessionReports() {
   if (!state.trendAdvice) {
     const hit = reportHistory().find((r) => r.kind === 'market');
@@ -2871,6 +2965,10 @@ function hydrateSessionReports() {
   if (!state.futAdvice) {
     const hit = reportHistory().find((r) => r.kind === 'seat');
     if (hit) state.futAdvice = hit;
+  }
+  if (!state.lhbAdvice) {
+    const hit = reportHistory().find((r) => r.kind === 'lhb');
+    if (hit) state.lhbAdvice = hit;
   }
 }
 
@@ -3736,6 +3834,8 @@ els.trendStrip?.addEventListener('click', () => setView('pulse'));
 els.trendSheet?.addEventListener('click', (e) => {
   if (e.target.closest?.('[data-trend-ai]')) runTrendAi();
   if (e.target.closest?.('[data-fut-ai]')) runFuturesAi();
+  if (e.target.closest?.('[data-lhb-refresh]')) refreshLhbSeats();
+  if (e.target.closest?.('[data-lhb-ai]')) runLhbAi();
 });
 
 document.querySelectorAll('.primary-tab').forEach((tab) => {

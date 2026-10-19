@@ -1461,6 +1461,13 @@ button.pick-card {
   font-weight: 700;
 }
 
+.trend-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
 .trend-ai-btn {
   border-radius: 8px;
   padding: 4px 8px;
@@ -1468,6 +1475,21 @@ button.pick-card {
   font-weight: 700;
   color: #fff;
   background: var(--accent);
+}
+
+.trend-ai-btn:disabled,
+.trend-refresh-btn:disabled {
+  opacity: 0.55;
+}
+
+.trend-refresh-btn {
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 35%, transparent);
 }
 
 .trend-card-body {

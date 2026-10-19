@@ -538,6 +538,101 @@ export function buildSeatFacts({ seats, clock }) {
     .join('\n');
 }
 
+const LHB_SYSTEM = [
+  FACTS_GROUNDING,
+  '你是个人A股短线参谋。用户给你的是东财龙虎榜营业部净买入明细（亿元），不是期货持仓。',
+  '每一行是：营业部名称、买入的股票、净买入额、标签（机构/北向/游资）。净额为正是净买入，为负是净卖出。',
+  '机构、北向、知名游资席位更值得写；不要把未知营业部写成庄家底仓。',
+  '同一股票多席位同向净买，写成资金聚焦；多空打架或一日游风格席位，写成谨慎跟。',
+  '禁止编造名单外的营业部、股票和金额。禁止承诺收益。',
+  'hold 是手里股票今天怎么处理，一句。follow 是跟不跟这些龙虎榜动向、跟哪一段，一句。',
+  '输出严格 JSON：',
+  '{"action":"跟|不跟|只观察","summary":"四到六句总判断",',
+  '"read":"按席位/股票写：谁在买、买了谁、是否像接力还是出货",',
+  '"risk":"最容易看错的地方",',
+  '"hold":"手里的票这一天怎么处理，一句",',
+  '"follow":"跟不跟这些龙虎榜动向，一句"}',
+].join('');
+
+/** 盘况龙虎榜：本机刚拉到的营业部净买入事实 */
+export function buildLhbFacts({ date, rows, clock }) {
+  const bjNow = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date());
+  const lines = (rows || []).map(
+    (row, i) =>
+      `${i + 1}. ${row.tag ? `[${row.tag}] ` : ''}${row.name || '营业部'} → ${row.stock || '—'} 净额 ${signed(row.netYi)} 亿`,
+  );
+  return [
+    `本机拉取事实的北京时间 ${bjNow}。以下来自东财龙虎榜接口，不是模型记忆。`,
+    clock || '',
+    date ? `龙虎榜交易日 ${date}` : '龙虎榜日期未提供。',
+    lines.join('\n') || '没有龙虎榜席位。不要编造。',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+export async function askLhbReport(apiKey, facts, modelPref) {
+  const key = String(apiKey || '').trim();
+  if (!key) throw new Error('缺少 DeepSeek 密钥');
+  const messages = [
+    { role: 'system', content: LHB_SYSTEM },
+    { role: 'user', content: facts },
+  ];
+  const preferred = modelPref === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash';
+  const attempts =
+    preferred === 'deepseek-v4-pro'
+      ? [
+          { model: 'deepseek-v4-pro', thinking: { type: 'disabled' } },
+          { model: 'deepseek-flash', thinking: { type: 'disabled' } },
+          { model: 'deepseek-chat' },
+        ]
+      : [
+          { model: 'deepseek-flash', thinking: { type: 'disabled' } },
+          { model: 'deepseek-chat' },
+        ];
+  let json = null;
+  let used = 'deepseek-flash';
+  let lastErr = null;
+  for (const attempt of attempts) {
+    try {
+      json = await postDeepseek(key, {
+        model: attempt.model,
+        temperature: 0.2,
+        response_format: { type: 'json_object' },
+        messages,
+        ...(attempt.thinking ? { thinking: attempt.thinking } : {}),
+      });
+      used = attempt.model;
+      break;
+    } catch (e) {
+      lastErr = e;
+      if (/401|invalid|api key|密钥/i.test(String(e?.message || ''))) throw e;
+    }
+  }
+  if (!json) throw lastErr || new Error('DeepSeek 分析失败');
+  const report = JSON.parse(json?.choices?.[0]?.message?.content || '{}');
+  const action = ['跟', '不跟', '只观察'].includes(report.action) ? report.action : '只观察';
+  return {
+    kind: 'lhb',
+    action,
+    summary: clip(report.summary, 700),
+    read: clip(report.read, 800),
+    risk: clip(report.risk, 300),
+    hold: clip(report.hold, 180),
+    follow: clip(report.follow, 180),
+    generatedAt: Date.now(),
+    source: used,
+  };
+}
+
 export async function askSeatReport(apiKey, facts, modelPref) {
   const key = String(apiKey || '').trim();
   if (!key) throw new Error('缺少 DeepSeek 密钥');
