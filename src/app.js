@@ -1356,7 +1356,12 @@ function renderFlowSummary() {
     bit('大单', fmtYi(s?.large), tone(s?.large), ' 亿'),
     bit('上涨', up ?? '—', 'text-up'),
     bit('下跌', down ?? '—', 'text-down'),
-    bit('北向', fmtYi(nb?.last), tone(nb?.last), ' 亿'),
+    bit(
+      nb?.metric === 'deal' ? '北向成交' : '北向',
+      fmtYi(nb?.last),
+      tone(nb?.metric === 'deal' ? 1 : nb?.last),
+      ' 亿',
+    ),
   ].join('');
   const flowTitle = $('flow-asof');
   if (flowTitle) flowTitle.textContent = day ? day : '';
@@ -1364,7 +1369,18 @@ function renderFlowSummary() {
     $('zd-summary').innerHTML = `${day ? `${esc(day)} · ` : ''}涨 <span class="text-up font-semibold">${zd.up}</span> / 跌 <span class="text-down font-semibold">${zd.down}</span>`;
   }
   if (nb) {
-    $('nb-summary').innerHTML = `${nb.date ? `${esc(nb.date)} · ` : ''}净流入 <span class="font-semibold ${tone(nb.last)}">${fmtYi(nb.last)} 亿</span>`;
+    const nbLabel = nb.metric === 'deal' ? '成交额' : '净流入';
+    const nbHint = nb.note ? ` title="${esc(nb.note)}"` : '';
+    $('nb-summary').innerHTML = `${nb.date ? `${esc(nb.date)} · ` : ''}${nbLabel} <span class="font-semibold ${tone(nb.metric === 'deal' ? 1 : nb.last)}"${nbHint}>${fmtYi(nb.last)} 亿</span>`;
+  }
+  const nbExplain = $('nb-explain');
+  if (nbExplain) {
+    nbExplain.textContent =
+      nb?.metric === 'deal'
+        ? '北向实时净流入已停披。下图为近几日北向成交额（亿元），反映外资通道活跃度，不是净买入。'
+        : nb?.grain === 'day'
+          ? '北向日频净流入（亿元）。分时实时披露已停，按交易日刷新。'
+          : '北向资金：外资经沪股通/深股通净买入，偏风险偏好与流动性参考。';
   }
   renderMarketTone();
 }
@@ -1869,7 +1885,7 @@ async function runPredictAi() {
   state.predictRunning = true;
   renderPredictView();
   try {
-    if (!state.center?.overview) await loadDataCenter().catch(() => {});
+    await prepareMarketAiFacts();
     if (!state.center?.flow) {
       try {
         const f = await fetchMarketMoneyFlow();
@@ -1893,6 +1909,9 @@ async function runPredictAi() {
     const lastClose = Number(last?.close);
     const lastDate = String(points.at(-1)?.date || shYmd(new Date()));
     const clock = marketClock();
+    const cnSession = getMarketSession('CN');
+    const usSession = getMarketSession('US');
+    const includeUs = shouldIncludeUsFacts();
     const s = state.center?.flow?.summary;
     const flow = s
       ? `主力 ${fmtYi(s.main)} 亿，超大单 ${fmtYi(s.huge)} 亿。涨跌家 ${state.center?.updown?.up ?? '—'}/${state.center?.updown?.down ?? '—'}`
@@ -1913,6 +1932,10 @@ async function runPredictAi() {
       .slice(0, 4)
       .map((m) => `${m.name || m.theme} ${m.tag || ''}`)
       .join('；');
+    const sessionNote =
+      includeUs && cnSession.key !== 'open'
+        ? `\n大A已${cnSession.label}，美股${usSession.label}。推演下一交易日时要用美股主题与外盘映射。`
+        : '';
     const pack = await askPredictPack(
       apiKey,
       buildPredictFacts({
@@ -1923,7 +1946,13 @@ async function runPredictAi() {
         flow,
         flowSeries,
         mains,
-        clock: clock.line,
+        usBoards: includeUs
+          ? (state.pulseBoards?.US || []).filter((b) => Number.isFinite(Number(b.changePct)))
+          : [],
+        overnight: includeUs ? state.trend?.overnight || [] : [],
+        usSession: `${usSession.label}（${usSession.key}）`,
+        ashareSession: `${cnSession.label}（${cnSession.key}）`,
+        clock: `${clock.line}${sessionNote}`,
       }),
       state.settings?.aiModel,
     );
@@ -2903,10 +2932,7 @@ async function runMarketAi() {
   syncMarketAiBtn();
   openReportDrawer({ filter: 'market' });
   try {
-    if (!state.center?.overview) await loadDataCenter().catch(() => {});
-    if (!state.trend?.brief) await loadTrendSheet();
-    const ready = (state.pulseBoards?.CN || []).filter((b) => Number.isFinite(Number(b.changePct)));
-    if (ready.length < 3) await refreshPulse();
+    await prepareMarketAiFacts();
     const report = await askMarketReport(apiKey, marketFacts(), state.settings?.aiModel);
     const saved = await pushReport({
       ...report,
@@ -3520,22 +3546,59 @@ function renderTrend() {
     <p class="trend-foot">公开数据粗判，不构成投资建议。AI 不会自动跑，只有你点「AI 解读盘况」或顶部「大盘分析」。</p>`;
 }
 
+function shouldIncludeUsFacts() {
+  const cn = getMarketSession('CN');
+  const us = getMarketSession('US');
+  // A股非盘中（收盘/休市/盘后），或美股处于盘前/盘中/盘后夜盘时，分析应带上美股
+  if (cn.key !== 'open') return true;
+  return us.key === 'pre' || us.key === 'open' || us.key === 'post';
+}
+
 function marketFacts(extra = '') {
   const clock = marketClock();
   const calendar = marketCalendarFacts(new Date(), {
     indices: state.indices || [],
     center: state.center,
   });
+  const cnSession = getMarketSession('CN');
+  const usSession = getMarketSession('US');
+  const includeUs = shouldIncludeUsFacts();
+  const usBoards = includeUs
+    ? (state.pulseBoards?.US || []).filter((b) => Number.isFinite(Number(b.changePct)))
+    : [];
+  const overnight = includeUs ? state.trend?.overnight || [] : [];
+  const sessionExtra =
+    includeUs && cnSession.key !== 'open'
+      ? `\n当前大A为「${cnSession.label}」，美股为「${usSession.label}」。分析下一交易日时必须使用给出的美股主题与外盘映射，不要只复述已收盘的A股板块排名。`
+      : '';
   return buildMarketFacts({
     indices: state.indices || [],
     center: state.center,
     boards: (state.pulseBoards?.CN || []).filter((b) => Number.isFinite(Number(b.changePct))),
+    usBoards,
+    overnight,
+    usSession: `${usSession.label}（${usSession.key}）`,
+    ashareSession: `${cnSession.label}（${cnSession.key}）`,
     tape: judgeTape(state.center)?.label || '',
     prior: priorContext((r) => r.kind === 'market'),
     sheet: state.trend?.brief || '',
-    clock: `${clock.line}${extra}`,
+    clock: `${clock.line}${sessionExtra}${extra}`,
     calendar: calendar.text,
   });
+}
+
+/** 分析前刷新资金中心与美股盘况，避免吃到开机时的旧快照 */
+async function prepareMarketAiFacts() {
+  await loadDataCenter().catch(() => {});
+  const needUs = shouldIncludeUsFacts();
+  const usReady = (state.pulseBoards?.US || []).filter((b) => Number.isFinite(Number(b.changePct)));
+  const cnReady = (state.pulseBoards?.CN || []).filter((b) => Number.isFinite(Number(b.changePct)));
+  if (cnReady.length < 3 || (needUs && usReady.length < 3)) {
+    await refreshPulse().catch(() => {});
+  }
+  if (!state.trend?.brief || (needUs && !(state.trend?.overnight || []).length)) {
+    await loadTrendSheet(true).catch(() => {});
+  }
 }
 
 function slotNote(slot) {
@@ -3548,11 +3611,11 @@ async function runTrendAi(opts = {}) {
   if (state.trendAiRunning) return false;
   const apiKey = await ensureDeepseekKey();
   if (!apiKey) return false;
-  if (!state.trend) await loadTrendSheet();
   state.trendAiRunning = true;
   state.trendAiError = '';
   renderTrend();
   try {
+    await prepareMarketAiFacts();
     // 解读前尽量刷新龙虎榜，未出则在 facts 里照实写
     await refreshLhbSeats().catch(() => false);
     const clock = marketClock();
@@ -3970,11 +4033,11 @@ async function refreshAll() {
   renderStatus();
   els.refreshBtn.classList.add('animate-spin');
   try {
-    const tasks = [refreshIndices(), refreshQuotes(), loadTrendSheet()];
+    const tasks = [refreshIndices(), refreshQuotes(), loadTrendSheet(), loadDataCenter()];
     if (state.view === 'pulse') tasks.push(refreshPulse());
     await Promise.all(tasks);
     if (state.view === 'data') {
-      await Promise.all([loadDataCenter(), loadBoards(), loadRank()]);
+      await Promise.all([loadBoards(), loadRank()]);
     }
     if (state.detail && state.period !== 'week' && state.period !== 'month') {
       if (state.detail.kind === 'fund') await openDetail(state.detail);

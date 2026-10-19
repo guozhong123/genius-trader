@@ -261,7 +261,9 @@ function riskOffLine(indices, center) {
   const zd = center?.updown;
   const weakTape = zd && Number(zd.down) > Number(zd.up) * 1.25;
   const nb = Number(center?.northbound?.last);
-  const outflow = Number.isFinite(nb) && nb <= -30;
+  // 成交额不是净流入，不能当避险流出信号
+  const outflow =
+    center?.northbound?.metric !== 'deal' && Number.isFinite(nb) && nb <= -30;
   let score = 0;
   if (soft.length >= 2) score += 1;
   if (goldUp) score += 1;

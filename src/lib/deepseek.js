@@ -238,7 +238,7 @@ export function buildStockFacts({
     `本地粗判：${intent?.label || '—'}。${intent?.detail || ''}`,
     days.length ? `近5日主力合计 ${signed(main5)} 亿。逐日：\n${dayLines}` : '近几日主力拆单：未提供（港美韩或接口无数据时不要编造）',
     `大盘：${idx || '暂无'}`,
-    `两市成交 ${num(ov?.amountYi)} 亿，涨 ${zd?.up ?? '—'} 家，跌 ${zd?.down ?? '—'} 家，涨停 ${zd?.limitUp ?? '—'}，跌停 ${zd?.limitDown ?? '—'}，北向 ${signed(nb?.last)} 亿，两市主力 ${signed(mktFlow?.main)} 亿`,
+    `两市成交 ${num(ov?.amountYi)} 亿，涨 ${zd?.up ?? '—'} 家，跌 ${zd?.down ?? '—'} 家，涨停 ${zd?.limitUp ?? '—'}，跌停 ${zd?.limitDown ?? '—'}，${nb?.metric === 'deal' ? '北向成交额' : '北向净流入'} ${signed(nb?.last)} 亿${nb?.date ? `（${nb.date}）` : ''}，两市主力 ${signed(mktFlow?.main)} 亿`,
     tape ? `今天环境：${tape}` : '',
     formatLhb(lhb),
     related ? `个股相关资讯（只许引用这些）：\n${related}` : '个股相关资讯：未检索到。不要用常识补新闻。',
@@ -393,8 +393,9 @@ const MARKET_SYSTEM = [
   '短线要跟当天最强、主力还在进的方向，已经大涨的板块写明是接力还是不宜再追。',
   '环境差时 action 用「今天不做」。环境一般用「只做最强」。环境好且有明确主线才用「做多」。',
   '必须用给出的星期、是否节前/节后/周五、避险情绪。节前红盘只是历史倾向，和今天涨跌家数冲突时以今天为准，禁止写成必涨。',
-  '避险要黄金、外盘权益、跌家、北向至少两项一起才写避险偏强。只有黄金涨，写成线索不够。',
+  '避险要黄金、外盘权益、跌家、北向至少两项一起才写避险偏强。只有黄金涨，写成线索不够。北向若标注的是成交额而不是净流入，不要把成交额当成流出/流入信号。',
   '周五默认不建议隔夜。长假前一天可以有冲高，但尾盘写成宜兑现，不新开隔夜重仓。节后第一天不追高开。',
+  '若事实里写了美股主题涨跌或「大A已收盘/休市」，重点用美股与外盘→大A映射推演下一交易日，不要假装A股还在盘中。',
   '若有前几天的大盘报告，consistency 说明主线有没有切换。',
   '事实里的北京时间和「下一交易日」日期必须原样使用。不要只写明天、隔夜。',
   'hold 是手里的票今天整体怎么处理，一句。follow 是跟着主力做哪一个方向、不跟哪些，一句。这是用户最后要看的。',
@@ -409,7 +410,41 @@ const MARKET_SYSTEM = [
   '"follow":"跟主力做哪个方向，一句"}',
 ].join('');
 
-export function buildMarketFacts({ indices, center, boards, tape, prior, sheet, clock, calendar }) {
+function formatBoardRanks(boards, limitTop = 8, limitBottom = 5) {
+  const ranked = [...(boards || [])].filter((b) => Number.isFinite(Number(b.changePct)));
+  ranked.sort((a, b) => Number(b.changePct) - Number(a.changePct));
+  const top = ranked.slice(0, limitTop).map((b) => `${b.name} ${signed(b.changePct)}%`).join('，');
+  const bottom = ranked.slice(-limitBottom).map((b) => `${b.name} ${signed(b.changePct)}%`).join('，');
+  return { top, bottom, count: ranked.length };
+}
+
+function formatOvernightRows(overnight) {
+  return (overnight || [])
+    .slice(0, 6)
+    .map((row) => {
+      const targets = (row.targets || [])
+        .slice(0, 3)
+        .map((t) => `${t.name} 今${signed(t.changePct)}%${t.tag ? `（${t.tag}）` : ''}`)
+        .join('、');
+      return `${row.from} ${signed(row.overseas)}% → ${targets || '无对应A股板块'}`;
+    })
+    .join('；');
+}
+
+export function buildMarketFacts({
+  indices,
+  center,
+  boards,
+  usBoards,
+  overnight,
+  usSession,
+  ashareSession,
+  tape,
+  prior,
+  sheet,
+  clock,
+  calendar,
+}) {
   const idx = (indices || [])
     .slice(0, 8)
     .map((x) => `${x.name || x.code} ${signed(x.changePct)}%`)
@@ -418,10 +453,16 @@ export function buildMarketFacts({ indices, center, boards, tape, prior, sheet, 
   const ov = center?.overview;
   const nb = center?.northbound;
   const flow = center?.flow?.summary;
-  const ranked = [...(boards || [])].filter((b) => Number.isFinite(Number(b.changePct)));
-  ranked.sort((a, b) => Number(b.changePct) - Number(a.changePct));
-  const top = ranked.slice(0, 8).map((b) => `${b.name} ${signed(b.changePct)}%`).join('，');
-  const bottom = ranked.slice(-5).map((b) => `${b.name} ${signed(b.changePct)}%`).join('，');
+  const cn = formatBoardRanks(boards);
+  const us = formatBoardRanks(usBoards, 8, 5);
+  const overnightLine = formatOvernightRows(overnight);
+  const nbLabel = nb?.metric === 'deal' ? '北向成交额' : '北向净流入';
+  const sessionBits = [
+    ashareSession ? `大A时段 ${ashareSession}` : '',
+    usSession ? `美股时段 ${usSession}` : '',
+  ]
+    .filter(Boolean)
+    .join('；');
   const bjNow = new Intl.DateTimeFormat('zh-CN', {
     timeZone: 'Asia/Shanghai',
     hour12: false,
@@ -434,11 +475,15 @@ export function buildMarketFacts({ indices, center, boards, tape, prior, sheet, 
   return [
     `本机拉取事实的北京时间 ${bjNow}。以下指数/涨跌家数/资金/板块均来自东财等公开接口，不是模型记忆。`,
     calendar || '',
+    sessionBits ? `时段：${sessionBits}` : '',
     `大盘：${idx || '暂无'}`,
     `环境：${tape || '未知'}`,
-    `两市成交 ${num(ov?.amountYi)} 亿，涨 ${zd?.up ?? '—'} 跌 ${zd?.down ?? '—'}，涨停 ${zd?.limitUp ?? '—'}，跌停 ${zd?.limitDown ?? '—'}，北向 ${signed(nb?.last)} 亿，两市主力 ${signed(flow?.main)} 亿`,
-    top ? `大A板块涨幅靠前：${top}` : '大A板块：未取到',
-    bottom ? `大A板块涨幅靠后：${bottom}` : '',
+    `两市成交 ${num(ov?.amountYi)} 亿，涨 ${zd?.up ?? '—'} 跌 ${zd?.down ?? '—'}，涨停 ${zd?.limitUp ?? '—'}，跌停 ${zd?.limitDown ?? '—'}，${nbLabel} ${signed(nb?.last)} 亿${nb?.date ? `（${nb.date}）` : ''}，两市主力 ${signed(flow?.main)} 亿`,
+    cn.top ? `大A板块涨幅靠前：${cn.top}` : '大A板块：未取到',
+    cn.bottom ? `大A板块涨幅靠后：${cn.bottom}` : '',
+    us.top ? `美股主题涨幅靠前：${us.top}` : '',
+    us.bottom ? `美股主题涨幅靠后：${us.bottom}` : '',
+    overnightLine ? `外盘→大A映射：${overnightLine}` : '',
     prior ? `近5日大盘报告（对照，以今天板块涨跌为准）：\n${prior}` : '近5日没有大盘报告。',
     sheet ? `顺势纸（外盘只是线索，跌家占优时降权；已经大涨的写不宜再追）：\n${sheet}` : '',
     clock || '',
@@ -977,7 +1022,8 @@ async function askJson(apiKey, system, facts, modelPref, temperature = 0.25) {
 const PREDICT_SYSTEM = [
   FACTS_GROUNDING,
   '你是个人A股短线参谋，专做「情景推演」：例如早盘急跌几个点、下午修复到翻红（类似做T/低吸）。',
-  '只根据用户给出的指数日K、涨跌家数、主力资金、主线。禁止编造未提供的现价和新闻。',
+  '只根据用户给出的指数日K、涨跌家数、主力资金、主线、美股主题。禁止编造未提供的现价和新闻。',
+  '若大A已收盘且给出了美股主题涨跌，推演下一交易日时要把美股强弱写进 summary/scenarios，不要忽略外盘。',
   'forecastBars 必须正好 5 根，每根相对「上一根收盘」的开高低收涨跌幅（百分比小数，如 -0.8 表示跌 0.8%）。',
   'pctHigh ≥ max(pctOpen,pctClose)，pctLow ≤ min(pctOpen,pctClose)。幅度要克制，单日 |pctClose| 一般不超过 2.5。',
   'forecastFlow 必须给出后续交易时段的「主力净流入（亿元）」推演曲线，大约 12～16 个点。',
@@ -991,7 +1037,20 @@ const PREDICT_SYSTEM = [
   '"forecastFlow":[{"time":"09:35","main":0.0}]}',
 ].join('');
 
-export function buildPredictFacts({ indexName, lastClose, recentBars, tape, flow, flowSeries, mains, clock }) {
+export function buildPredictFacts({
+  indexName,
+  lastClose,
+  recentBars,
+  tape,
+  flow,
+  flowSeries,
+  mains,
+  usBoards,
+  overnight,
+  usSession,
+  ashareSession,
+  clock,
+}) {
   const bars = (recentBars || [])
     .slice(-20)
     .map(
@@ -1003,13 +1062,25 @@ export function buildPredictFacts({ indexName, lastClose, recentBars, tape, flow
     .slice(-20)
     .map((p) => `${p.time} 主力${num(p.main)}亿`)
     .join('；');
+  const us = formatBoardRanks(usBoards, 8, 4);
+  const overnightLine = formatOvernightRows(overnight);
+  const sessionBits = [
+    ashareSession ? `大A ${ashareSession}` : '',
+    usSession ? `美股 ${usSession}` : '',
+  ]
+    .filter(Boolean)
+    .join('；');
   return [
     clock || '',
+    sessionBits ? `时段：${sessionBits}` : '',
     `指数 ${indexName || '上证指数'} 最近收盘 ${num(lastClose)}。`,
     tape ? `市场情绪：${tape}` : '',
     flow || '',
     flowPts ? `今日主力分时（抽样，单位亿）：${flowPts}` : '今日主力分时未提供。',
     mains ? `主线线索：${mains}` : '',
+    us.top ? `美股主题涨幅靠前：${us.top}` : '',
+    us.bottom ? `美股主题涨幅靠后：${us.bottom}` : '',
+    overnightLine ? `外盘→大A：${overnightLine}` : '',
     '近20根日K（只许用这些数字推演未来5根）：',
     bars || '日K未提供。',
     '请给出：1) 做T/低吸情景 2) 未来5个交易日预测K 3) 后续主力资金分时推演 forecastFlow。',

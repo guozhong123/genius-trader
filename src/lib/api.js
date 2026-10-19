@@ -1370,31 +1370,182 @@ export async function fetchUpDownDistribution() {
   };
 }
 
-/** 北向资金分时（亿元） */
-export async function fetchNorthbound() {
-  const url =
-    'https://push2.eastmoney.com/api/qt/kamt.rtmin/get?fields1=f1,f2,f3,f4&fields2=f51,f52,f53,f54,f55,f56';
-  const res = await fetch(url);
-  const json = await res.json();
+function shanghaiYmd(ts = Date.now()) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(ts);
+}
+
+function dayGapYmd(a, b) {
+  const [y1, m1, d1] = String(a).split('-').map(Number);
+  const [y2, m2, d2] = String(b).split('-').map(Number);
+  if (![y1, m1, d1, y2, m2, d2].every(Number.isFinite)) return Infinity;
+  return Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86400000);
+}
+
+/** 分时序列是否像失效数据（额度常量/全零/几乎无变化） */
+function isBogusNorthboundIntraday(net) {
+  if (!net?.length) return true;
+  const vals = net.map(Number).filter(Number.isFinite);
+  if (vals.length < 8) return true;
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  if (max - min < 0.2) return true;
+  // 额度余额常被误当成净流入，整天贴在 ~0.05 亿附近
+  const nearQuota = vals.filter((v) => Math.abs(v) > 0.01 && Math.abs(v) < 0.2).length;
+  if (nearQuota / vals.length > 0.85) return true;
+  return false;
+}
+
+function parseNorthboundRtmin(json) {
   const s2n = json?.data?.s2n || [];
   const times = [];
   const net = [];
   for (const line of s2n) {
     const p = String(line).split(',');
     times.push(p[0]);
-    // 常见字段：时间,沪股通净流入,深股通净流入,... 单位元
+    // 历史字段：时间,沪股通净流入,深股通净流入,... 单位元。披露暂停后常变成额度余额。
     const hu = Number(p[1] || 0);
     const shen = Number(p[2] || 0);
     net.push(+((hu + shen) / 1e8).toFixed(2));
   }
   const rawDate = String(json?.data?.s2nDate || '');
-  const date = /^\d{2}-\d{2}$/.test(rawDate) ? `${new Date().getFullYear()}-${rawDate}` : rawDate;
+  const today = shanghaiYmd();
+  const date = /^\d{2}-\d{2}$/.test(rawDate)
+    ? `${today.slice(0, 4)}-${rawDate}`
+    : /^\d{4}-\d{2}-\d{2}$/.test(rawDate)
+      ? rawDate
+      : rawDate;
+  if (isBogusNorthboundIntraday(net)) return null;
   return {
     date,
     times,
     net,
     last: net.length ? net[net.length - 1] : 0,
+    metric: 'net',
+    grain: 'minute',
+    label: '净流入',
+    note: '北向分时净流入（亿元）',
   };
+}
+
+/** 近几日北向净流入（万元→亿元）。披露暂停后可能停在旧日期。 */
+async function fetchNorthboundNetDaily(limit = 30) {
+  const url =
+    'https://datacenter-web.eastmoney.com/api/data/v1/get?' +
+    `sortColumns=TRADE_DATE&sortTypes=-1&pageSize=${limit}&pageNumber=1` +
+    '&reportName=RPT_MUTUAL_NETINFLOW_DETAILS&columns=ALL' +
+    '&filter=(DIRECTION_TYPE%3D%221%22)(TIME_TYPE%3D%224%22)' +
+    `&source=WEB&client=WEB&_=${Date.now()}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+  if (!res.ok) return null;
+  const rows = (await res.json())?.result?.data || [];
+  if (!rows.length) return null;
+  const asc = [...rows].reverse();
+  const times = [];
+  const net = [];
+  for (const row of asc) {
+    const day = String(row.TRADE_DATE || '').slice(0, 10);
+    const both = Number(row.NET_INFLOW_BOTH);
+    if (!day || !Number.isFinite(both)) continue;
+    times.push(day.slice(5));
+    net.push(+(both / 10000).toFixed(2)); // 万元 → 亿元
+  }
+  if (!times.length) return null;
+  const date = String(rows[0].TRADE_DATE || '').slice(0, 10);
+  return {
+    date,
+    times,
+    net,
+    last: net[net.length - 1],
+    metric: 'net',
+    grain: 'day',
+    label: '净流入',
+    note: '北向日净流入（亿元；实时分时已停披，用日频）',
+  };
+}
+
+/** 近几日北向成交额（万元→亿元）。净流入停披后仍会更新。 */
+async function fetchNorthboundDealDaily(limit = 30) {
+  const url =
+    'https://datacenter-web.eastmoney.com/api/data/v1/get?' +
+    `sortColumns=TRADE_DATE&sortTypes=-1&pageSize=${limit}&pageNumber=1` +
+    '&reportName=RPT_MUTUAL_DEALAMT&columns=ALL' +
+    `&source=WEB&client=WEB&_=${Date.now()}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+  if (!res.ok) return null;
+  const rows = (await res.json())?.result?.data || [];
+  if (!rows.length) return null;
+  const asc = [...rows].reverse();
+  const times = [];
+  const net = [];
+  for (const row of asc) {
+    const day = String(row.TRADE_DATE || '').slice(0, 10);
+    const amt = Number(row.NF_DEAL_AMT);
+    if (!day || !Number.isFinite(amt)) continue;
+    times.push(day.slice(5));
+    net.push(+(amt / 10000).toFixed(2)); // 万元 → 亿元
+  }
+  if (!times.length) return null;
+  const date = String(rows[0].TRADE_DATE || '').slice(0, 10);
+  return {
+    date,
+    times,
+    net,
+    last: net[net.length - 1],
+    metric: 'deal',
+    grain: 'day',
+    label: '成交额',
+    note: '北向成交额（亿元；净流入实时披露已停，改看成交活跃度）',
+  };
+}
+
+/**
+ * 北向资金（亿元）。
+ * 优先有效分时净流入；否则若日净流入仍较新则用日频净流入；
+ * 再否则用近几日北向成交额（停披后仍更新）。
+ */
+export async function fetchNorthbound() {
+  const rtUrls = [
+    `https://push2.eastmoney.com/api/qt/kamt.rtmin/get?fields1=f1,f2,f3,f4&fields2=f51,f52,f53,f54,f55,f56&_=${Date.now()}`,
+    `https://push2his.eastmoney.com/api/qt/kamt.rtmin/get?fields1=f1,f2,f3,f4&fields2=f51,f52,f53,f54,f55,f56&_=${Date.now()}`,
+  ];
+  for (const url of rtUrls) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(7000) });
+      if (!res.ok) continue;
+      const parsed = parseNorthboundRtmin(await res.json());
+      if (parsed) return parsed;
+    } catch {
+      /* next */
+    }
+  }
+
+  let netDaily = null;
+  let dealDaily = null;
+  try {
+    netDaily = await fetchNorthboundNetDaily();
+  } catch {
+    /* optional */
+  }
+  try {
+    dealDaily = await fetchNorthboundDealDaily();
+  } catch {
+    /* optional */
+  }
+
+  const today = shanghaiYmd();
+  // 日净流入若距「成交额最新日」或今天不超过约两周，仍可作为净流入参考
+  if (netDaily?.date) {
+    const anchor = dealDaily?.date || today;
+    if (dayGapYmd(netDaily.date, anchor) <= 14) return netDaily;
+  }
+  if (dealDaily) return dealDaily;
+  if (netDaily) {
+    return {
+      ...netDaily,
+      note: `${netDaily.note}；最新仅到 ${netDaily.date}，实时已停披`,
+    };
+  }
+  return null;
 }
 
 function pointsFromOhlc(rows) {
