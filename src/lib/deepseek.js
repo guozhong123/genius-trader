@@ -932,3 +932,206 @@ export async function askForceOutlook(apiKey, facts) {
     soft,
   };
 }
+
+async function askJson(apiKey, system, facts, modelPref, temperature = 0.25) {
+  const key = String(apiKey || '').trim();
+  if (!key) throw new Error('缺少 DeepSeek 密钥');
+  const preferred = modelPref === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash';
+  const attempts =
+    preferred === 'deepseek-v4-pro'
+      ? [
+          { model: 'deepseek-v4-pro', thinking: { type: 'disabled' } },
+          { model: 'deepseek-flash', thinking: { type: 'disabled' } },
+          { model: 'deepseek-chat' },
+        ]
+      : [
+          { model: 'deepseek-flash', thinking: { type: 'disabled' } },
+          { model: 'deepseek-chat' },
+        ];
+  let json = null;
+  let used = preferred;
+  let lastErr = null;
+  for (const attempt of attempts) {
+    try {
+      json = await postDeepseek(key, {
+        model: attempt.model,
+        temperature,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: facts },
+        ],
+        ...(attempt.thinking ? { thinking: attempt.thinking } : {}),
+      });
+      used = attempt.model;
+      break;
+    } catch (e) {
+      lastErr = e;
+      if (/401|invalid|api key|密钥/i.test(String(e?.message || ''))) throw e;
+    }
+  }
+  if (!json) throw lastErr || new Error('DeepSeek 分析失败');
+  return { report: JSON.parse(json?.choices?.[0]?.message?.content || '{}'), source: used };
+}
+
+const PREDICT_SYSTEM = [
+  FACTS_GROUNDING,
+  '你是个人A股短线参谋，专做「情景推演」：例如早盘急跌几个点、下午修复到翻红（类似做T/低吸）。',
+  '只根据用户给出的指数日K、涨跌家数、主力资金、主线。禁止编造未提供的现价和新闻。',
+  'forecastBars 必须正好 5 根，每根相对「上一根收盘」的开高低收涨跌幅（百分比小数，如 -0.8 表示跌 0.8%）。',
+  'pctHigh ≥ max(pctOpen,pctClose)，pctLow ≤ min(pctOpen,pctClose)。幅度要克制，单日 |pctClose| 一般不超过 2.5。',
+  'scenarios 写 2～4 个可执行情景（做T、低吸、空仓等），trigger/action/exit 各一句。',
+  '禁止承诺收益。输出严格 JSON：',
+  '{"summary":"两到三句总看法",',
+  '"ta":{"scenario":"主情景名","advice":"怎么做","buyZone":"买点","sellZone":"卖点","avoid":"别做什么"},',
+  '"scenarios":[{"title":"","trigger":"","action":"","exit":""}],',
+  '"forecastBars":[{"pctOpen":0,"pctHigh":0,"pctLow":0,"pctClose":0,"note":"一句"}]}',
+].join('');
+
+export function buildPredictFacts({ indexName, lastClose, recentBars, tape, flow, mains, clock }) {
+  const bars = (recentBars || [])
+    .slice(-20)
+    .map(
+      (p) =>
+        `${p.date} 开${num(p.open)} 高${num(p.high)} 低${num(p.low)} 收${num(p.close)} 涨跌${signed(p.changePct)}%`,
+    )
+    .join('\n');
+  return [
+    clock || '',
+    `指数 ${indexName || '上证指数'} 最近收盘 ${num(lastClose)}。`,
+    tape ? `市场情绪：${tape}` : '',
+    flow || '',
+    mains ? `主线线索：${mains}` : '',
+    '近20根日K（只许用这些数字推演未来5根）：',
+    bars || '日K未提供。',
+    '请给出做T/低吸情景，以及未来5个交易日的预测K涨跌幅。',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+export async function askPredictPack(apiKey, facts, modelPref) {
+  const { report, source } = await askJson(apiKey, PREDICT_SYSTEM, facts, modelPref, 0.3);
+  const scenarios = (Array.isArray(report.scenarios) ? report.scenarios : [])
+    .map((row) => ({
+      title: clip(row?.title, 40),
+      trigger: clip(row?.trigger, 120),
+      action: clip(row?.action, 160),
+      exit: clip(row?.exit, 120),
+    }))
+    .filter((row) => row.title || row.action)
+    .slice(0, 4);
+  const forecastBars = (Array.isArray(report.forecastBars) ? report.forecastBars : [])
+    .slice(0, 5)
+    .map((row) => ({
+      pctOpen: Number(row?.pctOpen),
+      pctHigh: Number(row?.pctHigh),
+      pctLow: Number(row?.pctLow),
+      pctClose: Number(row?.pctClose),
+      note: clip(row?.note, 40),
+    }))
+    .filter(
+      (row) =>
+        Number.isFinite(row.pctOpen) &&
+        Number.isFinite(row.pctHigh) &&
+        Number.isFinite(row.pctLow) &&
+        Number.isFinite(row.pctClose),
+    );
+  const ta = report.ta && typeof report.ta === 'object' ? report.ta : {};
+  return {
+    kind: 'predict',
+    summary: clip(report.summary, 500),
+    ta: {
+      scenario: clip(ta.scenario, 40),
+      advice: clip(ta.advice, 280),
+      buyZone: clip(ta.buyZone, 120),
+      sellZone: clip(ta.sellZone, 120),
+      avoid: clip(ta.avoid, 160),
+    },
+    scenarios,
+    forecastBars,
+    generatedAt: Date.now(),
+    source,
+  };
+}
+
+const SIM_SYSTEM = [
+  FACTS_GROUNDING,
+  '你是「AI 模拟盘」操盘手：用虚拟本金买卖 A 股，给出清晰下单计划。',
+  '优先考虑用户持仓里的股票（可做T、加减仓）；也可以从自选/候选里另选。单票仓位建议不超过总资产三成。',
+  '只能用事实里的现价。禁止编造行情。现金不够就不要买。已有仓位才能卖。',
+  '每笔写清：买/卖、代码、价格（用现价附近）、手数（1手=100股）、计划何时买、拿到何时卖、为什么。',
+  '今天最多 4 笔订单。若看空可空仓、只输出空数组。禁止承诺收益。',
+  '输出严格 JSON：',
+  '{"note":"今天操盘思路两到四句",',
+  '"orders":[{"side":"buy|sell","code":"六位代码","name":"名称","market":"SH|SZ|BJ",',
+  '"price":现价附近小数,"lots":整数手数,"planBuy":"预计何时/什么价买",',
+  '"planSell":"预计何时/什么价卖","holdUntil":"拿到什么时候","why":"为什么买或卖"}]}',
+].join('');
+
+export function buildSimFacts({ book, holdings, candidates, tape, clock }) {
+  const pos = (book?.positions || [])
+    .map(
+      (p) =>
+        `模拟仓 ${p.name} ${p.code} ${p.market || ''} 成本${num(p.avgCost)} 现价参考${num(p.mark)} 股数${p.shares} 浮盈参考${num(p.unrealized)}元`,
+    )
+    .join('\n');
+  const hold = (holdings || [])
+    .map(
+      (h) =>
+        `用户持仓 ${h.name} ${h.code} ${h.market || ''} 成本${num(h.cost)} 现价${num(h.price)} 涨跌${signed(h.changePct)}% 手数${num(h.lots, 1)}`,
+    )
+    .join('\n');
+  const cand = (candidates || [])
+    .map((c) => `候选 ${c.name} ${c.code} ${c.market || ''} 现价${num(c.price)} 涨跌${signed(c.changePct)}%`)
+    .join('\n');
+  return [
+    clock || '',
+    tape ? `大盘情绪：${tape}` : '',
+    `模拟账本：初始本金 ${num(book?.capital, 0)} 元，现金 ${num(book?.cash, 0)} 元，已实现盈亏 ${num(book?.realizedPnl, 0)} 元。`,
+    pos || '模拟仓：空仓。',
+    hold || '用户持仓：无（可从候选里选）。',
+    cand || '候选：无。',
+    '请给出今天最多4笔模拟买卖。价格必须贴近给出的现价。',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+export async function askSimOrders(apiKey, facts, modelPref) {
+  const { report, source } = await askJson(apiKey, SIM_SYSTEM, facts, modelPref, 0.25);
+  const orders = (Array.isArray(report.orders) ? report.orders : [])
+    .map((row) => {
+      const side = row?.side === 'sell' ? 'sell' : row?.side === 'buy' ? 'buy' : '';
+      const code = String(row?.code || '')
+        .replace(/\D/g, '')
+        .slice(-6);
+      const lots = Math.max(0, Math.round(Number(row?.lots) || 0));
+      const price = Number(row?.price);
+      if (!side || !code || !(lots > 0) || !(price > 0)) return null;
+      let market = String(row?.market || '').toUpperCase();
+      if (!['SH', 'SZ', 'BJ'].includes(market)) {
+        market = code.startsWith('6') ? 'SH' : code.startsWith('4') || code.startsWith('8') ? 'BJ' : 'SZ';
+      }
+      return {
+        side,
+        code,
+        name: clip(row?.name || code, 20),
+        market,
+        price: +price.toFixed(2),
+        lots,
+        planBuy: clip(row?.planBuy, 80),
+        planSell: clip(row?.planSell, 80),
+        holdUntil: clip(row?.holdUntil, 60),
+        why: clip(row?.why, 160),
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 4);
+  return {
+    note: clip(report.note, 500),
+    orders,
+    generatedAt: Date.now(),
+    source,
+  };
+}

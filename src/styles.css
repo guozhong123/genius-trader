@@ -253,10 +253,33 @@
   }
 
   .top-toolbar {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: 260px minmax(0, 1fr) auto;
     align-items: center;
     gap: 0.5rem;
+  }
+
+  /* 搜索框固定宽度，切换 tab / 导航变宽时不再被挤扁或拉长 */
+  .top-search {
+    width: 260px;
+    max-width: 260px;
+    min-width: 0;
+    flex: none;
+  }
+
+  .top-nav {
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .top-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .top-nav .view-tab {
+    white-space: nowrap;
+    flex: 0 0 auto;
   }
 
   .news-dot {
@@ -479,7 +502,7 @@
       padding-bottom: max(24px, env(safe-area-inset-bottom));
     }
 
-    /* 搜索独占首行，避免被导航挤没 */
+    /* 搜索独占首行，避免被导航挤没；宽度仍拉满，不随 tab 抖动 */
     .top-toolbar {
       display: flex;
       flex-direction: column;
@@ -491,6 +514,7 @@
       order: -1;
       flex: none;
       width: 100%;
+      max-width: none;
       min-width: 0;
     }
 
@@ -1945,6 +1969,76 @@ button.pick-card {
   border-top: 1px solid color-mix(in oklab, var(--line) 80%, transparent);
 }
 
+.sim-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.sim-summary .sim-metric {
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: color-mix(in oklab, var(--line) 28%, transparent);
+}
+
+.sim-summary .sim-metric span {
+  display: block;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.sim-summary .sim-metric b {
+  display: block;
+  margin-top: 2px;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sim-row,
+.predict-card {
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  background: color-mix(in oklab, var(--line) 22%, transparent);
+}
+
+.sim-row:last-child,
+.predict-card:last-child {
+  margin-bottom: 0;
+}
+
+.sim-row-head,
+.predict-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 10px;
+  font-weight: 700;
+}
+
+.sim-row-meta,
+.predict-card p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.sim-side-buy {
+  color: var(--up);
+}
+
+.sim-side-sell {
+  color: var(--down);
+}
+
+@media (max-width: 700px) {
+  .sim-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 900px) {
   .market-tone {
     flex: 1 1 100%;
@@ -2082,6 +2176,7 @@ button.pick-card {
     order: -1;
     flex: none;
     width: 100%;
+    max-width: none;
     min-width: 0;
   }
 
