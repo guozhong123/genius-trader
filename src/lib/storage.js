@@ -88,7 +88,29 @@ export const DEFAULT_SETTINGS = {
    * { id, name, code, market, theme, tag, addedAt }
    */
   planPool: [],
+  /** AI 预测页最近一次结果（TA + 大盘预测K） */
+  predictPack: null,
+  /**
+   * AI 模拟盘账本
+   * { capital, cash, positions[], trades[], realizedPnl, note, updatedAt, lastRunAt }
+   */
+  simBook: null,
 };
+
+export const SIM_START_CASH = 100000;
+
+export function emptySimBook() {
+  return {
+    capital: SIM_START_CASH,
+    cash: SIM_START_CASH,
+    positions: [],
+    trades: [],
+    realizedPnl: 0,
+    note: '',
+    updatedAt: Date.now(),
+    lastRunAt: 0,
+  };
+}
 
 export async function getWatchlist() {
   const data = await chrome.storage.local.get(KEYS.watchlist);

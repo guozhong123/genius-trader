@@ -487,6 +487,105 @@ export function renderKlineChart(el, points, { markLine, title = '日K' } = {}) 
   return chart;
 }
 
+/**
+ * 真实日K + AI 预测K（预测段用半透明烛 + 竖线分隔）
+ * history: [{date,open,high,low,close}]
+ * forecast: 同上，date 已标好
+ */
+export function renderForecastKline(el, history, forecast, { title = '日K+预测' } = {}) {
+  if (!el) return;
+  const hist = history || [];
+  const fut = forecast || [];
+  if (!hist.length && !fut.length) return;
+  const chart = getChart(el);
+  const mute = axisMute();
+  const splitAt = hist.length ? hist.length - 1 : -1;
+  const dates = [...hist.map((p) => p.date), ...fut.map((p) => p.date)];
+  const ohlc = [
+    ...hist.map((p) => [p.open, p.close, p.low, p.high]),
+    ...fut.map((p) => [p.open, p.close, p.low, p.high]),
+  ];
+  const itemStyles = [
+    ...hist.map(() => ({
+      color: '#e11d48',
+      color0: '#059669',
+      borderColor: '#e11d48',
+      borderColor0: '#059669',
+    })),
+    ...fut.map(() => ({
+      color: 'rgba(14,165,233,0.55)',
+      color0: 'rgba(45,212,191,0.55)',
+      borderColor: '#0ea5e9',
+      borderColor0: '#2dd4bf',
+      borderWidth: 1.5,
+    })),
+  ];
+  chart.setOption({
+    animationDuration: 280,
+    legend: {
+      top: 0,
+      textStyle: { color: mute, fontSize: 11 },
+      data: [title],
+    },
+    grid: { left: 48, right: 16, top: 28, bottom: 48 },
+    tooltip: {
+      trigger: 'axis',
+      formatter(params) {
+        if (!params?.length) return '';
+        const idx = params[0].dataIndex;
+        const head = params[0].axisValueLabel || '';
+        const tag = idx > splitAt ? '（预测）' : '';
+        const [open, close, low, high] = ohlc[idx] || [];
+        const fmt = (v) => (v == null || Number.isNaN(Number(v)) ? '—' : Number(v).toFixed(2));
+        const note = idx > splitAt ? fut[idx - hist.length]?.note || '' : '';
+        return [
+          `${head}${tag}`,
+          `开 ${fmt(open)} 收 ${fmt(close)}`,
+          `低 ${fmt(low)} 高 ${fmt(high)}`,
+          note ? `说明 ${note}` : '',
+        ]
+          .filter(Boolean)
+          .join('<br/>');
+      },
+    },
+    dataZoom: [{ type: 'inside' }, { type: 'slider', height: 18, bottom: 8 }],
+    xAxis: {
+      type: 'category',
+      data: dates,
+      axisLabel: {
+        color: mute,
+        fontSize: 10,
+        formatter: (v, idx) => (idx > splitAt ? `{pred|${v}}` : v),
+        rich: { pred: { color: '#0ea5e9', fontWeight: 600 } },
+      },
+      axisLine: { lineStyle: { color: splitLine() } },
+    },
+    yAxis: {
+      type: 'value',
+      scale: true,
+      splitLine: { lineStyle: { color: splitLine() } },
+      axisLabel: { color: mute, fontSize: 10 },
+    },
+    series: [
+      {
+        name: title,
+        type: 'candlestick',
+        data: ohlc.map((v, i) => ({ value: v, itemStyle: itemStyles[i] })),
+        markLine:
+          splitAt >= 0 && fut.length
+            ? {
+                symbol: 'none',
+                label: { formatter: '预测→', color: '#0ea5e9', fontSize: 10 },
+                lineStyle: { type: 'dashed', color: '#0ea5e9', width: 1 },
+                data: [{ xAxis: dates[splitAt] }],
+              }
+            : undefined,
+      },
+    ],
+  });
+  return chart;
+}
+
 /** 卡片迷你分时 */
 export function renderSparkline(el, prices, preClose) {
   if (!el || !prices?.length) return;

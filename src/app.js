@@ -12,6 +12,8 @@ import {
   saveSettings,
   setWatchlist,
   updateItem,
+  emptySimBook,
+  SIM_START_CASH,
 } from './lib/storage.js';
 import {
   fetchBoards,
@@ -57,6 +59,7 @@ import {
   disposeChart,
   renderBoardBarChart,
   renderFlowChart,
+  renderForecastKline,
   renderIntradayChart,
   renderKlineChart,
   renderNorthboundChart,
@@ -67,7 +70,23 @@ import { getTodayEvents, getUpcomingEvents, getMajorUpcomingEvents, marketCalend
 import { buildLevelMarkLines, calcAutoLevels } from './lib/levels.js';
 import { normalizeGroups, repairStockGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
-import { askDeepseekReport, askLhbReport, askMarketReport, askScanBatch, askSeatReport, buildLhbFacts, buildMarketFacts, buildScanFacts, buildSeatFacts, buildStockFacts, disciplineStop } from './lib/deepseek.js';
+import {
+  askDeepseekReport,
+  askLhbReport,
+  askMarketReport,
+  askPredictPack,
+  askScanBatch,
+  askSeatReport,
+  askSimOrders,
+  buildLhbFacts,
+  buildMarketFacts,
+  buildPredictFacts,
+  buildScanFacts,
+  buildSeatFacts,
+  buildSimFacts,
+  buildStockFacts,
+  disciplineStop,
+} from './lib/deepseek.js';
 import { OVERNIGHT_LINKS, buildOvernight, marketClock, moodLabel, planText, reviewCalls, scoreMainLines, shYmd, sheetBrief, tradingSlot } from './lib/trend.js';
 import { isLoggedIn, login, logout, currentUser } from './lib/auth.js';
 
@@ -138,6 +157,9 @@ const state = {
   eventPanelOpen: false,
   pulseBoards: { CN: [], US: [], KR: [] },
   pulseSort: { CN: 'desc', US: 'desc', KR: 'desc' },
+  predictRunning: false,
+  predictHistory: [],
+  simRunning: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -225,6 +247,18 @@ const els = {
   predictToggle: $('predict-toggle'),
   funNamesBtn: $('fun-names-btn'),
   watchSubnav: $('watch-subnav'),
+  predictAiBtn: $('predict-ai-btn'),
+  predictMeta: $('predict-meta'),
+  predictTa: $('predict-ta'),
+  predictIndexName: $('predict-index-name'),
+  chartPredictK: $('chart-predict-k'),
+  simAiBtn: $('sim-ai-btn'),
+  simMarkBtn: $('sim-mark-btn'),
+  simResetBtn: $('sim-reset-btn'),
+  simSummary: $('sim-summary'),
+  simNote: $('sim-note'),
+  simPositions: $('sim-positions'),
+  simTrades: $('sim-trades'),
 };
 
 const NEWS_REFRESH_MS = 2 * 60 * 1000;
@@ -366,13 +400,15 @@ function scrollPageTop() {
   document.querySelector('.page-shell')?.scrollTo?.(0, 0);
 }
 
+const APP_VIEWS = ['watch', 'pulse', 'predict', 'sim', 'data', 'etf'];
+
 function setView(view) {
-  state.view = view;
+  state.view = APP_VIEWS.includes(view) ? view : 'watch';
   scrollPageTop();
-  ['watch', 'pulse', 'data', 'etf'].forEach((v) => {
+  APP_VIEWS.forEach((v) => {
     const el = $(`view-${v}`);
     if (!el) return;
-    const on = v === view;
+    const on = v === state.view;
     el.classList.toggle('hidden', !on);
     if (on) {
       el.classList.remove('view-enter');
@@ -381,25 +417,31 @@ function setView(view) {
       el.classList.add('view-enter');
     }
   });
-  els.indicesBar?.classList.toggle('hidden', view !== 'watch');
-  els.watchSubnav?.classList.toggle('hidden', view !== 'watch');
-  if (view === 'watch') renderStrategyDesk();
+  els.indicesBar?.classList.toggle('hidden', state.view !== 'watch');
+  els.watchSubnav?.classList.toggle('hidden', state.view !== 'watch');
+  if (state.view === 'watch') renderStrategyDesk();
   document.querySelectorAll('.view-tab').forEach((tab) => {
-    const on = tab.dataset.view === view;
+    const on = tab.dataset.view === state.view;
     tab.classList.toggle('bg-accent', on);
     tab.classList.toggle('text-white', on);
     tab.style.color = on ? '#fff' : 'var(--muted)';
   });
-  if (view === 'data') {
+  if (state.view === 'data') {
     loadDataCenter();
     loadBoards();
     loadRank();
   }
-  if (view === 'pulse') {
+  if (state.view === 'pulse') {
     refreshPulse();
     loadTrendSheet();
   }
-  if (view === 'etf') ensureHeatmap();
+  if (state.view === 'predict') renderPredictView();
+  if (state.view === 'sim') {
+    ensureSimBook();
+    renderSimView();
+    void markSimToMarket();
+  }
+  if (state.view === 'etf') ensureHeatmap();
   syncMarketAiBtn();
   requestAnimationFrame(() => resizeAllCharts());
   rememberPlace();
@@ -407,7 +449,7 @@ function setView(view) {
 
 function rememberPlace() {
   if (!state.settings) return;
-  const lastView = ['watch', 'pulse', 'data', 'etf'].includes(state.view) ? state.view : 'watch';
+  const lastView = APP_VIEWS.includes(state.view) ? state.view : 'watch';
   const lastPrimary = state.primaryKind === 'fund' ? 'fund' : 'stock';
   const lastGroup = state.secondaryGroup || 'all';
   if (
@@ -1598,6 +1640,503 @@ function ensureHeatmap() {
   frame.src = 'https://52etf.site/';
 }
 
+/** 从某日起向后取 n 个交易日标签（跳过周六日；节假日粗略忽略） */
+function nextTradeDates(fromYmd, n = 5) {
+  const out = [];
+  const d = new Date(`${fromYmd}T12:00:00+08:00`);
+  if (Number.isNaN(d.getTime())) return out;
+  while (out.length < n) {
+    d.setDate(d.getDate() + 1);
+    const wd = d.getDay();
+    if (wd === 0 || wd === 6) continue;
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    out.push(`${mm}-${dd}`);
+  }
+  return out;
+}
+
+function materializeForecastBars(lastClose, bars, dates) {
+  let prev = Number(lastClose);
+  if (!(prev > 0)) return [];
+  return (bars || []).slice(0, dates.length).map((bar, i) => {
+    const open = +(prev * (1 + Number(bar.pctOpen) / 100)).toFixed(2);
+    let high = +(prev * (1 + Number(bar.pctHigh) / 100)).toFixed(2);
+    let low = +(prev * (1 + Number(bar.pctLow) / 100)).toFixed(2);
+    const close = +(prev * (1 + Number(bar.pctClose) / 100)).toFixed(2);
+    high = Math.max(high, open, close);
+    low = Math.min(low, open, close);
+    prev = close;
+    return { date: dates[i], open, high, low, close, note: bar.note || '', forecast: true };
+  });
+}
+
+function renderPredictView() {
+  const pack = state.settings?.predictPack;
+  if (els.predictAiBtn) {
+    els.predictAiBtn.disabled = !!state.predictRunning;
+    els.predictAiBtn.textContent = state.predictRunning ? '预测中…' : 'AI 预测';
+  }
+  if (!pack) {
+    if (els.predictMeta) els.predictMeta.textContent = '还没有预测。点「AI 预测」才会调用模型（刷新不会自动跑）。';
+    if (els.predictTa) els.predictTa.innerHTML = '<p style="color:var(--muted)">等待手动预测。</p>';
+    return;
+  }
+  if (!state.predictHistory?.length && pack.history?.length) {
+    state.predictHistory = pack.history;
+  }
+  if (els.predictMeta) {
+    els.predictMeta.textContent = `上次预测 ${formatAiTime(pack.generatedAt) || '—'} · ${pack.indexName || '上证指数'} · 仅供推演`;
+  }
+  if (els.predictIndexName) els.predictIndexName.textContent = pack.indexName || '上证指数';
+  const ta = pack.ta || {};
+  const scenarios = (pack.scenarios || [])
+    .map(
+      (s) => `<div class="predict-card">
+        <div class="predict-card-head">${esc(s.title || '情景')}</div>
+        <p><b>触发</b> ${esc(s.trigger || '—')}</p>
+        <p><b>怎么做</b> ${esc(s.action || '—')}</p>
+        <p><b>离场</b> ${esc(s.exit || '—')}</p>
+      </div>`,
+    )
+    .join('');
+  if (els.predictTa) {
+    els.predictTa.innerHTML = `
+      <p class="mb-2">${esc(pack.summary || '')}</p>
+      <div class="predict-card">
+        <div class="predict-card-head">${esc(ta.scenario || '主情景')}</div>
+        <p>${esc(ta.advice || '')}</p>
+        <p><b>买点</b> ${esc(ta.buyZone || '—')}</p>
+        <p><b>卖点</b> ${esc(ta.sellZone || '—')}</p>
+        <p><b>别做</b> ${esc(ta.avoid || '—')}</p>
+      </div>
+      ${scenarios}`;
+  }
+  const hist = state.predictHistory?.length
+    ? state.predictHistory
+    : pack.history || [];
+  const forecast = pack.forecast || [];
+  if (els.chartPredictK && (hist.length || forecast.length)) {
+    renderForecastKline(els.chartPredictK, hist.slice(-40), forecast, {
+      title: `${pack.indexName || '指数'} · 预测`,
+    });
+  }
+}
+
+async function runPredictAi() {
+  if (state.predictRunning) return;
+  const apiKey = await ensureDeepseekKey();
+  if (!apiKey) return;
+  state.predictRunning = true;
+  renderPredictView();
+  try {
+    if (!state.center?.overview) await loadDataCenter().catch(() => {});
+    const indexMeta = { name: '上证指数', code: '000001', market: 'SH', marketNo: 1, secid: '1.000001' };
+    const k = await fetchKline(indexMeta.secid, 101, 60);
+    const points = k?.points || [];
+    state.predictHistory = points.map((p) => ({
+      date: String(p.date || '').slice(5) || p.date,
+      open: Number(p.open),
+      high: Number(p.high),
+      low: Number(p.low),
+      close: Number(p.close),
+      changePct: Number(p.changePct),
+    }));
+    const last = state.predictHistory[state.predictHistory.length - 1];
+    const lastClose = Number(last?.close);
+    const lastDate = String(points.at(-1)?.date || shYmd(new Date()));
+    const clock = marketClock();
+    const s = state.center?.flow?.summary;
+    const flow = s
+      ? `主力 ${fmtYi(s.main)} 亿，超大单 ${fmtYi(s.huge)} 亿。涨跌家 ${state.center?.updown?.up ?? '—'}/${state.center?.updown?.down ?? '—'}`
+      : '';
+    const mains = (state.trend?.mains || [])
+      .slice(0, 4)
+      .map((m) => `${m.name || m.theme} ${m.tag || ''}`)
+      .join('；');
+    const pack = await askPredictPack(
+      apiKey,
+      buildPredictFacts({
+        indexName: indexMeta.name,
+        lastClose,
+        recentBars: state.predictHistory,
+        tape: judgeTape(state.center)?.label || '',
+        flow,
+        mains,
+        clock: clock.line,
+      }),
+      state.settings?.aiModel,
+    );
+    const dates = nextTradeDates(lastDate, 5);
+    const forecast = materializeForecastBars(lastClose, pack.forecastBars, dates);
+    const saved = {
+      ...pack,
+      indexName: indexMeta.name,
+      lastClose,
+      history: state.predictHistory.slice(-40),
+      forecast,
+    };
+    state.settings = await saveSettings({ predictPack: saved });
+  } catch (e) {
+    console.error(e);
+    const msg = String(e?.message || e || '预测失败');
+    if (els.predictMeta) els.predictMeta.textContent = msg;
+    if (/401|invalid|api key|密钥/i.test(msg)) {
+      state.settings = await saveSettings({ deepseekApiKey: '' });
+    }
+  } finally {
+    state.predictRunning = false;
+    renderPredictView();
+  }
+}
+
+function ensureSimBook() {
+  if (state.settings?.simBook?.capital) return state.settings.simBook;
+  const book = emptySimBook();
+  return book;
+}
+
+async function persistSimBook(book) {
+  const next = { ...book, updatedAt: Date.now() };
+  state.settings = await saveSettings({ simBook: next });
+  return next;
+}
+
+function simMoney(n) {
+  if (!Number.isFinite(Number(n))) return '—';
+  return Number(n).toLocaleString('zh-CN', { maximumFractionDigits: 0 });
+}
+
+function simBookEquity(book) {
+  const posVal = (book?.positions || []).reduce((s, p) => s + Number(p.shares || 0) * Number(p.mark || p.avgCost || 0), 0);
+  return Number(book?.cash || 0) + posVal;
+}
+
+function renderSimView() {
+  const book = state.settings?.simBook || ensureSimBook();
+  if (els.simAiBtn) {
+    els.simAiBtn.disabled = !!state.simRunning;
+    els.simAiBtn.textContent = state.simRunning ? '操盘中…' : 'AI 操盘';
+  }
+  const equity = simBookEquity(book);
+  const pnl = equity - Number(book.capital || SIM_START_CASH);
+  const unrealized = (book.positions || []).reduce((s, p) => {
+    const mark = Number(p.mark || p.avgCost || 0);
+    return s + (mark - Number(p.avgCost || 0)) * Number(p.shares || 0);
+  }, 0);
+  if (els.simSummary) {
+    els.simSummary.innerHTML = `
+      <div class="sim-metric"><span>总本金</span><b>${simMoney(book.capital)} 元</b></div>
+      <div class="sim-metric"><span>现金</span><b>${simMoney(book.cash)} 元</b></div>
+      <div class="sim-metric"><span>总市值</span><b>${simMoney(equity)} 元</b></div>
+      <div class="sim-metric"><span>总盈亏</span><b class="${tone(pnl)}">${pnl >= 0 ? '+' : ''}${simMoney(pnl)} 元</b></div>
+      <div class="sim-metric"><span>已实现</span><b class="${tone(book.realizedPnl)}">${Number(book.realizedPnl) >= 0 ? '+' : ''}${simMoney(book.realizedPnl)} 元</b></div>
+      <div class="sim-metric"><span>浮动</span><b class="${tone(unrealized)}">${unrealized >= 0 ? '+' : ''}${simMoney(unrealized)} 元</b></div>
+      <div class="sim-metric"><span>持仓数</span><b>${(book.positions || []).length}</b></div>
+      <div class="sim-metric"><span>上次操盘</span><b style="font-size:12px">${book.lastRunAt ? formatAiTime(book.lastRunAt) : '—'}</b></div>`;
+  }
+  if (els.simNote) {
+    els.simNote.textContent = book.note
+      ? book.note
+      : '点「AI 操盘」：AI 会优先考虑你的持仓票，也可自选 A 股；只在手动点击时下单。';
+  }
+  if (els.simPositions) {
+    const rows = book.positions || [];
+    els.simPositions.innerHTML = rows.length
+      ? rows
+          .map((p) => {
+            const mark = Number(p.mark || p.avgCost || 0);
+            const u = (mark - Number(p.avgCost || 0)) * Number(p.shares || 0);
+            return `<div class="sim-row">
+              <div class="sim-row-head"><span>${esc(p.name)} ${esc(p.code)}</span><b class="${tone(u)}">${u >= 0 ? '+' : ''}${simMoney(u)} 元</b></div>
+              <div class="sim-row-meta">${Number(p.shares)} 股 · 成本 ${Number(p.avgCost).toFixed(2)} · 现价 ${mark ? mark.toFixed(2) : '—'} · 计划卖 ${esc(p.planSell || '—')} · 拿到 ${esc(p.holdUntil || '—')}</div>
+              <div class="sim-row-meta">为什么：${esc(p.why || '—')}</div>
+            </div>`;
+          })
+          .join('')
+      : '<p style="color:var(--muted)">暂无持仓</p>';
+  }
+  if (els.simTrades) {
+    const trades = book.trades || [];
+    els.simTrades.innerHTML = trades.length
+      ? trades
+          .slice(0, 40)
+          .map((t) => {
+            const sideCls = t.side === 'buy' ? 'sim-side-buy' : 'sim-side-sell';
+            const sideLabel = t.side === 'buy' ? '买入' : '卖出';
+            return `<div class="sim-row">
+              <div class="sim-row-head">
+                <span><b class="${sideCls}">${sideLabel}</b> ${esc(t.name)} ${esc(t.code)}</span>
+                <span>${formatAiTime(t.at) || ''}</span>
+              </div>
+              <div class="sim-row-meta">${Number(t.shares)} 股 · 价 ${Number(t.price).toFixed(2)} · 金额 ${simMoney(t.amount)} 元</div>
+              <div class="sim-row-meta">预计买：${esc(t.planBuy || '—')} · 预计卖：${esc(t.planSell || '—')} · 拿到：${esc(t.holdUntil || '—')}</div>
+              <div class="sim-row-meta">为什么：${esc(t.why || '—')}</div>
+            </div>`;
+          })
+          .join('')
+      : '<p style="color:var(--muted)">还没有成交</p>';
+  }
+}
+
+async function markSimToMarket() {
+  const book = state.settings?.simBook || ensureSimBook();
+  const positions = book.positions || [];
+  if (!positions.length) {
+    if (!state.settings?.simBook) await persistSimBook(book);
+    renderSimView();
+    return;
+  }
+  try {
+    const items = positions.map((p) => ({
+      kind: 'stock',
+      code: p.code,
+      market: p.market,
+      marketNo: p.market === 'SH' ? 1 : 0,
+      secid: p.secid || toSecid(p.market, p.code),
+      name: p.name,
+    }));
+    const map = await fetchQuotes(items);
+    const nextPos = positions.map((p) => {
+      const q = map[quoteKey(items.find((i) => i.code === p.code) || p)] || Object.values(map).find((x) => String(x.code) === String(p.code));
+      const mark = Number(q?.price);
+      return { ...p, mark: mark > 0 ? mark : p.mark };
+    });
+    await persistSimBook({ ...book, positions: nextPos });
+  } catch (e) {
+    console.error(e);
+  }
+  renderSimView();
+}
+
+function applySimOrders(book, orders, quoteMap) {
+  let cash = Number(book.cash);
+  let realized = Number(book.realizedPnl || 0);
+  const positions = [...(book.positions || [])];
+  const trades = [...(book.trades || [])];
+  const now = Date.now();
+
+  const findPos = (code) => positions.findIndex((p) => p.code === code);
+  const livePrice = (order) => {
+    const hit = Object.values(quoteMap || {}).find((q) => String(q.code).replace(/\D/g, '').slice(-6) === order.code);
+    const p = Number(hit?.price);
+    return p > 0 ? p : order.price;
+  };
+
+  for (const order of orders) {
+    const px = livePrice(order);
+    const shares = order.lots * 100;
+    const amount = +(px * shares).toFixed(2);
+    if (order.side === 'buy') {
+      if (amount > cash + 0.01) continue;
+      cash -= amount;
+      const idx = findPos(order.code);
+      if (idx >= 0) {
+        const cur = positions[idx];
+        const totalShares = cur.shares + shares;
+        const avgCost = (cur.avgCost * cur.shares + px * shares) / totalShares;
+        positions[idx] = {
+          ...cur,
+          shares: totalShares,
+          avgCost: +avgCost.toFixed(3),
+          mark: px,
+          planSell: order.planSell || cur.planSell,
+          holdUntil: order.holdUntil || cur.holdUntil,
+          why: order.why || cur.why,
+        };
+      } else {
+        positions.push({
+          code: order.code,
+          name: order.name,
+          market: order.market,
+          secid: toSecid(order.market, order.code),
+          shares,
+          avgCost: px,
+          mark: px,
+          planSell: order.planSell,
+          holdUntil: order.holdUntil,
+          why: order.why,
+          openedAt: now,
+        });
+      }
+      trades.unshift({
+        id: `${now}-${order.code}-b`,
+        side: 'buy',
+        code: order.code,
+        name: order.name,
+        market: order.market,
+        price: px,
+        shares,
+        amount,
+        planBuy: order.planBuy,
+        planSell: order.planSell,
+        holdUntil: order.holdUntil,
+        why: order.why,
+        at: now,
+      });
+    } else {
+      const idx = findPos(order.code);
+      if (idx < 0) continue;
+      const cur = positions[idx];
+      const sellShares = Math.min(shares, cur.shares);
+      if (!(sellShares > 0)) continue;
+      const proceed = +(px * sellShares).toFixed(2);
+      const costBasis = cur.avgCost * sellShares;
+      realized += proceed - costBasis;
+      cash += proceed;
+      const left = cur.shares - sellShares;
+      if (left <= 0) positions.splice(idx, 1);
+      else positions[idx] = { ...cur, shares: left, mark: px };
+      trades.unshift({
+        id: `${now}-${order.code}-s`,
+        side: 'sell',
+        code: order.code,
+        name: order.name || cur.name,
+        market: order.market || cur.market,
+        price: px,
+        shares: sellShares,
+        amount: proceed,
+        planBuy: order.planBuy,
+        planSell: order.planSell,
+        holdUntil: order.holdUntil,
+        why: order.why,
+        at: now,
+      });
+    }
+  }
+
+  return {
+    ...book,
+    cash: +cash.toFixed(2),
+    realizedPnl: +realized.toFixed(2),
+    positions,
+    trades: trades.slice(0, 80),
+    lastRunAt: now,
+  };
+}
+
+async function runSimAi() {
+  if (state.simRunning) return;
+  const apiKey = await ensureDeepseekKey();
+  if (!apiKey) return;
+  state.simRunning = true;
+  renderSimView();
+  try {
+    let book = state.settings?.simBook || ensureSimBook();
+    if (!state.settings?.simBook) book = await persistSimBook(book);
+
+    const holdings = state.list
+      .filter((x) => x.kind === 'stock' && isHeld(x))
+      .map((item) => {
+        const q = state.quotes[quoteKey(item)] || {};
+        return {
+          name: preferDisplayName(q.name, item.name),
+          code: String(item.code).replace(/\D/g, '').slice(-6),
+          market: item.market,
+          cost: Number(item.cost),
+          lots: Number(item.lots || item.markPrice) || 0,
+          price: Number(q.price),
+          changePct: Number(q.changePct),
+        };
+      })
+      .filter((h) => h.code);
+
+    const watchCands = state.list
+      .filter((x) => x.kind === 'stock' && !isHeld(x))
+      .slice(0, 12)
+      .map((item) => {
+        const q = state.quotes[quoteKey(item)] || {};
+        return {
+          name: preferDisplayName(q.name, item.name),
+          code: String(item.code).replace(/\D/g, '').slice(-6),
+          market: item.market,
+          price: Number(q.price),
+          changePct: Number(q.changePct),
+        };
+      });
+
+    let movers = [];
+    try {
+      const rows = await fetchTopMovers('up', 20);
+      movers = (rows || []).slice(0, 8).map((r) => ({
+        name: r.name,
+        code: String(r.code).replace(/\D/g, '').slice(-6),
+        market: r.market,
+        price: Number(r.price),
+        changePct: Number(r.changePct),
+      }));
+    } catch {
+      /* optional */
+    }
+
+    const candidates = [...watchCands, ...movers].filter((c) => c.code && c.price > 0).slice(0, 16);
+    const needQuote = [
+      ...holdings.map((h) => ({ kind: 'stock', code: h.code, market: h.market, marketNo: h.market === 'SH' ? 1 : 0, secid: toSecid(h.market, h.code), name: h.name })),
+      ...candidates.map((c) => ({ kind: 'stock', code: c.code, market: c.market, marketNo: c.market === 'SH' ? 1 : 0, secid: toSecid(c.market, c.code), name: c.name })),
+      ...(book.positions || []).map((p) => ({ kind: 'stock', code: p.code, market: p.market, marketNo: p.market === 'SH' ? 1 : 0, secid: p.secid || toSecid(p.market, p.code), name: p.name })),
+    ];
+    const uniq = [];
+    const seen = new Set();
+    for (const row of needQuote) {
+      const k = `${row.market}:${row.code}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      uniq.push(row);
+    }
+    const quoteMap = uniq.length ? await fetchQuotes(uniq) : {};
+
+    // 刷新持仓/候选现价进事实
+    const holdingsLive = holdings.map((h) => {
+      const q = quoteMap[quoteKey({ kind: 'stock', market: h.market, code: h.code })] || {};
+      return { ...h, price: Number(q.price) > 0 ? Number(q.price) : h.price, changePct: Number.isFinite(Number(q.changePct)) ? Number(q.changePct) : h.changePct };
+    });
+    const candLive = candidates.map((c) => {
+      const q = quoteMap[quoteKey({ kind: 'stock', market: c.market, code: c.code })] || {};
+      return { ...c, price: Number(q.price) > 0 ? Number(q.price) : c.price, changePct: Number.isFinite(Number(q.changePct)) ? Number(q.changePct) : c.changePct };
+    });
+    const posMarked = (book.positions || []).map((p) => {
+      const q = quoteMap[quoteKey({ kind: 'stock', market: p.market, code: p.code })] || {};
+      const mark = Number(q.price) > 0 ? Number(q.price) : p.mark;
+      return { ...p, mark, unrealized: (mark - p.avgCost) * p.shares };
+    });
+    book = { ...book, positions: posMarked };
+
+    const clock = marketClock();
+    const decision = await askSimOrders(
+      apiKey,
+      buildSimFacts({
+        book,
+        holdings: holdingsLive,
+        candidates: candLive,
+        tape: judgeTape(state.center)?.label || '',
+        clock: clock.line,
+      }),
+      state.settings?.aiModel,
+    );
+
+    const next = applySimOrders({ ...book, note: decision.note || book.note }, decision.orders, quoteMap);
+    await persistSimBook(next);
+    await markSimToMarket();
+  } catch (e) {
+    console.error(e);
+    const msg = String(e?.message || e || '操盘失败');
+    if (els.simNote) els.simNote.textContent = msg;
+    if (/401|invalid|api key|密钥/i.test(msg)) {
+      state.settings = await saveSettings({ deepseekApiKey: '' });
+    }
+  } finally {
+    state.simRunning = false;
+    renderSimView();
+  }
+}
+
+async function resetSimBook() {
+  const ok = await confirmDialog('重置模拟盘', '清空全部虚拟持仓与交易记录，本金恢复 10 万？');
+  if (!ok) return;
+  await persistSimBook(emptySimBook());
+  renderSimView();
+}
+
 function openDialog({ title, bodyHtml }) {
   return new Promise((resolve) => {
     state.dialogResolve = resolve;
@@ -1851,14 +2390,14 @@ function closeReportDrawer() {
 
 function syncMarketAiBtn() {
   if (!els.marketAiBtn) return;
-  // 每个 tab 最多一个 AI：盘况页用页内「AI 解读盘况」，其它页用顶栏「大盘分析」
-  const showTop = state.view === 'watch' || state.view === 'data' || state.view === 'etf';
-  els.marketAiBtn.classList.toggle('hidden', state.view === 'pulse');
+  // 每个 tab 最多一个 AI：盘况/预测/模拟盘用页内按钮，其它页用顶栏「大盘分析」
+  const hideTop = state.view === 'pulse' || state.view === 'predict' || state.view === 'sim';
+  els.marketAiBtn.classList.toggle('hidden', hideTop);
   els.marketAiBtn.textContent = state.marketAiRunning ? '分析中' : '大盘分析';
   els.marketAiBtn.disabled = !!state.marketAiRunning;
-  els.marketAiBtn.title = showTop
-    ? '手动分析今天大盘与主线；只有你点才会调用 AI'
-    : '盘况页请用页内「AI 解读盘况」';
+  els.marketAiBtn.title = hideTop
+    ? '本页请用页内 AI 按钮'
+    : '手动分析今天大盘与主线；只有你点才会调用 AI';
 }
 
 function formatAiTime(ts) {
@@ -4001,6 +4540,10 @@ els.aiAdviceHistory?.addEventListener('click', () => {
 });
 els.reportOpenBtn?.addEventListener('click', () => openReportDrawer());
 els.marketAiBtn?.addEventListener('click', () => runMarketAi());
+els.predictAiBtn?.addEventListener('click', () => runPredictAi());
+els.simAiBtn?.addEventListener('click', () => runSimAi());
+els.simMarkBtn?.addEventListener('click', () => markSimToMarket());
+els.simResetBtn?.addEventListener('click', () => resetSimBook());
 
 els.strategyDesk?.addEventListener('click', async (e) => {
   const t = e.target.closest('[data-plan-add],[data-plan-remove],[data-plan-watch],[data-strategy-pulse]');
