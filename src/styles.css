@@ -612,13 +612,14 @@
     .list-row.has-pos .col-name-block,
     .list-row.has-pos .col-actions,
     .list-row.has-pos .ai-probs,
-    .list-row.has-pos .pos-clear {
+    .list-row.has-pos .pos-edit {
       grid-column: 1 / -1;
     }
 
     .list-row.has-pos .col-actions {
       display: flex;
       justify-content: flex-end;
+      gap: 6px;
     }
 
     .list-row.has-pos .live-price {
@@ -638,30 +639,27 @@
       display: contents;
     }
 
-    .list-row.has-pos .pos-field {
-      display: flex;
-      align-items: center;
-      gap: 4px;
+    .list-row.has-pos .pos-field.pos-read {
+      flex-direction: row;
+      align-items: baseline;
+      justify-content: flex-start;
+      gap: 6px;
       width: 100%;
-      min-width: 0;
       white-space: nowrap;
     }
 
-    .list-row.has-pos .pos-field:nth-child(1)::before {
-      content: '成本';
+    .list-row.has-pos .pos-label {
       font-size: 10px;
-      color: var(--muted);
     }
 
-    .list-row.has-pos .pos-field:nth-child(2)::before {
-      content: '手数';
-      font-size: 10px;
-      color: var(--muted);
+    .list-row.has-pos .pos-val {
+      font-size: 13px;
     }
 
-    .list-row.has-pos .pos-clear {
+    .list-row.has-pos .pos-edit {
       justify-self: end;
-      width: auto;
+      min-height: 28px;
+      padding: 4px 10px;
     }
 
     .list-row.has-pos .ai-probs {
@@ -674,14 +672,6 @@
     .list-row.has-pos .pos-pnl {
       align-items: flex-end;
       max-height: none;
-    }
-
-    .list-row.has-pos .pos-field input {
-      flex: 1;
-      width: auto;
-      min-width: 0;
-      min-height: 32px;
-      padding: 4px 6px;
     }
 
     .top-actions {
@@ -888,14 +878,6 @@
       min-width: 4.25rem;
       font-size: 11px;
     }
-
-    .list-row.has-pos .pos-field input {
-      width: 100%;
-    }
-
-    .list-row.has-pos .pos-field input::placeholder {
-      color: transparent;
-    }
   }
 
   .groups-fold-btn {
@@ -1003,23 +985,40 @@
   .pos-field {
     display: inline-flex;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-end;
     gap: 4px;
     min-width: 0;
     font-size: 10px;
     color: var(--muted);
   }
 
-  .pos-field input {
-    width: 4.2rem;
-    min-width: 0;
+  .pos-field.pos-read {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 1px;
+  }
+
+  .pos-label {
+    font-size: 9px;
+    line-height: 1;
+    color: var(--muted);
+  }
+
+  .pos-val {
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.15;
+    color: var(--text);
+  }
+
+  .pos-edit {
     border-radius: 6px;
     padding: 2px 6px;
-    font-size: 12px;
-    font-variant-numeric: tabular-nums;
-    color: inherit;
-    background: var(--panel);
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--muted);
     border: 1px solid var(--line);
+    background: transparent;
   }
 
   .pos-pnl {
@@ -1153,8 +1152,8 @@
     padding: 2px 4px;
   }
 
-  .pos-clear,
-  .pos-clear-h {
+  .pos-edit,
+  .pos-edit-h {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1166,18 +1165,14 @@
     color: var(--muted);
   }
 
-  .pos-clear {
-    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--line) 90%, transparent);
-  }
-
-  .pos-clear-h {
+  .pos-edit-h {
     box-shadow: none;
     min-width: 0;
     min-height: 0;
   }
 
-  .pos-clear:hover {
-    color: var(--up);
+  .pos-edit:hover {
+    color: var(--accent);
   }
 
   .list-head {
@@ -2099,13 +2094,14 @@ button.pick-card {
   .list-row.has-pos .col-name-block,
   .list-row.has-pos .col-actions,
   .list-row.has-pos .ai-probs,
-  .list-row.has-pos .pos-clear {
+  .list-row.has-pos .pos-edit {
     grid-column: 1 / -1;
   }
 
   .list-row.has-pos .col-actions {
     display: flex;
     justify-content: flex-end;
+    gap: 6px;
   }
 
   .list-row.has-pos .live-price {
@@ -2125,42 +2121,27 @@ button.pick-card {
     display: contents;
   }
 
-  .list-row.has-pos .pos-field {
-    display: flex;
-    align-items: center;
-    gap: 4px;
+  .list-row.has-pos .pos-field.pos-read {
+    flex-direction: row;
+    align-items: baseline;
+    justify-content: flex-start;
+    gap: 6px;
     width: 100%;
-    min-width: 0;
     white-space: nowrap;
   }
 
-  .list-row.has-pos .pos-field:nth-child(1)::before {
-    content: '成本';
+  .list-row.has-pos .pos-label {
     font-size: 10px;
-    color: var(--muted);
   }
 
-  .list-row.has-pos .pos-field:nth-child(2)::before {
-    content: '手数';
-    font-size: 10px;
-    color: var(--muted);
+  .list-row.has-pos .pos-val {
+    font-size: 13px;
   }
 
-  .list-row.has-pos .pos-field input {
-    flex: 1;
-    width: auto;
-    min-width: 0;
-    min-height: 32px;
-    padding: 4px 6px;
-  }
-
-  .list-row.has-pos .pos-field input::placeholder {
-    color: transparent;
-  }
-
-  .list-row.has-pos .pos-clear {
+  .list-row.has-pos .pos-edit {
     justify-self: end;
-    width: auto;
+    min-height: 28px;
+    padding: 4px 10px;
   }
 
   .list-row.has-pos .ai-probs {

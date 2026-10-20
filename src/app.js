@@ -3,10 +3,13 @@ import './styles.css';
 import {
   addItem,
   getSettings,
+  getSyncStatus,
   getWatchlist,
+  hydrateFromCloud,
   importUserBundle,
   INDEX_PRESETS,
   itemKey,
+  refreshFromCloud,
   removeItem,
   reorderWatchlist,
   saveSettings,
@@ -867,8 +870,6 @@ async function ensureReportHistory() {
   await pruneStaleReports();
 }
 
-const positionDrafts = new Map();
-
 function parseUserPrice(raw) {
   const s = String(raw ?? '').trim().replace(/,/g, '');
   if (!s) return null;
@@ -885,8 +886,6 @@ function parseLots(raw) {
 }
 
 function shownField(item, field) {
-  const draft = positionDrafts.get(itemKey(item));
-  if (draft && Object.prototype.hasOwnProperty.call(draft, field)) return draft[field];
   if (field === 'cost') {
     const stored = item.cost;
     return stored == null || stored === '' ? '' : String(stored);
@@ -941,12 +940,13 @@ function costLineHtml(item, livePrice) {
   const cost = parseUserPrice(shownField(item, 'cost'));
   const lots = parseLots(shownField(item, 'lots'));
   const live = Number(livePrice);
-  const market = item.kind === 'fund' ? 'FUND' : item.market || '';
-  return `<div class="pos-fields" data-live="${Number.isFinite(live) ? live : ''}" data-market="${escAttr(market)}" data-kind="${escAttr(item.kind || '')}">
-    <label class="pos-field"><input data-cost="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownField(item, 'cost'))}" placeholder="成本" /></label>
-    <label class="pos-field"><input data-lots="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownField(item, 'lots'))}" placeholder="手数" title="A股1手=100股；基金填份额" /></label>
+  const costText = cost != null ? String(cost) : '—';
+  const lotsText = lots != null ? String(lots) : '—';
+  return `<div class="pos-fields" data-live="${Number.isFinite(live) ? live : ''}">
+    <div class="pos-field pos-read"><span class="pos-label">成本</span><span class="pos-val tabular-nums">${esc(costText)}</span></div>
+    <div class="pos-field pos-read"><span class="pos-label">手数</span><span class="pos-val tabular-nums">${esc(lotsText)}</span></div>
     <div class="pos-pnl">${pnlHtml(cost, live, lots, item)}${stopHtml(item, cost, live)}</div>
-    <button type="button" data-clear-pos="${key}" class="pos-clear" title="清空成本和手数">清</button>
+    <button type="button" data-edit-pos="${key}" class="pos-edit" title="修改成本与手数">改</button>
   </div>`;
 }
 
@@ -1044,7 +1044,7 @@ function listHeaderHtml() {
       <div class="col-num">成本</div>
       <div class="col-num">手数</div>
       <div class="pos-pnl">浮盈</div>
-      <div class="pos-clear-h"></div>
+      <div class="pos-edit-h"></div>
       ${isFund ? '' : '<div class="ai-probs">概率</div>'}
       <div class="col-actions text-[11px]" style="color:var(--muted)">操作</div>
     </div>`;
@@ -1068,15 +1068,6 @@ function renderList() {
   }
   els.empty.classList.add('hidden');
 
-  const active = document.activeElement;
-  const focusAttr = active?.hasAttribute?.('data-cost')
-    ? 'data-cost'
-    : active?.hasAttribute?.('data-lots')
-      ? 'data-lots'
-      : '';
-  const focusVal = focusAttr ? active.getAttribute(focusAttr) : '';
-  const caret = focusAttr ? active.selectionStart : null;
-
   const held = rows.filter(isHeld);
   const rest = rows.filter((row) => !isHeld(row));
   const blocks = [];
@@ -1093,18 +1084,43 @@ function renderList() {
     ${listHeaderHtml()}
     <div class="grid gap-0.5">${blocks.join('')}</div>`;
   bindListEvents();
-  if (focusAttr && focusVal) {
-    const el = els.list.querySelector(`input[${focusAttr}="${CSS.escape(focusVal)}"]`);
-    if (el) {
-      el.focus();
-      const pos = Math.min(caret ?? el.value.length, el.value.length);
-      try {
-        el.setSelectionRange(pos, pos);
-      } catch {
-        /* number-like inputs */
-      }
-    }
-  }
+}
+
+async function openEditPosDialog(item) {
+  if (!item) return;
+  const key = itemKey(item);
+  const live = Number(state.quotes[quoteKey(item)]?.price);
+  const cost0 = shownField(item, 'cost');
+  const lots0 = shownField(item, 'lots');
+  const lotsHint =
+    item.kind === 'fund' || item.market === 'FUND' ? '基金填份额' : 'A股 1 手 = 100 股';
+  const ok = await openDialog({
+    title: `持仓 · ${item.name || item.code}`,
+    bodyHtml: `<p class="mb-2 text-[12px] leading-relaxed" style="color:var(--muted)">改完点确定会同步到云端，手机和电脑看到的是同一份。</p>
+      <label class="mb-1 block text-[11px]" style="color:var(--muted)">成本价</label>
+      <input id="dlg-pos-cost" inputmode="decimal" value="${escAttr(cost0)}" placeholder="如 12.35" class="mb-3 w-full rounded-lg px-3 py-2 text-sm outline-none" style="background:var(--panel);border:1px solid var(--line)" />
+      <label class="mb-1 block text-[11px]" style="color:var(--muted)">手数 / 份额</label>
+      <input id="dlg-pos-lots" inputmode="decimal" value="${escAttr(lots0)}" placeholder="${escAttr(lotsHint)}" class="mb-2 w-full rounded-lg px-3 py-2 text-sm outline-none" style="background:var(--panel);border:1px solid var(--line)" />
+      <p class="text-[11px]" style="color:var(--muted)">${esc(lotsHint)}${Number.isFinite(live) ? ` · 现价 ${live}` : ''}</p>
+      <label class="mt-3 flex items-center gap-2 text-[12px]" style="color:var(--muted)">
+        <input id="dlg-pos-clear" type="checkbox" /> 清空成本与手数
+      </label>`,
+  });
+  if (!ok) return;
+  const snap = state.dialogSnapshot || {};
+  const clear = !!snap['dlg-pos-clear'];
+  const patch = clear
+    ? { cost: null, lots: null, markPrice: null }
+    : {
+        cost: parseUserPrice(snap['dlg-pos-cost']),
+        lots: parseLots(snap['dlg-pos-lots']),
+        markPrice: null,
+      };
+  const idx = state.list.findIndex((x) => itemKey(x) === key);
+  if (idx >= 0) state.list[idx] = { ...state.list[idx], ...patch };
+  state.list = await updateItem(state.list[idx] || item, patch);
+  renderList();
+  renderStatus();
 }
 
 function bindListEvents() {
@@ -1122,7 +1138,7 @@ function bindListEvents() {
 
   els.list.querySelectorAll('[data-open]').forEach((row) => {
     row.addEventListener('click', (e) => {
-      if (e.target.closest('button, input, .pos-fields')) return;
+      if (e.target.closest('button, input, .pos-edit, .pos-fields')) return;
       const item = state.list.find((x) => itemKey(x) === row.getAttribute('data-open'));
       if (item) openDetail(item);
     });
@@ -1182,96 +1198,11 @@ function bindListEvents() {
     });
   });
 
-  const refreshPosPnl = (line, item) => {
-    if (!line) return;
-    const live = Number(line.getAttribute('data-live'));
-    const cost = parseUserPrice(line.querySelector('[data-cost]')?.value);
-    const lots = parseLots(line.querySelector('[data-lots]')?.value);
-    const box = line.querySelector('.pos-pnl') || line;
-    let pnl = box.querySelector('.pnl');
-    const parts = pnlParts(cost, live, lots, item || { market: line.getAttribute('data-market'), kind: line.getAttribute('data-kind') });
-    if (!parts) pnl?.remove();
-    else {
-      if (!pnl) {
-        pnl = document.createElement('span');
-        const stopEl = box.querySelector('.stop-tag');
-        if (stopEl) box.insertBefore(pnl, stopEl);
-        else box.appendChild(pnl);
-      }
-      const moneyText = parts.money != null ? fmtMoney(parts.money) : fmtMoney(parts.perShare);
-      pnl.className = `pnl ${tone(parts.pct)}`;
-      pnl.innerHTML = `<span class="pnl-diff">${moneyText}</span><span class="pnl-pct">${fmtPct(parts.pct)}</span>`;
-    }
-    let tag = box.querySelector('.stop-tag');
-    if (item?.kind === 'fund') {
-      tag?.remove();
-      return;
-    }
-    const stop = disciplineStop(item, cost);
-    if (!stop) {
-      tag?.remove();
-      return;
-    }
-    if (!tag) {
-      tag = document.createElement('span');
-      tag.className = 'stop-tag';
-      box.appendChild(tag);
-    }
-    const broken = live > 0 && live <= stop.price;
-    tag.className = `stop-tag ${broken ? 'text-down' : ''}`;
-    tag.title = `成本下方 ${(stop.gap * 100).toFixed(0)}%`;
-    tag.textContent = `止损 ${stop.price.toFixed(2)}${broken ? '·已破' : ''}`;
-  };
-
-  const bindPosInput = (el, field) => {
-    const attr = field === 'cost' ? 'data-cost' : 'data-lots';
-    el.addEventListener('click', (e) => e.stopPropagation());
-    el.addEventListener('input', () => {
-      const key = el.getAttribute(attr);
-      const prev = positionDrafts.get(key) || {};
-      positionDrafts.set(key, { ...prev, [field]: el.value });
-      const item = state.list.find((x) => itemKey(x) === key);
-      refreshPosPnl(el.closest('.pos-fields'), item);
-    });
-    el.addEventListener('blur', async () => {
-      const key = el.getAttribute(attr);
-      const item = state.list.find((x) => itemKey(x) === key);
-      if (!item) return;
-      const parsed = field === 'cost' ? parseUserPrice(el.value) : parseLots(el.value);
-      el.value = parsed == null ? '' : String(parsed);
-      const draft = { ...(positionDrafts.get(key) || {}) };
-      delete draft[field];
-      if (draft.cost == null && draft.lots == null) positionDrafts.delete(key);
-      else positionDrafts.set(key, draft);
-      const prevVal =
-        field === 'cost'
-          ? (item.cost ?? null)
-          : (item.lots ?? item.markPrice ?? null);
-      if (prevVal === parsed) return;
-      const patch =
-        field === 'cost'
-          ? { cost: parsed }
-          : { lots: parsed, markPrice: null };
-      const idx = state.list.findIndex((x) => itemKey(x) === key);
-      if (idx >= 0) state.list[idx] = { ...state.list[idx], ...patch };
-      state.list = await updateItem(state.list[idx] || item, patch);
-      renderList();
-    });
-  };
-  els.list.querySelectorAll('[data-cost]').forEach((el) => bindPosInput(el, 'cost'));
-  els.list.querySelectorAll('[data-lots]').forEach((el) => bindPosInput(el, 'lots'));
-  els.list.querySelectorAll('[data-clear-pos]').forEach((btn) => {
+  els.list.querySelectorAll('[data-edit-pos]').forEach((btn) => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const key = btn.getAttribute('data-clear-pos');
-      const item = state.list.find((x) => itemKey(x) === key);
-      if (!item) return;
-      positionDrafts.delete(key);
-      const patch = { cost: null, lots: null, markPrice: null };
-      const idx = state.list.findIndex((x) => itemKey(x) === key);
-      if (idx >= 0) state.list[idx] = { ...state.list[idx], ...patch };
-      state.list = await updateItem(state.list[idx] || item, patch);
-      renderList();
+      const item = state.list.find((x) => itemKey(x) === btn.getAttribute('data-edit-pos'));
+      if (item) await openEditPosDialog(item);
     });
   });
 }
@@ -1335,7 +1266,23 @@ function renderStatus() {
     ? new Date(state.lastUpdated).toLocaleTimeString('zh-CN', { hour12: false })
     : '—';
   const n = state.list.filter((x) => x.kind === state.primaryKind).length;
-  els.statusText.textContent = state.loading ? '刷新中…' : `已更新 ${time} · ${state.primaryKind === 'stock' ? '股票' : '基金'} ${n}`;
+  const sync = getSyncStatus();
+  const syncBit =
+    sync.mode === 'cloud'
+      ? ' · 云端'
+      : sync.mode === 'readonly'
+        ? ' · 云端只读'
+        : sync.mode === 'need-token'
+          ? ' · 待同步'
+          : sync.mode === 'pushing'
+            ? ' · 同步中'
+            : '';
+  els.statusText.textContent = state.loading
+    ? '刷新中…'
+    : `已更新 ${time} · ${state.primaryKind === 'stock' ? '股票' : '基金'} ${n}${syncBit}`;
+  if (sync.message && (sync.mode === 'need-token' || sync.mode === 'offline')) {
+    els.statusText.title = sync.message;
+  }
 }
 
 function renderFlowSummary() {
@@ -2683,25 +2630,48 @@ function formatAiTime(ts) {
 async function openModelSettings() {
   const cur = state.settings?.aiModel === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash';
   const has = !!String(state.settings?.deepseekApiKey || '').trim();
+  const hasSync = !!String(state.settings?.githubSyncToken || '').trim();
+  const sync = getSyncStatus();
   const ok = await openDialog({
-    title: '分析模型',
-    bodyHtml: `<p class="mb-2 text-[12px] leading-relaxed" style="color:var(--muted)">同一把 DeepSeek 密钥可以换模型。Flash 快、一次大约不到一分；Pro 更细，大约贵 4 倍。密钥只留在这台设备，导出备份也不含它。</p>
+    title: '分析模型与云同步',
+    bodyHtml: `<p class="mb-2 text-[12px] leading-relaxed" style="color:var(--muted)">自选 / 成本 / 手数走云端，手机和电脑同一份。DeepSeek 密钥仍只留本机。</p>
       <label class="mb-1 block text-[11px]" style="color:var(--muted)">模型</label>
       <select id="dlg-ai-model" class="mb-3 w-full rounded-lg px-3 py-2 text-sm outline-none" style="background:var(--panel);border:1px solid var(--line)">
         <option value="deepseek-flash" ${cur === 'deepseek-flash' ? 'selected' : ''}>Flash · 推荐</option>
         <option value="deepseek-v4-pro" ${cur === 'deepseek-v4-pro' ? 'selected' : ''}>Pro · 更细</option>
       </select>
-      <label class="mb-1 block text-[11px]" style="color:var(--muted)">API Key</label>
-      <input id="dlg-ds-key" type="password" autocomplete="off" placeholder="${has ? '已保存，留空则不修改' : 'sk-...'}" class="w-full rounded-lg px-3 py-2 text-sm outline-none" style="background:var(--panel);border:1px solid var(--line)" />
-      <p class="mt-2 text-[11px]" style="color:var(--muted)">在 <a class="text-accent underline" href="https://platform.deepseek.com/api_keys" target="_blank" rel="noreferrer">platform.deepseek.com</a> 创建。不要把密钥发到聊天或提交到代码里。</p>`,
+      <label class="mb-1 block text-[11px]" style="color:var(--muted)">DeepSeek API Key</label>
+      <input id="dlg-ds-key" type="password" autocomplete="off" placeholder="${has ? '已保存，留空则不修改' : 'sk-...'}" class="mb-3 w-full rounded-lg px-3 py-2 text-sm outline-none" style="background:var(--panel);border:1px solid var(--line)" />
+      <label class="mb-1 block text-[11px]" style="color:var(--muted)">GitHub 同步令牌（Contents 写权限）</label>
+      <input id="dlg-sync-token" type="password" autocomplete="off" placeholder="${hasSync ? '已保存，留空则不修改' : 'github_pat_…'}" class="w-full rounded-lg px-3 py-2 text-sm outline-none" style="background:var(--panel);border:1px solid var(--line)" />
+      <p class="mt-2 text-[11px] leading-relaxed" style="color:var(--muted)">任意一台设备粘贴一次即可；令牌会加密进云端，其它已登录设备自动拿到写入权。状态：${esc(sync.message || sync.mode || '—')}</p>`,
   });
   if (!ok) return String(state.settings?.deepseekApiKey || '').trim();
   const snap = state.dialogSnapshot || {};
   const model = snap['dlg-ai-model'] === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash';
   const typed = String(snap['dlg-ds-key'] || '').trim();
+  const syncTok = String(snap['dlg-sync-token'] || '').trim();
   const patch = { aiModel: model };
   if (typed) patch.deepseekApiKey = typed;
+  if (syncTok) patch.githubSyncToken = syncTok;
   state.settings = await saveSettings(patch);
+  if (syncTok) {
+    try {
+      const changed = await refreshFromCloud({ force: true });
+      if (!changed) {
+        // 触发一次上传（把本机迁到云端）
+        state.list = await setWatchlist(state.list);
+      } else {
+        state.list = await getWatchlist();
+        state.settings = await getSettings();
+        renderList();
+        renderGroupTabs();
+      }
+      renderStatus();
+    } catch (e) {
+      console.warn(e);
+    }
+  }
   return String(state.settings?.deepseekApiKey || '').trim();
 }
 
@@ -2715,17 +2685,6 @@ async function runDeepseekForItem(item, opts = {}) {
   if (!item || item.kind === 'fund') return;
   const keyId = itemKey(item);
   if (state.aiRunning?.[keyId]) return;
-  const draft = positionDrafts.get(keyId);
-  if (draft && (draft.cost != null || draft.lots != null)) {
-    const patch = {};
-    if (draft.cost != null) patch.cost = parseUserPrice(draft.cost);
-    if (draft.lots != null) {
-      patch.lots = parseLots(draft.lots);
-      patch.markPrice = null;
-    }
-    state.list = await updateItem(item, patch);
-    positionDrafts.delete(keyId);
-  }
   item = state.list.find((x) => itemKey(x) === keyId) || item;
   const apiKey = opts.apiKey || (await ensureDeepseekKey());
   if (!apiKey) return;
@@ -4874,12 +4833,13 @@ async function boot() {
 }
 
 async function bootApp() {
-  state.settings = await getSettings();
+  const hydrated = await hydrateFromCloud();
+  state.settings = hydrated?.settings || (await getSettings());
+  state.list = hydrated?.list || (await getWatchlist());
   await ensureReportHistory();
   if (state.settings.theme !== 'light' && state.settings.theme !== 'dark') {
     state.settings = await saveSettings({ theme: 'light' });
   }
-  state.list = await getWatchlist();
   // 规范化基金字段，避免行情 key 对不上
   {
     let fixed = false;
@@ -4954,11 +4914,31 @@ async function bootApp() {
   renderPulseBoards();
   await Promise.all([refreshAll(), refreshMajorNews(false), loadDataCenter()]);
   syncMarketAiBtn();
+  renderStatus();
   // 不自动调用 AI：刷新 / 开盘定时器都不请求模型，只在用户点按钮时调用
   if (!state.timersStarted) {
     state.timersStarted = true;
     setInterval(refreshAll, REFRESH_MS);
     setInterval(() => refreshMajorNews(false), NEWS_REFRESH_MS);
+    setInterval(async () => {
+      const changed = await refreshFromCloud();
+      if (!changed) return;
+      state.list = await getWatchlist();
+      state.settings = await getSettings();
+      renderList();
+      renderGroupTabs();
+      renderStatus();
+    }, 45000);
+    document.addEventListener('visibilitychange', async () => {
+      if (document.visibilityState !== 'visible') return;
+      const changed = await refreshFromCloud();
+      if (!changed) return;
+      state.list = await getWatchlist();
+      state.settings = await getSettings();
+      renderList();
+      renderGroupTabs();
+      renderStatus();
+    });
   }
 }
 

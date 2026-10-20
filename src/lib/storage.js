@@ -1,4 +1,9 @@
 import { normalizeGroups, normalizeImportedGroup } from './stock-groups.js';
+import {
+  pickCloudSettings,
+  pullCloudBundle,
+  pushCloudBundle,
+} from './cloud-sync.js';
 
 export function itemKey(item) {
   return `${item.kind}:${item.market || ''}:${item.code}`;
@@ -7,7 +12,25 @@ export function itemKey(item) {
 const KEYS = {
   watchlist: 'watchlist_v1',
   settings: 'settings_v1',
+  /** 仅本机：DeepSeek / 同步令牌等，不进云端明文 */
+  device: 'device_secrets_v1',
 };
+
+/** 内存中的权威副本（云端同步后不再回写 localStorage 自选） */
+let memWatchlist = null;
+let memSettings = null;
+let cloudUpdatedAt = 0;
+let pushTimer = null;
+let pushChain = Promise.resolve();
+let syncStatus = { mode: 'local', message: '', updatedAt: 0 };
+
+export function getSyncStatus() {
+  return { ...syncStatus };
+}
+
+function setSyncStatus(partial) {
+  syncStatus = { ...syncStatus, ...partial, at: Date.now() };
+}
 
 export const DEFAULT_INDICES = [
   { name: '上证指数', code: '000001', market: 'SH', marketNo: 1, secid: '1.000001', kind: 'stock', label: '沪' },
@@ -112,13 +135,60 @@ export function emptySimBook() {
   };
 }
 
-export async function getWatchlist() {
+async function readLocalWatchlist() {
   const data = await chrome.storage.local.get(KEYS.watchlist);
   return Array.isArray(data[KEYS.watchlist]) ? data[KEYS.watchlist] : [];
 }
 
+async function readLocalSettingsRaw() {
+  const data = await chrome.storage.local.get(KEYS.settings);
+  return data[KEYS.settings] || {};
+}
+
+async function readDeviceSecrets() {
+  const data = await chrome.storage.local.get(KEYS.device);
+  const raw = data[KEYS.device] || {};
+  // 兼容旧版：密钥曾写在 settings 里
+  if (!raw.deepseekApiKey || !raw.githubSyncToken) {
+    const legacy = await readLocalSettingsRaw();
+    return {
+      deepseekApiKey: raw.deepseekApiKey || legacy.deepseekApiKey || '',
+      githubSyncToken: raw.githubSyncToken || legacy.githubSyncToken || '',
+    };
+  }
+  return {
+    deepseekApiKey: raw.deepseekApiKey || '',
+    githubSyncToken: raw.githubSyncToken || '',
+  };
+}
+
+async function writeDeviceSecrets(partial) {
+  const cur = await readDeviceSecrets();
+  const next = { ...cur, ...partial };
+  await chrome.storage.local.set({ [KEYS.device]: next });
+  return next;
+}
+
+/** 清掉本机自选/设置持久化，避免手机和电脑各存一份对不上 */
+export async function clearLocalUserData() {
+  await chrome.storage.local.remove([KEYS.watchlist, KEYS.settings]);
+}
+
+export async function getWatchlist() {
+  if (Array.isArray(memWatchlist)) return memWatchlist.map((x) => ({ ...x }));
+  memWatchlist = await readLocalWatchlist();
+  return memWatchlist.map((x) => ({ ...x }));
+}
+
 export async function setWatchlist(list) {
-  await chrome.storage.local.set({ [KEYS.watchlist]: list });
+  memWatchlist = Array.isArray(list) ? list.map((x) => ({ ...x })) : [];
+  const secrets = await readDeviceSecrets();
+  if (!String(secrets.githubSyncToken || '').trim()) {
+    // 尚未开通云写入时，仍落本机，避免刷新丢自选
+    await chrome.storage.local.set({ [KEYS.watchlist]: memWatchlist });
+  }
+  scheduleCloudPush();
+  return memWatchlist;
 }
 
 function isGoldIndex(x) {
@@ -146,9 +216,7 @@ export function uniqueIndices(list) {
   return out;
 }
 
-export async function getSettings() {
-  const data = await chrome.storage.local.get(KEYS.settings);
-  const saved = data[KEYS.settings] || {};
+function normalizeSettingsObject(saved = {}) {
   const indices = Array.isArray(saved.indices) ? uniqueIndices(saved.indices) : DEFAULT_INDICES;
   return {
     ...DEFAULT_SETTINGS,
@@ -158,11 +226,209 @@ export async function getSettings() {
   };
 }
 
+export async function getSettings() {
+  if (memSettings) {
+    const secrets = await readDeviceSecrets();
+    return {
+      ...memSettings,
+      deepseekApiKey: secrets.deepseekApiKey || '',
+      githubSyncToken: secrets.githubSyncToken || '',
+    };
+  }
+  const saved = await readLocalSettingsRaw();
+  const secrets = await readDeviceSecrets();
+  memSettings = normalizeSettingsObject({
+    ...saved,
+    deepseekApiKey: undefined,
+    githubSyncToken: undefined,
+  });
+  return {
+    ...memSettings,
+    deepseekApiKey: secrets.deepseekApiKey || saved.deepseekApiKey || '',
+    githubSyncToken: secrets.githubSyncToken || saved.githubSyncToken || '',
+  };
+}
+
 export async function saveSettings(partial) {
   const cur = await getSettings();
   const next = { ...cur, ...partial };
-  await chrome.storage.local.set({ [KEYS.settings]: next });
-  return next;
+
+  // 密钥只留本机 device 槽
+  const secretPatch = {};
+  if (Object.prototype.hasOwnProperty.call(partial || {}, 'deepseekApiKey')) {
+    secretPatch.deepseekApiKey = String(partial.deepseekApiKey || '');
+  }
+  if (Object.prototype.hasOwnProperty.call(partial || {}, 'githubSyncToken')) {
+    secretPatch.githubSyncToken = String(partial.githubSyncToken || '');
+  }
+  if (Object.keys(secretPatch).length) await writeDeviceSecrets(secretPatch);
+
+  const secrets = await readDeviceSecrets();
+  memSettings = normalizeSettingsObject({
+    ...next,
+    deepseekApiKey: undefined,
+    githubSyncToken: undefined,
+  });
+  if (!String(secrets.githubSyncToken || '').trim()) {
+    await chrome.storage.local.set({
+      [KEYS.settings]: {
+        ...memSettings,
+        // 旧字段不再写入密钥
+        deepseekApiKey: '',
+        githubSyncToken: '',
+      },
+    });
+  }
+  scheduleCloudPush();
+  return {
+    ...memSettings,
+    deepseekApiKey: secrets.deepseekApiKey || '',
+    githubSyncToken: secrets.githubSyncToken || '',
+  };
+}
+
+function scheduleCloudPush() {
+  if (pushTimer) clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => {
+    pushTimer = null;
+    pushChain = pushChain.then(() => flushCloudPush()).catch((e) => {
+      console.warn('[sync] push', e);
+      setSyncStatus({ mode: syncStatus.mode || 'cloud', message: String(e?.message || e) });
+    });
+  }, 900);
+}
+
+async function flushCloudPush() {
+  const secrets = await readDeviceSecrets();
+  const token = String(secrets.githubSyncToken || '').trim();
+  const list = Array.isArray(memWatchlist) ? memWatchlist : await getWatchlist();
+  const settings = memSettings || pickCloudSettings(await getSettings());
+  if (!token) {
+    setSyncStatus({
+      mode: 'readonly',
+      message: '已用云端数据，但本机还没同步令牌，改动不会上传',
+      updatedAt: cloudUpdatedAt,
+    });
+    return;
+  }
+  const payload = {
+    watchlist: list,
+    settings: pickCloudSettings(settings),
+    writeToken: token,
+    updatedAt: Date.now(),
+  };
+  setSyncStatus({ mode: 'pushing', message: '正在上传云端…', updatedAt: cloudUpdatedAt });
+  const updatedAt = await pushCloudBundle(payload, token);
+  cloudUpdatedAt = updatedAt || Date.now();
+  await clearLocalUserData();
+  setSyncStatus({ mode: 'cloud', message: '已同步到云端', updatedAt: cloudUpdatedAt });
+}
+
+/**
+ * 登录后调用：云端优先；云端空则把本机旧数据迁上去；成功后清掉本机自选副本。
+ */
+export async function hydrateFromCloud() {
+  const secrets = await readDeviceSecrets();
+  let token = String(secrets.githubSyncToken || '').trim();
+  const localList = await readLocalWatchlist();
+  const localSettings = await readLocalSettingsRaw();
+
+  try {
+    const remote = await pullCloudBundle();
+    if (!remote.empty && remote.payload) {
+      const p = remote.payload;
+      memWatchlist = Array.isArray(p.watchlist) ? p.watchlist : [];
+      memSettings = normalizeSettingsObject(p.settings || {});
+      cloudUpdatedAt = Number(p.updatedAt) || Date.now();
+      if (p.writeToken && !token) {
+        token = String(p.writeToken).trim();
+        await writeDeviceSecrets({ githubSyncToken: token });
+      }
+      await clearLocalUserData();
+      setSyncStatus({
+        mode: token ? 'cloud' : 'readonly',
+        message: token ? '已从云端加载' : '已从云端加载（只读，配置同步令牌后可改）',
+        updatedAt: cloudUpdatedAt,
+      });
+      return getSettings().then((settings) => ({
+        list: memWatchlist.map((x) => ({ ...x })),
+        settings,
+        from: 'cloud',
+      }));
+    }
+
+    // 云端空：若本机有旧数据则上传
+    memWatchlist = localList;
+    memSettings = normalizeSettingsObject({
+      ...localSettings,
+      deepseekApiKey: undefined,
+      githubSyncToken: undefined,
+    });
+    if (token && (localList.length || Object.keys(localSettings).length)) {
+      await flushCloudPush();
+      setSyncStatus({ mode: 'cloud', message: '本机数据已迁到云端', updatedAt: cloudUpdatedAt });
+    } else if (!token) {
+      setSyncStatus({
+        mode: 'need-token',
+        message: '首次同步：在「分析模型」里粘贴 GitHub 同步令牌，手机和电脑就会一致',
+        updatedAt: 0,
+      });
+    } else {
+      setSyncStatus({ mode: 'cloud', message: '云端为空', updatedAt: 0 });
+    }
+    return getSettings().then((settings) => ({
+      list: (memWatchlist || []).map((x) => ({ ...x })),
+      settings,
+      from: 'local-migrate',
+    }));
+  } catch (e) {
+    console.warn('[sync] hydrate', e);
+    memWatchlist = localList;
+    memSettings = normalizeSettingsObject({
+      ...localSettings,
+      deepseekApiKey: undefined,
+      githubSyncToken: undefined,
+    });
+    setSyncStatus({
+      mode: 'offline',
+      message: `云端暂不可用：${String(e?.message || e)}`,
+      updatedAt: 0,
+    });
+    return getSettings().then((settings) => ({
+      list: (memWatchlist || []).map((x) => ({ ...x })),
+      settings,
+      from: 'offline',
+    }));
+  }
+}
+
+/** 定时/切回前台时拉云端；若远端更新则覆盖内存 */
+export async function refreshFromCloud({ force = false } = {}) {
+  try {
+    const remote = await pullCloudBundle();
+    if (remote.empty || !remote.payload) return false;
+    const remoteAt = Number(remote.payload.updatedAt) || 0;
+    if (!force && remoteAt && cloudUpdatedAt && remoteAt <= cloudUpdatedAt) return false;
+    memWatchlist = Array.isArray(remote.payload.watchlist) ? remote.payload.watchlist : [];
+    memSettings = normalizeSettingsObject(remote.payload.settings || {});
+    cloudUpdatedAt = remoteAt || Date.now();
+    if (remote.payload.writeToken) {
+      const secrets = await readDeviceSecrets();
+      if (!secrets.githubSyncToken) {
+        await writeDeviceSecrets({ githubSyncToken: String(remote.payload.writeToken) });
+      }
+    }
+    await clearLocalUserData();
+    setSyncStatus({
+      mode: 'cloud',
+      message: '已拉取云端最新',
+      updatedAt: cloudUpdatedAt,
+    });
+    return true;
+  } catch (e) {
+    console.warn('[sync] refresh', e);
+    return false;
+  }
 }
 
 export async function addItem(item) {
