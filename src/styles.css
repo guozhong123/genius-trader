@@ -612,7 +612,7 @@
     .list-row.has-pos .col-name-block,
     .list-row.has-pos .col-actions,
     .list-row.has-pos .ai-probs,
-    .list-row.has-pos .pos-clear {
+    .list-row.has-pos .pos-fields {
       grid-column: 1 / -1;
     }
 
@@ -634,15 +634,22 @@
       color: var(--muted);
     }
 
+    /* 成本/手数：紧凑输入，避免半屏拉长 */
     .list-row.has-pos .pos-fields {
-      display: contents;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px 10px;
+      width: 100%;
+      min-width: 0;
     }
 
     .list-row.has-pos .pos-field {
-      display: flex;
+      display: inline-flex;
       align-items: center;
-      gap: 4px;
-      width: 100%;
+      gap: 5px;
+      width: auto;
+      flex: none;
       min-width: 0;
       white-space: nowrap;
     }
@@ -659,9 +666,28 @@
       color: var(--muted);
     }
 
+    .list-row.has-pos .pos-field:nth-child(1) {
+      order: 1;
+    }
+
+    .list-row.has-pos .pos-field:nth-child(2) {
+      order: 2;
+    }
+
     .list-row.has-pos .pos-clear {
-      justify-self: end;
+      order: 3;
+      grid-column: auto;
+      justify-self: auto;
+      margin-left: auto;
       width: auto;
+      flex: none;
+    }
+
+    .list-row.has-pos .pos-pnl {
+      order: 4;
+      flex: 1 1 100%;
+      align-items: flex-start;
+      max-height: none;
     }
 
     .list-row.has-pos .ai-probs {
@@ -671,17 +697,24 @@
       max-height: none;
     }
 
-    .list-row.has-pos .pos-pnl {
-      align-items: flex-end;
-      max-height: none;
+    .list-row.has-pos .pos-field input {
+      flex: none;
+      width: 4.6rem;
+      max-width: 34vw;
+      min-width: 0;
+      min-height: 28px;
+      padding: 2px 4px 3px;
+      text-align: right;
+      font-size: 13px;
+      border-radius: 0;
+      border: none;
+      border-bottom: 1px solid color-mix(in oklab, var(--line) 88%, transparent);
+      background: transparent;
     }
 
-    .list-row.has-pos .pos-field input {
-      flex: 1;
-      width: auto;
-      min-width: 0;
-      min-height: 32px;
-      padding: 4px 6px;
+    .list-row.has-pos .pos-field input:focus {
+      outline: none;
+      border-bottom-color: var(--accent);
     }
 
     .top-actions {
@@ -862,16 +895,8 @@
       font-size: 15px;
     }
 
-    .list-row.has-pos .pos-field:nth-child(1) {
-      grid-column: 1;
-    }
-
-    .list-row.has-pos .pos-field:nth-child(2) {
-      grid-column: 2;
-    }
-
     .list-row.has-pos .pos-pnl {
-      grid-column: 1 / -1;
+      flex: 1 1 100%;
       align-items: flex-start;
       flex-direction: row;
       flex-wrap: wrap;
@@ -890,7 +915,8 @@
     }
 
     .list-row.has-pos .pos-field input {
-      width: 100%;
+      width: 4.35rem;
+      max-width: 32vw;
     }
 
     .list-row.has-pos .pos-field input::placeholder {
@@ -2099,7 +2125,7 @@ button.pick-card {
   .list-row.has-pos .col-name-block,
   .list-row.has-pos .col-actions,
   .list-row.has-pos .ai-probs,
-  .list-row.has-pos .pos-clear {
+  .list-row.has-pos .pos-fields {
     grid-column: 1 / -1;
   }
 
@@ -2121,15 +2147,22 @@ button.pick-card {
     color: var(--muted);
   }
 
+  /* 成本/手数：紧凑输入，避免半屏拉长 */
   .list-row.has-pos .pos-fields {
-    display: contents;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+    width: 100%;
+    min-width: 0;
   }
 
   .list-row.has-pos .pos-field {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: 4px;
-    width: 100%;
+    gap: 5px;
+    width: auto;
+    flex: none;
     min-width: 0;
     white-space: nowrap;
   }
@@ -2146,12 +2179,32 @@ button.pick-card {
     color: var(--muted);
   }
 
+  .list-row.has-pos .pos-field:nth-child(1) {
+    order: 1;
+  }
+
+  .list-row.has-pos .pos-field:nth-child(2) {
+    order: 2;
+  }
+
   .list-row.has-pos .pos-field input {
-    flex: 1;
-    width: auto;
+    flex: none;
+    width: 4.6rem;
+    max-width: 34vw;
     min-width: 0;
-    min-height: 32px;
-    padding: 4px 6px;
+    min-height: 28px;
+    padding: 2px 4px 3px;
+    text-align: right;
+    font-size: 13px;
+    border-radius: 0;
+    border: none;
+    border-bottom: 1px solid color-mix(in oklab, var(--line) 88%, transparent);
+    background: transparent;
+  }
+
+  .list-row.has-pos .pos-field input:focus {
+    outline: none;
+    border-bottom-color: var(--accent);
   }
 
   .list-row.has-pos .pos-field input::placeholder {
@@ -2159,8 +2212,19 @@ button.pick-card {
   }
 
   .list-row.has-pos .pos-clear {
-    justify-self: end;
+    order: 3;
+    grid-column: auto;
+    justify-self: auto;
+    margin-left: auto;
     width: auto;
+    flex: none;
+  }
+
+  .list-row.has-pos .pos-pnl {
+    order: 4;
+    flex: 1 1 100%;
+    align-items: flex-start;
+    max-height: none;
   }
 
   .list-row.has-pos .ai-probs {
@@ -2168,11 +2232,6 @@ button.pick-card {
     justify-content: flex-start;
     flex-wrap: wrap;
     gap: 8px;
-    max-height: none;
-  }
-
-  .list-row.has-pos .pos-pnl {
-    align-items: flex-end;
     max-height: none;
   }
 
@@ -2244,8 +2303,13 @@ button.pick-card {
     font-size: 15px;
   }
 
+  .list-row.has-pos .pos-field input {
+    width: 4.35rem;
+    max-width: 32vw;
+  }
+
   .list-row.has-pos .pos-pnl {
-    grid-column: 1 / -1;
+    flex: 1 1 100%;
     align-items: flex-start;
     flex-direction: row;
     flex-wrap: wrap;
