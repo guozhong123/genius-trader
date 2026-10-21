@@ -867,8 +867,6 @@ async function ensureReportHistory() {
   await pruneStaleReports();
 }
 
-const positionDrafts = new Map();
-
 function parseUserPrice(raw) {
   const s = String(raw ?? '').trim().replace(/,/g, '');
   if (!s) return null;
@@ -885,8 +883,6 @@ function parseLots(raw) {
 }
 
 function shownField(item, field) {
-  const draft = positionDrafts.get(itemKey(item));
-  if (draft && Object.prototype.hasOwnProperty.call(draft, field)) return draft[field];
   if (field === 'cost') {
     const stored = item.cost;
     return stored == null || stored === '' ? '' : String(stored);
@@ -941,12 +937,14 @@ function costLineHtml(item, livePrice) {
   const cost = parseUserPrice(shownField(item, 'cost'));
   const lots = parseLots(shownField(item, 'lots'));
   const live = Number(livePrice);
-  const market = item.kind === 'fund' ? 'FUND' : item.market || '';
-  return `<div class="pos-fields" data-live="${Number.isFinite(live) ? live : ''}" data-market="${escAttr(market)}" data-kind="${escAttr(item.kind || '')}">
-    <label class="pos-field"><input data-cost="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownField(item, 'cost'))}" placeholder="成本" /></label>
-    <label class="pos-field"><input data-lots="${key}" inputmode="decimal" draggable="false" autocomplete="off" value="${escAttr(shownField(item, 'lots'))}" placeholder="手数" title="A股1手=100股；基金填份额" /></label>
+  const costText = cost != null ? String(cost) : '—';
+  const lotsText = lots != null ? String(lots) : '—';
+  // 移动端与桌面统一：列表只读展示，点「改」弹窗编辑（避免窄屏输入框难用）
+  return `<div class="pos-fields" data-live="${Number.isFinite(live) ? live : ''}">
+    <div class="pos-field pos-read"><span class="pos-label">成本</span><span class="pos-val tabular-nums">${esc(costText)}</span></div>
+    <div class="pos-field pos-read"><span class="pos-label">手数</span><span class="pos-val tabular-nums">${esc(lotsText)}</span></div>
     <div class="pos-pnl">${pnlHtml(cost, live, lots, item)}${stopHtml(item, cost, live)}</div>
-    <button type="button" data-clear-pos="${key}" class="pos-clear" title="清空成本和手数">清</button>
+    <button type="button" data-edit-pos="${key}" class="pos-edit" title="修改成本与手数">改</button>
   </div>`;
 }
 
@@ -1044,7 +1042,7 @@ function listHeaderHtml() {
       <div class="col-num">成本</div>
       <div class="col-num">手数</div>
       <div class="pos-pnl">浮盈</div>
-      <div class="pos-clear-h"></div>
+      <div class="pos-edit-h"></div>
       ${isFund ? '' : '<div class="ai-probs">概率</div>'}
       <div class="col-actions text-[11px]" style="color:var(--muted)">操作</div>
     </div>`;
@@ -1068,15 +1066,6 @@ function renderList() {
   }
   els.empty.classList.add('hidden');
 
-  const active = document.activeElement;
-  const focusAttr = active?.hasAttribute?.('data-cost')
-    ? 'data-cost'
-    : active?.hasAttribute?.('data-lots')
-      ? 'data-lots'
-      : '';
-  const focusVal = focusAttr ? active.getAttribute(focusAttr) : '';
-  const caret = focusAttr ? active.selectionStart : null;
-
   const held = rows.filter(isHeld);
   const rest = rows.filter((row) => !isHeld(row));
   const blocks = [];
@@ -1093,18 +1082,43 @@ function renderList() {
     ${listHeaderHtml()}
     <div class="grid gap-0.5">${blocks.join('')}</div>`;
   bindListEvents();
-  if (focusAttr && focusVal) {
-    const el = els.list.querySelector(`input[${focusAttr}="${CSS.escape(focusVal)}"]`);
-    if (el) {
-      el.focus();
-      const pos = Math.min(caret ?? el.value.length, el.value.length);
-      try {
-        el.setSelectionRange(pos, pos);
-      } catch {
-        /* number-like inputs */
-      }
-    }
-  }
+}
+
+async function openEditPosDialog(item) {
+  if (!item) return;
+  const key = itemKey(item);
+  const live = Number(state.quotes[quoteKey(item)]?.price);
+  const cost0 = shownField(item, 'cost');
+  const lots0 = shownField(item, 'lots');
+  const lotsHint =
+    item.kind === 'fund' || item.market === 'FUND' ? '基金填份额' : 'A股 1 手 = 100 股';
+  const ok = await openDialog({
+    title: `持仓 · ${item.name || item.code}`,
+    bodyHtml: `<p class="mb-2 text-[12px] leading-relaxed" style="color:var(--muted)">修改成本与手数后点确定保存。</p>
+      <label class="mb-1 block text-[11px]" style="color:var(--muted)">成本价</label>
+      <input id="dlg-pos-cost" inputmode="decimal" value="${escAttr(cost0)}" placeholder="如 12.35" class="mb-3 w-full rounded-lg px-3 py-2 text-sm outline-none" style="background:var(--panel);border:1px solid var(--line)" />
+      <label class="mb-1 block text-[11px]" style="color:var(--muted)">手数 / 份额</label>
+      <input id="dlg-pos-lots" inputmode="decimal" value="${escAttr(lots0)}" placeholder="${escAttr(lotsHint)}" class="mb-2 w-full rounded-lg px-3 py-2 text-sm outline-none" style="background:var(--panel);border:1px solid var(--line)" />
+      <p class="text-[11px]" style="color:var(--muted)">${esc(lotsHint)}${Number.isFinite(live) ? ` · 现价 ${live}` : ''}</p>
+      <label class="mt-3 flex items-center gap-2 text-[12px]" style="color:var(--muted)">
+        <input id="dlg-pos-clear" type="checkbox" /> 清空成本与手数
+      </label>`,
+  });
+  if (!ok) return;
+  const snap = state.dialogSnapshot || {};
+  const clear = !!snap['dlg-pos-clear'];
+  const patch = clear
+    ? { cost: null, lots: null, markPrice: null }
+    : {
+        cost: parseUserPrice(snap['dlg-pos-cost']),
+        lots: parseLots(snap['dlg-pos-lots']),
+        markPrice: null,
+      };
+  const idx = state.list.findIndex((x) => itemKey(x) === key);
+  if (idx >= 0) state.list[idx] = { ...state.list[idx], ...patch };
+  state.list = await updateItem(state.list[idx] || item, patch);
+  renderList();
+  renderStatus();
 }
 
 function bindListEvents() {
@@ -1122,7 +1136,7 @@ function bindListEvents() {
 
   els.list.querySelectorAll('[data-open]').forEach((row) => {
     row.addEventListener('click', (e) => {
-      if (e.target.closest('button, input, .pos-fields')) return;
+      if (e.target.closest('button, input, .pos-edit, .pos-fields')) return;
       const item = state.list.find((x) => itemKey(x) === row.getAttribute('data-open'));
       if (item) openDetail(item);
     });
@@ -1182,96 +1196,11 @@ function bindListEvents() {
     });
   });
 
-  const refreshPosPnl = (line, item) => {
-    if (!line) return;
-    const live = Number(line.getAttribute('data-live'));
-    const cost = parseUserPrice(line.querySelector('[data-cost]')?.value);
-    const lots = parseLots(line.querySelector('[data-lots]')?.value);
-    const box = line.querySelector('.pos-pnl') || line;
-    let pnl = box.querySelector('.pnl');
-    const parts = pnlParts(cost, live, lots, item || { market: line.getAttribute('data-market'), kind: line.getAttribute('data-kind') });
-    if (!parts) pnl?.remove();
-    else {
-      if (!pnl) {
-        pnl = document.createElement('span');
-        const stopEl = box.querySelector('.stop-tag');
-        if (stopEl) box.insertBefore(pnl, stopEl);
-        else box.appendChild(pnl);
-      }
-      const moneyText = parts.money != null ? fmtMoney(parts.money) : fmtMoney(parts.perShare);
-      pnl.className = `pnl ${tone(parts.pct)}`;
-      pnl.innerHTML = `<span class="pnl-diff">${moneyText}</span><span class="pnl-pct">${fmtPct(parts.pct)}</span>`;
-    }
-    let tag = box.querySelector('.stop-tag');
-    if (item?.kind === 'fund') {
-      tag?.remove();
-      return;
-    }
-    const stop = disciplineStop(item, cost);
-    if (!stop) {
-      tag?.remove();
-      return;
-    }
-    if (!tag) {
-      tag = document.createElement('span');
-      tag.className = 'stop-tag';
-      box.appendChild(tag);
-    }
-    const broken = live > 0 && live <= stop.price;
-    tag.className = `stop-tag ${broken ? 'text-down' : ''}`;
-    tag.title = `成本下方 ${(stop.gap * 100).toFixed(0)}%`;
-    tag.textContent = `止损 ${stop.price.toFixed(2)}${broken ? '·已破' : ''}`;
-  };
-
-  const bindPosInput = (el, field) => {
-    const attr = field === 'cost' ? 'data-cost' : 'data-lots';
-    el.addEventListener('click', (e) => e.stopPropagation());
-    el.addEventListener('input', () => {
-      const key = el.getAttribute(attr);
-      const prev = positionDrafts.get(key) || {};
-      positionDrafts.set(key, { ...prev, [field]: el.value });
-      const item = state.list.find((x) => itemKey(x) === key);
-      refreshPosPnl(el.closest('.pos-fields'), item);
-    });
-    el.addEventListener('blur', async () => {
-      const key = el.getAttribute(attr);
-      const item = state.list.find((x) => itemKey(x) === key);
-      if (!item) return;
-      const parsed = field === 'cost' ? parseUserPrice(el.value) : parseLots(el.value);
-      el.value = parsed == null ? '' : String(parsed);
-      const draft = { ...(positionDrafts.get(key) || {}) };
-      delete draft[field];
-      if (draft.cost == null && draft.lots == null) positionDrafts.delete(key);
-      else positionDrafts.set(key, draft);
-      const prevVal =
-        field === 'cost'
-          ? (item.cost ?? null)
-          : (item.lots ?? item.markPrice ?? null);
-      if (prevVal === parsed) return;
-      const patch =
-        field === 'cost'
-          ? { cost: parsed }
-          : { lots: parsed, markPrice: null };
-      const idx = state.list.findIndex((x) => itemKey(x) === key);
-      if (idx >= 0) state.list[idx] = { ...state.list[idx], ...patch };
-      state.list = await updateItem(state.list[idx] || item, patch);
-      renderList();
-    });
-  };
-  els.list.querySelectorAll('[data-cost]').forEach((el) => bindPosInput(el, 'cost'));
-  els.list.querySelectorAll('[data-lots]').forEach((el) => bindPosInput(el, 'lots'));
-  els.list.querySelectorAll('[data-clear-pos]').forEach((btn) => {
+  els.list.querySelectorAll('[data-edit-pos]').forEach((btn) => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      const key = btn.getAttribute('data-clear-pos');
-      const item = state.list.find((x) => itemKey(x) === key);
-      if (!item) return;
-      positionDrafts.delete(key);
-      const patch = { cost: null, lots: null, markPrice: null };
-      const idx = state.list.findIndex((x) => itemKey(x) === key);
-      if (idx >= 0) state.list[idx] = { ...state.list[idx], ...patch };
-      state.list = await updateItem(state.list[idx] || item, patch);
-      renderList();
+      const item = state.list.find((x) => itemKey(x) === btn.getAttribute('data-edit-pos'));
+      if (item) await openEditPosDialog(item);
     });
   });
 }
@@ -1618,18 +1547,24 @@ function renderPredictCard() {
   els.predictBody.classList.toggle('hidden', !open);
   if (els.predictToggle) els.predictToggle.textContent = open ? '关闭' : '展开';
   if (!open) return;
-  const s = state.center.flow?.summary;
+  const flow = state.center?.flow;
+  const s = flow?.summary;
   if (!s) {
     els.predictBody.textContent = '暂无主力资金数据';
     return;
   }
   const intent = analyzeMainForceIntent(s);
+  const asOf = s.asOf || flow?.date || '';
+  const mainYi = Number.isFinite(Number(s.main)) ? Number(s.main).toFixed(2) : '—';
+  const smallYi = Number.isFinite(Number(s.small)) ? Number(s.small).toFixed(2) : '—';
   els.predictBody.innerHTML = `
     <div class="flex flex-wrap items-baseline gap-2">
       <span class="text-sm font-semibold text-accent">${esc(intent.label)}</span>
       <span class="text-[11px] tabular-nums" style="color:var(--muted)">置信 ${Math.round(intent.probability * 100)}%</span>
+      ${asOf ? `<span class="text-[10px] tabular-nums" style="color:var(--muted)">更新 ${esc(asOf)}</span>` : ''}
     </div>
-    <p class="mt-1">${esc(intent.detail)}</p>`;
+    <p class="mt-1">${esc(intent.detail)}</p>
+    <p class="mt-1 text-[11px] tabular-nums" style="color:var(--muted)">主力 ${esc(mainYi)} 亿 · 小单 ${esc(smallYi)} 亿</p>`;
 }
 
 async function loadDataCenter() {
@@ -1645,12 +1580,19 @@ async function loadDataCenter() {
     const updown = pick(1);
     const northbound = pick(2);
     const overview = pick(3);
-    state.center = { flow, updown, northbound, overview };
+    // 成功才覆盖对应字段，避免单接口失败时把主力意图打回「暂无」
+    state.center = {
+      ...(state.center || {}),
+      ...(flow ? { flow } : {}),
+      ...(updown ? { updown } : {}),
+      ...(northbound ? { northbound } : {}),
+      ...(overview ? { overview } : {}),
+    };
     renderFlowSummary();
     const axisOpts = { axisMode: chartAxisMode(), legendNames: flowLegendNames() };
-    if (flow) renderFlowChart($('chart-market-flow'), flow, axisOpts);
-    if (updown) renderUpDownChart($('chart-updown'), updown);
-    if (northbound) renderNorthboundChart($('chart-northbound'), northbound);
+    if (state.center.flow) renderFlowChart($('chart-market-flow'), state.center.flow, axisOpts);
+    if (state.center.updown) renderUpDownChart($('chart-updown'), state.center.updown);
+    if (state.center.northbound) renderNorthboundChart($('chart-northbound'), state.center.northbound);
     renderPredictCard();
     if (state.briefOpen && state.briefTab === 'insight') renderBriefBody();
   } catch (e) {
@@ -1754,34 +1696,32 @@ async function loadPredictFlow() {
   const el = $('chart-predict-flow');
   if (!el) return;
   try {
-    const flow = state.center?.flow || (await fetchMarketMoneyFlow());
-    if (flow && !state.center?.flow) {
+    // 每次进预测页都拉最新实盘，避免沿用资金页旧缓存
+    const flow = (await fetchMarketMoneyFlow()) || state.center?.flow || null;
+    if (flow) {
       state.center = { ...(state.center || {}), flow };
+      renderPredictCard();
     }
     const pack = state.settings?.predictPack;
     const forecast = pack?.forecastFlow || [];
+    const lastClock = flow?.times?.length ? flow.times[flow.times.length - 1] : '';
+    const marketDone = lastClock >= '15:00';
     const asof = $('predict-flow-asof');
     if (asof) {
-      asof.textContent = forecast.length
-        ? `${flow?.date ? `实盘 ${flow.date} · ` : ''}含 AI 推演 ${formatAiTime(pack.generatedAt) || ''}`
-        : flow?.date
-          ? `实盘 ${flow.date} · 点「AI 预测」生成后续推演`
-          : '点「AI 预测」生成主力资金推演';
+      if (marketDone) {
+        asof.textContent = flow?.date
+          ? `实盘 ${flow.date} ${lastClock} · 已收盘，AI 续段待下一交易时段`
+          : '已收盘';
+      } else if (forecast.length) {
+        asof.textContent = `${flow?.date ? `实盘 ${flow.date} · ` : ''}含 AI 推演 ${formatAiTime(pack.generatedAt) || ''}`;
+      } else if (flow?.date) {
+        asof.textContent = `实盘 ${flow.date} · 点「AI 预测」生成后续推演`;
+      } else {
+        asof.textContent = '点「AI 预测」生成主力资金推演';
+      }
     }
     if (flow?.times?.length || forecast.length) {
-      // 实盘抽稀，避免点太密
-      const step = Math.max(1, Math.ceil((flow?.times?.length || 1) / 60));
-      const times = [];
-      const main = [];
-      for (let i = 0; i < (flow?.times?.length || 0); i += step) {
-        times.push(flow.times[i]);
-        main.push(flow.main?.[i] ?? null);
-      }
-      if (flow?.times?.length && (times.length === 0 || times[times.length - 1] !== flow.times[flow.times.length - 1])) {
-        times.push(flow.times[flow.times.length - 1]);
-        main.push(flow.main?.[flow.main.length - 1] ?? null);
-      }
-      renderPredictFlowChart(el, { times, main }, forecast);
+      renderPredictFlowChart(el, { times: flow?.times || [], main: flow?.main || [] }, forecast);
     } else {
       el.innerHTML =
         '<div class="flex h-full items-center justify-center text-[12px]" style="color:var(--muted)">暂无主力资金。点「AI 预测」可生成推演折线。</div>';
@@ -2715,17 +2655,6 @@ async function runDeepseekForItem(item, opts = {}) {
   if (!item || item.kind === 'fund') return;
   const keyId = itemKey(item);
   if (state.aiRunning?.[keyId]) return;
-  const draft = positionDrafts.get(keyId);
-  if (draft && (draft.cost != null || draft.lots != null)) {
-    const patch = {};
-    if (draft.cost != null) patch.cost = parseUserPrice(draft.cost);
-    if (draft.lots != null) {
-      patch.lots = parseLots(draft.lots);
-      patch.markPrice = null;
-    }
-    state.list = await updateItem(item, patch);
-    positionDrafts.delete(keyId);
-  }
   item = state.list.find((x) => itemKey(x) === keyId) || item;
   const apiKey = opts.apiKey || (await ensureDeepseekKey());
   if (!apiKey) return;
@@ -3037,12 +2966,12 @@ async function refreshDetailCharts() {
   const secid = item.secid || toSecid(item.market, item.code, item.marketNo);
   try {
     const period = state.period;
-    const minute = period === 'intraday' || period === 'fiveday';
-    const kltMap = { day: 101, week: 102, month: 103 };
+    // 五日改为近 5 根日 K（蜡烛图），不再用五日分钟分时（网页端 his 源常被拦成「像当日分时」）
+    const minute = period === 'intraday';
+    const kltMap = { fiveday: 101, day: 101, week: 102, month: 103 };
+    const klineLimit = period === 'fiveday' ? 5 : period === 'month' ? 60 : 90;
     const [mainRes, flowRes] = await Promise.allSettled([
-      minute
-        ? fetchIntraday(secid, period === 'fiveday' ? 5 : 1)
-        : fetchKline(secid, kltMap[period] || 101, period === 'month' ? 60 : 90),
+      minute ? fetchIntraday(secid, 1) : fetchKline(secid, kltMap[period] || 101, klineLimit),
       fetchStockMoneyFlow(secid),
     ]);
     const mainData = mainRes.status === 'fulfilled' ? mainRes.value : null;
@@ -3054,7 +2983,7 @@ async function refreshDetailCharts() {
     const prices = mainData?.points?.map((p) => p.price ?? p.high) || [];
     const intraHi = prices.reduce((m, v) => (Number(v) > m ? Number(v) : m), -Infinity);
     const intraLo = prices.reduce((m, v) => (Number(v) > 0 && Number(v) < m ? Number(v) : m), Infinity);
-    const auto = minute ? {} : calcAutoLevels(mainData?.points || [], 20);
+    const auto = minute ? {} : calcAutoLevels(mainData?.points || [], period === 'fiveday' ? 5 : 20);
     const base = Number(mainData?.preClose);
     const pctOf = (price) => {
       if (!(base > 0) || !(Number(price) > 0)) return '—';
@@ -3086,7 +3015,7 @@ async function refreshDetailCharts() {
             preClose: intra.preClose,
             markLine: markLine,
           },
-          { axisMode: period === 'fiveday' ? 'live' : axisMode },
+          { axisMode },
         );
         const last = intra.points[intra.points.length - 1];
         if (last?.price != null) {
@@ -3100,14 +3029,27 @@ async function refreshDetailCharts() {
         }
       } else {
         els.chartMain.innerHTML =
-          `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>${period === 'fiveday' ? '暂无五日分时' : '暂无分时（闭盘也会显示当日走势）'}</span><span class="text-[11px]">可切换日K，或稍后重试</span></div>`;
+          `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>暂无分时（闭盘也会显示当日走势）</span><span class="text-[11px]">可切换日K，或稍后重试</span></div>`;
       }
     } else if (mainData?.points?.length) {
-      const title = period === 'week' ? '周K' : period === 'month' ? '月K' : '日K';
-      renderKlineChart(els.chartMain, mainData.points, { markLine, title });
+      const title =
+        period === 'fiveday' ? '五日K' : period === 'week' ? '周K' : period === 'month' ? '月K' : '日K';
+      const points =
+        period === 'fiveday' ? mainData.points.slice(-5) : mainData.points;
+      renderKlineChart(els.chartMain, points, { markLine, title });
+      const last = points[points.length - 1];
+      if (last?.close != null) {
+        $('detail-price').textContent = fmtPrice(last.close, item.market);
+        const pct = last.changePct != null ? last.changePct : item.changePct;
+        if (pct != null) {
+          $('detail-pct').textContent = fmtPct(pct);
+          $('detail-pct').className = `text-sm font-semibold tabular-nums ${tone(pct)}`;
+          $('detail-price').className = `text-lg font-semibold tabular-nums ${tone(pct)}`;
+        }
+      }
     } else {
       els.chartMain.innerHTML =
-        '<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">暂无K线</div>';
+        `<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">${period === 'fiveday' ? '暂无五日K线' : '暂无K线'}</div>`;
     }
 
     els.chartStockFlow.innerHTML = '';

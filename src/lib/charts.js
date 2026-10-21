@@ -58,7 +58,7 @@ function padTimeLabel(t) {
 }
 
 /** A 股交易日分时轴：09:30–11:30、13:00–15:00（含端点，逐分钟） */
-export function buildAshareSessionTimes() {
+export function buildAshareSessionTimes({ lunchGap = false } = {}) {
   const times = [];
   const pushRange = (h0, m0, h1, m1) => {
     let cur = h0 * 60 + m0;
@@ -71,16 +71,61 @@ export function buildAshareSessionTimes() {
     }
   };
   pushRange(9, 30, 11, 30);
+  // 插入午休断点，配合 connectNulls:false，避免 11:30 直线连到 13:00
+  if (lunchGap) times.push('午休');
   pushRange(13, 0, 15, 0);
   return times;
 }
 
+function clockMinutesOf(label) {
+  const s = String(label || '');
+  const part = s.includes(' ') ? s.split(' ').pop() : s;
+  const m = part.match(/(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+
+function dayKeyOf(label) {
+  const s = String(label || '');
+  if (/\d{1,2}-\d{1,2}/.test(s)) return s.slice(0, 5);
+  if (/\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  return '';
+}
+
+/**
+ * 在午休 / 隔夜处插入 null 断点，折线不再穿越闭盘时段。
+ * @returns {{ times: string[], series: any[][] }}
+ */
+export function breakAcrossSessions(times, ...seriesArrays) {
+  const outT = [];
+  const outs = seriesArrays.map(() => []);
+  for (let i = 0; i < (times || []).length; i += 1) {
+    if (i > 0) {
+      const prev = clockMinutesOf(times[i - 1]);
+      const cur = clockMinutesOf(times[i]);
+      const dayPrev = dayKeyOf(times[i - 1]);
+      const dayCur = dayKeyOf(times[i]);
+      const dayChanged = dayPrev && dayCur && dayPrev !== dayCur;
+      const lunchJump =
+        prev != null && cur != null && prev <= 11 * 60 + 30 && cur >= 13 * 60 && !dayChanged;
+      if (dayChanged || lunchJump) {
+        outT.push(dayChanged ? '' : '午休');
+        outs.forEach((arr) => arr.push(null));
+      }
+    }
+    outT.push(times[i]);
+    seriesArrays.forEach((arr, j) => outs[j].push(arr?.[i] ?? null));
+  }
+  return { times: outT, series: outs };
+}
+
 /** 将稀疏分时对齐到完整交易时段，缺失分钟填 null（价格类可前向填充避免折线断开） */
 export function padSeriesToSession(times, ...seriesArrays) {
-  const session = buildAshareSessionTimes();
+  const session = buildAshareSessionTimes({ lunchGap: true });
   const index = new Map((times || []).map((t, i) => [padTimeLabel(t), i]));
   const series = seriesArrays.map((arr) =>
     session.map((t) => {
+      if (t === '午休') return null;
       const i = index.get(t);
       if (i == null || arr == null) return null;
       const v = arr[i];
@@ -155,13 +200,23 @@ export function renderIntradayChart(
     chartPrices = filtered.prices;
     chartAvgs = filtered.avgs;
     chartVolumes = filtered.volumes;
+    // 午休 / 隔夜断开，避免连成一根「分时」
+    if (multiDay || chartTimes.length > 2) {
+      const broken = breakAcrossSessions(chartTimes, chartPrices, chartAvgs, chartVolumes);
+      chartTimes = broken.times;
+      [chartPrices, chartAvgs, chartVolumes] = broken.series;
+    }
   } else if (axisMode === 'full' && chartTimes.length) {
     const padded = padSeriesToSession(chartTimes, chartPrices, chartAvgs, chartVolumes);
     chartTimes = padded.times;
     [chartPrices, chartAvgs, chartVolumes] = padded.series;
-    // 稀疏分钟对齐后补齐，避免折线中间断裂；成交量保持空洞
-    chartPrices = forwardFillUntilLast(chartPrices);
-    chartAvgs = forwardFillUntilLast(chartAvgs);
+    // 稀疏分钟对齐后补齐，避免折线中间断裂；成交量保持空洞；午休点保持 null
+    chartPrices = forwardFillUntilLast(chartPrices).map((v, i) =>
+      chartTimes[i] === '午休' ? null : v,
+    );
+    chartAvgs = forwardFillUntilLast(chartAvgs).map((v, i) =>
+      chartTimes[i] === '午休' ? null : v,
+    );
   }
   const chart = getChart(el);
   const up = '#e11d48';
@@ -334,14 +389,14 @@ export function renderIntradayChart(
     ],
     series: [
       {
-        name: '分时',
+        name: multiDay ? '五日' : '分时',
         type: 'line',
         data: chartPrices,
         xAxisIndex: 0,
         yAxisIndex: 0,
         showSymbol: false,
-        connectNulls: true,
-        smooth: 0.15,
+        connectNulls: false,
+        smooth: multiDay ? 0 : 0.15,
         lineStyle: { width: 2, color },
         areaStyle: {
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
@@ -358,8 +413,8 @@ export function renderIntradayChart(
         xAxisIndex: 0,
         yAxisIndex: 0,
         showSymbol: false,
-        connectNulls: true,
-        smooth: 0.15,
+        connectNulls: false,
+        smooth: multiDay ? 0 : 0.15,
         lineStyle: { width: 1.2, color: '#f59e0b', opacity: 0.85 },
       },
       {
@@ -602,40 +657,85 @@ export function renderForecastKline(el, history, forecast, { title = '日K+预�
  * 沪深主力：今日实盘 + AI 预测续段（预测用虚线）
  * real: { times, main }
  * forecast: [{ time, main }]
+ * 规则：对齐全日交易轴；午休断开；收盘后不再向 15:00 之后续线；
+ * AI 只画「最后实盘时刻之后、且 ≤15:00」的剩余时段。
  */
 export function renderPredictFlowChart(el, real, forecast) {
   if (!el) return;
-  const realTimes = real?.times || [];
-  const realMain = real?.main || [];
-  const fut = forecast || [];
-  if (!realTimes.length && !fut.length) return;
+  const rawTimes = (real?.times || []).map(padTimeLabel).filter((t) => t && t !== '午休');
+  const rawMain = real?.main || [];
+  const byTime = new Map();
+  rawTimes.forEach((t, i) => {
+    if (clockMinutesOf(t) == null) return;
+    byTime.set(t, rawMain[i] ?? null);
+  });
+  const session = buildAshareSessionTimes({ lunchGap: true });
+  let lastRealIdx = -1;
+  let lastRealMin = -1;
+  const sessionMain = session.map((t, i) => {
+    if (t === '午休') return null;
+    const v = byTime.has(t) ? byTime.get(t) : null;
+    if (v != null) {
+      lastRealIdx = i;
+      lastRealMin = clockMinutesOf(t) ?? lastRealMin;
+    }
+    return v;
+  });
+  // 实盘前向填到最后有点处，午休保持空
+  const filledReal = forwardFillUntilLast(sessionMain).map((v, i) =>
+    session[i] === '午休' ? null : v,
+  );
+
+  const futAll = (forecast || [])
+    .map((p) => ({ time: padTimeLabel(p.time), main: Number(p.main) }))
+    .filter((p) => p.time && Number.isFinite(p.main) && clockMinutesOf(p.time) != null);
+
+  // 市场已走到/过 15:00：不再把「预 09:xx」接在收盘后面
+  const marketDone = lastRealMin >= 15 * 60;
+  const fut = marketDone
+    ? []
+    : futAll.filter((p) => {
+        const m = clockMinutesOf(p.time);
+        return m != null && m > lastRealMin && m <= 15 * 60;
+      });
+
+  const futMap = new Map(fut.map((p) => [p.time, p.main]));
+  const predSeries = session.map((t, i) => {
+    if (t === '午休') return null;
+    if (futMap.has(t)) return futMap.get(t);
+    // 与实盘最后一点相接，便于虚线起步
+    if (hasRealPoint(filledReal) && i === lastRealIdx) return filledReal[i];
+    return null;
+  });
+
+  const hasReal = filledReal.some((v) => v != null);
+  const hasPred = fut.length > 0;
+  if (!hasReal && !hasPred && !futAll.length) return;
+
+  // 无剩余时段可画时，若仍有 AI 包，仅展示实盘全日轴
   const chart = getChart(el);
   const mute = axisMute();
-  const times = [...realTimes, ...fut.map((p) => `预 ${p.time}`)];
-  const realSeries = [...realMain, ...fut.map(() => null)];
-  const predSeries = [
-    ...realMain.map((v, i) => (i === realMain.length - 1 ? v : null)),
-    ...fut.map((p) => p.main),
-  ];
-  // 若无真实点，预测单独成线
-  const hasReal = realMain.some((v) => v != null);
+  const legend = [];
+  if (hasReal) legend.push('今日主力');
+  if (hasPred) legend.push('AI预测');
   chart.setOption({
     animationDuration: 280,
     legend: {
       top: 0,
       textStyle: { color: mute, fontSize: 11 },
-      data: hasReal ? ['今日主力', 'AI预测'] : ['AI预测'],
+      data: legend,
     },
     grid: { left: 48, right: 16, top: 36, bottom: 28 },
     tooltip: { trigger: 'axis' },
     xAxis: {
       type: 'category',
-      data: times,
+      data: session,
       boundaryGap: false,
       axisLabel: {
         color: mute,
         fontSize: 10,
-        interval: Math.max(1, Math.ceil(times.length / 6)),
+        interval: Math.max(1, Math.ceil(session.length / 6)),
+        formatter: (v) => (v === '午休' ? '午休' : v),
       },
       axisLine: { lineStyle: { color: splitLine() } },
     },
@@ -654,24 +754,32 @@ export function renderPredictFlowChart(el, real, forecast) {
               type: 'line',
               showSymbol: false,
               connectNulls: false,
-              data: realSeries,
+              data: filledReal,
               lineStyle: { width: 2.2, color: '#e11d48' },
               itemStyle: { color: '#e11d48' },
             },
           ]
         : []),
-      {
-        name: 'AI预测',
-        type: 'line',
-        showSymbol: false,
-        connectNulls: true,
-        data: hasReal ? predSeries : fut.map((p) => p.main),
-        lineStyle: { width: 2, type: 'dashed', color: '#0ea5e9' },
-        itemStyle: { color: '#0ea5e9' },
-      },
+      ...(hasPred
+        ? [
+            {
+              name: 'AI预测',
+              type: 'line',
+              showSymbol: false,
+              connectNulls: false,
+              data: predSeries,
+              lineStyle: { width: 2, type: 'dashed', color: '#0ea5e9' },
+              itemStyle: { color: '#0ea5e9' },
+            },
+          ]
+        : []),
     ],
   });
   return chart;
+}
+
+function hasRealPoint(arr) {
+  return (arr || []).some((v) => v != null);
 }
 
 /** 卡片迷你分时 */
@@ -714,7 +822,13 @@ export function renderFlowChart(el, flow, { axisMode = 'full', legendNames } = {
   if (axisMode === 'full') {
     const padded = padSeriesToSession(times, main, huge, large, mid, small);
     times = padded.times;
-    [main, huge, large, mid, small] = padded.series.map(forwardFillUntilLast);
+    [main, huge, large, mid, small] = padded.series.map((arr) =>
+      forwardFillUntilLast(arr).map((v, i) => (times[i] === '午休' ? null : v)),
+    );
+  } else {
+    const broken = breakAcrossSessions(times, main, huge, large, mid, small);
+    times = broken.times;
+    [main, huge, large, mid, small] = broken.series;
   }
   const legends = legendNames?.length
     ? legendNames
@@ -740,7 +854,12 @@ export function renderFlowChart(el, flow, { axisMode = 'full', legendNames } = {
       type: 'category',
       data: times,
       boundaryGap: false,
-      axisLabel: { color: mute, fontSize: 10, interval: Math.ceil(times.length / 5) },
+      axisLabel: {
+        color: mute,
+        fontSize: 10,
+        interval: Math.ceil(times.length / 5),
+        formatter: (v) => (v === '午休' ? '午休' : v),
+      },
       axisLine: { lineStyle: { color: splitLine() } },
     },
     yAxis: {
@@ -757,7 +876,7 @@ export function renderFlowChart(el, flow, { axisMode = 'full', legendNames } = {
       name,
       type: 'line',
       showSymbol: false,
-      connectNulls: true,
+      connectNulls: false,
       data: seriesData[i] ?? [],
       color: colors[i] ?? mute,
       itemStyle: { color: colors[i] ?? mute },

@@ -495,8 +495,9 @@ function quoteFromMnfRow(row) {
   const code = String(row.FCODE || '').padStart(6, '0');
   const nav = Number(row.NAV || row.DWJZ || 0);
   const estimate = parseFundEstimate(row.GSZ);
+  // 有估算才用估算涨跌；否则用净值涨跌，避免「净值价 + 昨日估算涨跌」错配
   const pctRaw =
-    row.GSZZL != null && row.GSZZL !== '' && row.GSZZL !== '--'
+    estimate != null
       ? row.GSZZL
       : row.NAVCHGRT != null && row.NAVCHGRT !== ''
         ? row.NAVCHGRT
@@ -512,7 +513,7 @@ function quoteFromMnfRow(row) {
       estimate,
       changePct,
       updatedAt: Date.now(),
-      asOf: row.GZTIME || row.PDATE || '',
+      asOf: estimate != null ? row.GZTIME || row.PDATE || '' : row.PDATE || row.GZTIME || '',
       source: estimate != null ? '估' : '净',
     },
   };
@@ -575,7 +576,8 @@ async function fetchFundQuotesFromTencent(funds) {
           estimate,
           changePct,
           updatedAt: Date.now(),
-          asOf: parts[8] || '',
+          // 估算优先显示估值时间；腾讯 jj 字段 4 常为估值时间，8 为净值日期
+          asOf: (estimate != null ? parts[4] || parts[8] : parts[8]) || '',
           source: estimate != null ? '估' : '净',
         });
       }
@@ -651,14 +653,27 @@ async function fetchFundQuotes(funds) {
     }
   }
 
-  // 2) 腾讯批量（网页可用，含盘中估算）
-  let missing = funds.filter((f) => !map[fundQuoteKey(f.code)]?.price);
-  if (missing.length) {
-    Object.assign(map, await fetchFundQuotesFromTencent(missing));
+  // 2) 腾讯批量：补缺价，并把「只有净值、无估算」的升级成盘中估算（避免一直显示昨日净值涨跌）
+  let needTx = funds.filter((f) => {
+    const q = map[fundQuoteKey(f.code)];
+    return !q?.price || q.estimate == null || q.source === '净';
+  });
+  if (needTx.length) {
+    const tx = await fetchFundQuotesFromTencent(needTx);
+    for (const [k, payload] of Object.entries(tx)) {
+      const prev = map[k];
+      if (!prev) {
+        map[k] = payload;
+        continue;
+      }
+      // 有估算时覆盖净值行情；仍无估算则保留原价只补字段
+      if (payload.estimate != null) map[k] = payload;
+      else if (!prev.price && payload.price != null) map[k] = payload;
+    }
   }
 
   // 3) 天天基金 JSONP 仅补仍缺的少量（串行、短超时）
-  missing = funds.filter((f) => !map[fundQuoteKey(f.code)]?.price);
+  let missing = funds.filter((f) => !map[fundQuoteKey(f.code)]?.price);
   for (const f of missing.slice(0, 12)) {
     try {
       const data = await fetchFundGzJsonp(f.code);
@@ -972,19 +987,22 @@ function formatTrendTime(rawTime, ndays = 1) {
 
 function parseTrendsPayload(data, ndays = 1) {
   if (!data?.trends?.length) return null;
-  const points = data.trends.map((line) => {
-    const p = String(line).split(',');
-    // 东财分时常见：时间,现价,开,高,低,成交量,成交额,均价
-    const price = Number(p[1]);
-    const avg = Number(p[7] ?? p[1]);
-    const rawTime = p[0] || '';
-    return {
-      time: formatTrendTime(rawTime, ndays),
-      price,
-      avg: Number.isFinite(avg) ? avg : price,
-      volume: Number(p[5] || 0),
-    };
-  }).filter((p) => Number.isFinite(p.price) && p.time);
+  const points = data.trends
+    .map((line) => {
+      const p = String(line).split(',');
+      // 东财分时常见：时间,现价,开,高,低,成交量,成交额,均价
+      const price = Number(p[1]);
+      const avg = Number(p[7] ?? p[1]);
+      const rawTime = p[0] || '';
+      return {
+        time: formatTrendTime(rawTime, ndays),
+        price,
+        avg: Number.isFinite(avg) ? avg : price,
+        volume: Number(p[5] || 0),
+      };
+    })
+    // 五日首根偶发 0 价占位，丢掉
+    .filter((p) => Number.isFinite(p.price) && p.price > 0 && p.time);
 
   if (!points.length) return null;
   return {
@@ -1006,23 +1024,54 @@ export async function fetchIntraday(secid, ndays = 1) {
     `&fields2=f51,f52,f53,f54,f55,f56,f57,f58&mpi=${mpi}&ut=fa5fd1943c7b386f172d6893dbfba10b` +
     `&secid=${encodeURIComponent(secid)}&ndays=${days}&iscr=0&iscca=0`;
 
-  const urls = [
-    `https://push2.eastmoney.com/api/qt/stock/trends2/get?${q}`,
-    `https://push2his.eastmoney.com/api/qt/stock/trends2/get?${q}`,
-  ];
+  // 五日必须优先 his：push2 常只回当日 ~241 点，看起来像普通分时
+  const urls =
+    days > 1
+      ? [
+          `https://push2his.eastmoney.com/api/qt/stock/trends2/get?${q}`,
+          `https://push2.eastmoney.com/api/qt/stock/trends2/get?${q}`,
+        ]
+      : [
+          `https://push2.eastmoney.com/api/qt/stock/trends2/get?${q}`,
+          `https://push2his.eastmoney.com/api/qt/stock/trends2/get?${q}`,
+        ];
 
+  let best = null;
   for (const url of urls) {
     try {
       const res = await fetch(url);
       if (!res.ok) continue;
       const json = await res.json();
       const parsed = parseTrendsPayload(json?.data, days);
-      if (parsed) return parsed;
+      if (!parsed?.points?.length) continue;
+      if (days <= 1) return parsed;
+      const daySet = new Set(
+        parsed.points.map((p) => String(p.time || '').slice(0, 5)).filter(Boolean),
+      );
+      // 至少 2 个交易日才算真正的五日；否则继续试下一个源
+      if (daySet.size >= 2 || parsed.points.length > 300) return parsed;
+      if (!best || parsed.points.length > best.points.length) best = parsed;
     } catch {
       /* try next */
     }
   }
-  return null;
+  return best;
+}
+
+function flowClockMinutes(label) {
+  const part = String(label || '').includes(' ')
+    ? String(label).split(' ').pop()
+    : String(label || '');
+  const m = part.match(/(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+
+/** 只保留 A 股连续竞价分钟：09:30–11:30、13:00–15:00 */
+function isAshareSessionMinute(label) {
+  const mins = flowClockMinutes(label);
+  if (mins == null) return false;
+  return (mins >= 9 * 60 + 30 && mins <= 11 * 60 + 30) || (mins >= 13 * 60 && mins <= 15 * 60);
 }
 
 function parseFlowKlines(klines) {
@@ -1038,7 +1087,10 @@ function parseFlowKlines(klines) {
     const p = String(line).split(',');
     const raw = p[0] || '';
     if (!date) date = raw.split(' ')[0] || '';
-    times.push(raw.split(' ')[1] || raw);
+    const clock = raw.split(' ')[1] || raw;
+    // 丢掉午休、盘前盘后杂点，避免 15:00 后还连线
+    if (!isAshareSessionMinute(clock)) continue;
+    times.push(clock.length >= 5 ? clock.slice(0, 5) : clock);
     main.push(+(Number(p[1]) / yi).toFixed(2));
     small.push(+(Number(p[2]) / yi).toFixed(2));
     mid.push(+(Number(p[3]) / yi).toFixed(2));
@@ -1060,6 +1112,7 @@ function parseFlowKlines(klines) {
       mid: last(mid),
       large: last(large),
       huge: last(huge),
+      asOf: times.length ? `${date} ${times[times.length - 1]}`.trim() : date,
     },
   };
 }
