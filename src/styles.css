@@ -260,12 +260,12 @@
     gap: 0.5rem;
   }
 
+  /* 随左侧栏自适应拉宽，避免 PC 端固定 220px 过短 */
   .top-search {
-    width: 220px;
-    max-width: 220px;
+    width: 100%;
+    max-width: none;
     min-width: 0;
-    flex: none;
-    justify-self: start;
+    justify-self: stretch;
   }
 
   .top-nav {
