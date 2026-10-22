@@ -1098,6 +1098,11 @@ function parseFlowKlines(klines) {
     huge.push(+(Number(p[5]) / yi).toFixed(2));
   }
   const last = (arr) => (arr.length ? arr[arr.length - 1] : 0);
+  // 东财资金线是开盘累计值；近 30 分钟净变化 = 末值 - 30 分钟前，盘中意图跟这个走才像「在更新」
+  const win = Math.min(30, Math.max(0, times.length - 1));
+  const idx0 = Math.max(0, times.length - 1 - win);
+  const recentMain = times.length ? +(last(main) - main[idx0]).toFixed(2) : 0;
+  const recentSmall = times.length ? +(last(small) - small[idx0]).toFixed(2) : 0;
   return {
     date,
     times,
@@ -1112,22 +1117,31 @@ function parseFlowKlines(klines) {
       mid: last(mid),
       large: last(large),
       huge: last(huge),
+      recentMain,
+      recentSmall,
+      recentMinutes: win,
       asOf: times.length ? `${date} ${times[times.length - 1]}`.trim() : date,
+      fetchedAt: Date.now(),
     },
   };
 }
 
 /** 沪深大盘主力资金分时 */
 export async function fetchMarketMoneyFlow() {
+  const bust = `_=${Date.now()}`;
+  const q =
+    'lmt=0&klt=1&secid=1.000001&secid2=0.399001' +
+    '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63';
   const urls = [
-    'https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?lmt=0&klt=1&secid=1.000001&secid2=0.399001' +
-      '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63',
-    'https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get?lmt=0&klt=1&secid=1.000001&secid2=0.399001' +
-      '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63',
+    `https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?${q}&${bust}`,
+    `https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get?${q}&${bust}`,
   ];
   for (const url of urls) {
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(7000) });
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(7000),
+        cache: 'no-store',
+      });
       if (!res.ok) continue;
       const json = await res.json();
       const parsed = parseFlowKlines(json?.data?.klines);

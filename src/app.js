@@ -1288,7 +1288,10 @@ function renderFlowSummary() {
     bit('北向', fmtYi(nb?.last), tone(nb?.last), ' 亿'),
   ].join('');
   const flowTitle = $('flow-asof');
-  if (flowTitle) flowTitle.textContent = day ? day : '';
+  if (flowTitle) {
+    const asOf = state.center.flow?.summary?.asOf || day;
+    flowTitle.textContent = asOf || '';
+  }
   if (zd) {
     $('zd-summary').innerHTML = `${day ? `${esc(day)} · ` : ''}涨 <span class="text-up font-semibold">${zd.up}</span> / 跌 <span class="text-down font-semibold">${zd.down}</span>`;
   }
@@ -1555,16 +1558,28 @@ function renderPredictCard() {
   }
   const intent = analyzeMainForceIntent(s);
   const asOf = s.asOf || flow?.date || '';
+  const fetched = Number(s.fetchedAt);
+  const refreshed = Number.isFinite(fetched)
+    ? new Date(fetched).toLocaleTimeString('zh-CN', { hour12: false })
+    : '';
   const mainYi = Number.isFinite(Number(s.main)) ? Number(s.main).toFixed(2) : '—';
   const smallYi = Number.isFinite(Number(s.small)) ? Number(s.small).toFixed(2) : '—';
+  const rMain = intent.recentMain;
+  const rSmall = intent.recentSmall;
+  const recentBit =
+    rMain != null && rSmall != null
+      ? ` · 近窗主力 ${rMain > 0 ? '+' : ''}${Number(rMain).toFixed(2)} / 小单 ${rSmall > 0 ? '+' : ''}${Number(rSmall).toFixed(2)} 亿`
+      : '';
   els.predictBody.innerHTML = `
     <div class="flex flex-wrap items-baseline gap-2">
       <span class="text-sm font-semibold text-accent">${esc(intent.label)}</span>
       <span class="text-[11px] tabular-nums" style="color:var(--muted)">置信 ${Math.round(intent.probability * 100)}%</span>
-      ${asOf ? `<span class="text-[10px] tabular-nums" style="color:var(--muted)">更新 ${esc(asOf)}</span>` : ''}
+      ${intent.scope ? `<span class="text-[10px]" style="color:var(--muted)">${esc(intent.scope)}</span>` : ''}
+      ${asOf ? `<span class="text-[10px] tabular-nums" style="color:var(--muted)">行情 ${esc(asOf)}</span>` : ''}
+      ${refreshed ? `<span class="text-[10px] tabular-nums" style="color:var(--muted)">刷新 ${esc(refreshed)}</span>` : ''}
     </div>
     <p class="mt-1">${esc(intent.detail)}</p>
-    <p class="mt-1 text-[11px] tabular-nums" style="color:var(--muted)">主力 ${esc(mainYi)} 亿 · 小单 ${esc(smallYi)} 亿</p>`;
+    <p class="mt-1 text-[11px] tabular-nums" style="color:var(--muted)">全天主力 ${esc(mainYi)} 亿 · 小单 ${esc(smallYi)} 亿${esc(recentBit)}</p>`;
 }
 
 async function loadDataCenter() {
@@ -4573,7 +4588,7 @@ els.eventDismissBtn?.addEventListener('click', async () => {
 });
 document.querySelectorAll('.board-tab').forEach((tab) => {
   tab.addEventListener('click', () => {
-    scrollPageTop();
+    // 资金页内切换行业/概念/地域，保持当前滚动位置
     state.boardType = tab.dataset.board;
     document.querySelectorAll('.board-tab').forEach((b) => {
       const on = b.dataset.board === state.boardType;
@@ -4587,7 +4602,7 @@ document.querySelectorAll('.board-tab').forEach((tab) => {
 
 document.querySelectorAll('.rank-tab').forEach((tab) => {
   tab.addEventListener('click', () => {
-    scrollPageTop();
+    // 涨跌榜子 tab 同样不跳顶
     state.rank.dir = tab.dataset.rank;
     document.querySelectorAll('.rank-tab').forEach((b) => {
       const on = b.dataset.rank === state.rank.dir;
