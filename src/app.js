@@ -2614,10 +2614,13 @@ function closeReportDrawer() {
 function syncMarketAiBtn() {
   if (!els.marketAiBtn) return;
   // 每个 tab 最多一个 AI：盘况/预测/模拟盘用页内按钮，其它页用顶栏「大盘分析」
+  // 用占位隐藏而不是 display:none，避免顶栏右侧重排把中间 tab 挤歪
   const hideTop = state.view === 'pulse' || state.view === 'predict' || state.view === 'sim';
-  els.marketAiBtn.classList.toggle('hidden', hideTop);
+  els.marketAiBtn.classList.remove('hidden');
+  els.marketAiBtn.classList.toggle('toolbar-slot-hide', hideTop);
+  els.marketAiBtn.setAttribute('aria-hidden', hideTop ? 'true' : 'false');
   els.marketAiBtn.textContent = state.marketAiRunning ? '分析中' : '大盘分析';
-  els.marketAiBtn.disabled = !!state.marketAiRunning;
+  els.marketAiBtn.disabled = hideTop || !!state.marketAiRunning;
   els.marketAiBtn.title = hideTop
     ? '本页请用页内 AI 按钮'
     : '手动分析今天大盘与主线；只有你点才会调用 AI';
