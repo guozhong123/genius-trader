@@ -891,22 +891,28 @@ export function renderNorthboundChart(el, nb) {
   if (!el || !nb?.times?.length) return;
   const chart = getChart(el);
   const mute = axisMute();
-  const last = nb.last;
-  const color = last >= 0 ? '#e11d48' : '#059669';
+  const last = Number(nb.last);
+  const isDeal = nb.metric === 'deal';
+  const isDay = nb.grain === 'day' || isDeal;
+  const color = isDeal ? '#0f766e' : last >= 0 ? '#e11d48' : '#059669';
+  const yName = isDeal ? '成交额·亿' : '净流入·亿';
+  const barColors = isDeal
+    ? nb.net.map(() => color)
+    : nb.net.map((v) => (Number(v) >= 0 ? '#e11d48' : '#059669'));
   chart.setOption({
     animationDuration: 280,
-    grid: { left: 48, right: 16, top: 24, bottom: 28 },
+    grid: { left: 52, right: 16, top: 28, bottom: 28 },
     tooltip: { trigger: 'axis' },
     xAxis: {
       type: 'category',
       data: nb.times,
-      boundaryGap: false,
+      boundaryGap: isDay,
       axisLabel: { color: mute, fontSize: 10, interval: Math.ceil(nb.times.length / 5) },
       axisLine: { lineStyle: { color: splitLine() } },
     },
     yAxis: {
       type: 'value',
-      name: '亿',
+      name: yName,
       nameLocation: 'end',
       nameRotate: 0,
       nameGap: 10,
@@ -915,18 +921,24 @@ export function renderNorthboundChart(el, nb) {
       axisLabel: { color: mute, fontSize: 10 },
     },
     series: [
-      {
-        type: 'line',
-        showSymbol: false,
-        data: nb.net,
-        lineStyle: { width: 2, color },
-        areaStyle: {
-          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: color + '33' },
-            { offset: 1, color: color + '00' },
-          ]),
-        },
-      },
+      isDay
+        ? {
+            type: 'bar',
+            data: nb.net.map((v, i) => ({ value: v, itemStyle: { color: barColors[i] } })),
+            barMaxWidth: 18,
+          }
+        : {
+            type: 'line',
+            showSymbol: false,
+            data: nb.net,
+            lineStyle: { width: 2, color },
+            areaStyle: {
+              color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                { offset: 0, color: color + '33' },
+                { offset: 1, color: color + '00' },
+              ]),
+            },
+          },
     ],
   });
   return chart;
