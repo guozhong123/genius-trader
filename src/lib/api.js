@@ -1014,6 +1014,118 @@ function parseTrendsPayload(data, ndays = 1) {
   };
 }
 
+async function fetchTencentUsMinute(secid) {
+  const sym = tencentSymbol(secid);
+  if (!sym || !/^us/i.test(sym)) return null;
+  const urls = [
+    `https://web.ifzq.gtimg.cn/appstock/app/UsMinute/query?code=${encodeURIComponent(sym)}`,
+    `https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${encodeURIComponent(sym)}`,
+  ];
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) continue;
+      const json = await res.json();
+      const bag = json?.data?.[sym] || json?.data?.[sym.toLowerCase()] || {};
+      const block = bag?.data || bag;
+      const rows = block?.data || [];
+      if (!Array.isArray(rows) || !rows.length) continue;
+      const dateRaw = String(block.date || '');
+      const dateLabel =
+        dateRaw.length === 8 ? `${dateRaw.slice(4, 6)}-${dateRaw.slice(6, 8)}` : '';
+      const points = [];
+      let prev = null;
+      for (const row of rows) {
+        const parts = String(row).trim().split(/\s+/);
+        if (parts.length < 2) continue;
+        const clock = parts[0].length === 4 ? `${parts[0].slice(0, 2)}:${parts[0].slice(2)}` : parts[0];
+        const price = Number(parts[1]);
+        if (!(price > 0)) continue;
+        points.push({
+          time: dateLabel ? `${dateLabel} ${clock}` : clock,
+          price,
+          avg: price,
+          volume: Number(parts[2] || 0) - (prev || 0),
+        });
+        prev = Number(parts[2] || 0);
+      }
+      if (!points.length) continue;
+      const qt = bag?.qt?.[sym] || bag?.qt?.[sym.toLowerCase()] || [];
+      const preClose = Number(qt[4] || qt[5] || points[0].price) || points[0].price;
+      return { name: qt[1] || '', code: secid, preClose, points, ndays: 1 };
+    } catch {
+      /* next */
+    }
+  }
+  return null;
+}
+
+async function fetchYahooChart(secid, { interval = '1m', range = '1d' } = {}) {
+  const sym = yahooSymbol(secid);
+  if (!sym) return null;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=${interval}&range=${range}`;
+  try {
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(10000),
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    const result = json?.chart?.result?.[0];
+    if (!result) return null;
+    const ts = result.timestamp || [];
+    const quote = result.indicators?.quote?.[0] || {};
+    const closes = quote.close || [];
+    const opens = quote.open || [];
+    const highs = quote.high || [];
+    const lows = quote.low || [];
+    const vols = quote.volume || [];
+    const meta = result.meta || {};
+    const points = [];
+    for (let i = 0; i < ts.length; i += 1) {
+      const close = Number(closes[i]);
+      if (!(close > 0)) continue;
+      const d = new Date((Number(ts[i]) + (meta.gmtoffset || 0)) * 1000);
+      const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const dd = String(d.getUTCDate()).padStart(2, '0');
+      const hh = String(d.getUTCHours()).padStart(2, '0');
+      const mi = String(d.getUTCMinutes()).padStart(2, '0');
+      if (interval === '1d' || interval === '1wk' || interval === '1mo') {
+        points.push({
+          date: `${d.getUTCFullYear()}-${mm}-${dd}`,
+          open: Number(opens[i]) || close,
+          close,
+          high: Number(highs[i]) || close,
+          low: Number(lows[i]) || close,
+          volume: Number(vols[i]) || 0,
+          amount: 0,
+          changePct: null,
+        });
+      } else {
+        points.push({
+          time: `${mm}-${dd} ${hh}:${mi}`,
+          price: close,
+          avg: close,
+          volume: Number(vols[i]) || 0,
+        });
+      }
+    }
+    if (!points.length) return null;
+    if (interval === '1d' || interval === '1wk' || interval === '1mo') {
+      return { name: meta.shortName || meta.symbol || '', points: pointsFromOhlc(points) };
+    }
+    return {
+      name: meta.shortName || meta.symbol || '',
+      code: secid,
+      preClose: Number(meta.chartPreviousClose || meta.previousClose || points[0].price) || points[0].price,
+      points,
+      ndays: range === '5d' ? 5 : 1,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** 分时走势。ndays=5 为近五个交易日的分时。 */
 export async function fetchIntraday(secid, ndays = 1) {
   const days = ndays > 1 ? 5 : 1;
@@ -1024,22 +1136,23 @@ export async function fetchIntraday(secid, ndays = 1) {
     `&fields2=f51,f52,f53,f54,f55,f56,f57,f58&mpi=${mpi}&ut=fa5fd1943c7b386f172d6893dbfba10b` +
     `&secid=${encodeURIComponent(secid)}&ndays=${days}&iscr=0&iscca=0`;
 
-  // 五日必须优先 his：push2 常只回当日 ~241 点，看起来像普通分时
-  const urls =
-    days > 1
-      ? [
-          `https://push2his.eastmoney.com/api/qt/stock/trends2/get?${q}`,
-          `https://push2.eastmoney.com/api/qt/stock/trends2/get?${q}`,
-        ]
-      : [
-          `https://push2.eastmoney.com/api/qt/stock/trends2/get?${q}`,
-          `https://push2his.eastmoney.com/api/qt/stock/trends2/get?${q}`,
-        ];
+  // 海外指数：push2 常 502，优先 delay / 腾讯分钟 / Yahoo
+  const hosts = isForeignSecid(secid)
+    ? [
+        'https://push2delay.eastmoney.com',
+        'https://push2.eastmoney.com',
+        'https://push2his.eastmoney.com',
+      ]
+    : days > 1
+      ? ['https://push2his.eastmoney.com', 'https://push2.eastmoney.com']
+      : ['https://push2.eastmoney.com', 'https://push2his.eastmoney.com'];
 
   let best = null;
-  for (const url of urls) {
+  for (const host of hosts) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(`${host}/api/qt/stock/trends2/get?${q}`, {
+        signal: AbortSignal.timeout(8000),
+      });
       if (!res.ok) continue;
       const json = await res.json();
       const parsed = parseTrendsPayload(json?.data, days);
@@ -1055,6 +1168,17 @@ export async function fetchIntraday(secid, ndays = 1) {
       /* try next */
     }
   }
+  if (best?.points?.length) return best;
+
+  if (days <= 1) {
+    const tx = await fetchTencentUsMinute(secid).catch(() => null);
+    if (tx?.points?.length) return tx;
+  }
+  const yahoo = await fetchYahooChart(secid, {
+    interval: days > 1 ? '15m' : '1m',
+    range: days > 1 ? '5d' : '1d',
+  }).catch(() => null);
+  if (yahoo?.points?.length) return yahoo;
   return best;
 }
 
@@ -1499,16 +1623,52 @@ function tencentSymbol(secid) {
       HSTECH: 'hkHSTECH',
       HSCEI: 'hkHSCEI',
       NDX: 'usNDX',
+      NDX100: 'usNDX',
       DJIA: 'usDJI',
       DJI: 'usDJI',
+      SPX: 'usSPX',
       IXIC: 'usIXIC',
+      N225: 'jpN225',
       KS11: 'gzKS11',
       KQ11: 'gzKOSDAQ',
     };
     return direct[c] || `gz${c}`;
   }
+  if (mk === '101') {
+    const c = String(code).toUpperCase();
+    if (c === 'GC00Y' || c === 'GC') return 'hf_GC';
+  }
   if (mk === '177') return `kr${code}`;
   return '';
+}
+
+/** Yahoo 指数符号（东财/腾讯分时或日K不通时的兜底） */
+function yahooSymbol(secid) {
+  const [mk, code] = String(secid || '').split('.');
+  const c = String(code || '').toUpperCase();
+  if (mk === '100') {
+    const map = {
+      NDX: '%5ENDX',
+      NDX100: '%5ENDX',
+      DJIA: '%5EDJI',
+      DJI: '%5EDJI',
+      SPX: '%5EGSPC',
+      IXIC: '%5EIXIC',
+      HSI: '%5EHSI',
+      N225: '%5EN225',
+      KS11: '%5EKS11',
+      KOSPI200: '%5EKOSPI200',
+    };
+    return map[c] || '';
+  }
+  if (mk === '105' || mk === '106' || mk === '107') return c;
+  if (mk === '116') return `${c.padStart(4, '0')}.HK`;
+  return '';
+}
+
+function isForeignSecid(secid) {
+  const mk = String(secid || '').split('.')[0];
+  return mk === '100' || mk === '101' || mk === '105' || mk === '106' || mk === '107' || mk === '116' || mk === '177';
 }
 
 function parseTencentQuoteLine(line) {
@@ -1603,14 +1763,20 @@ async function fetchTencentSnapshots(list) {
 }
 
 async function fetchEastKline(secid, klt, lmt) {
-  const hosts = ['https://push2his.eastmoney.com', 'https://push2.eastmoney.com'];
+  const hosts = isForeignSecid(secid)
+    ? [
+        'https://push2delay.eastmoney.com',
+        'https://push2his.eastmoney.com',
+        'https://push2.eastmoney.com',
+      ]
+    : ['https://push2his.eastmoney.com', 'https://push2.eastmoney.com'];
   for (const host of hosts) {
     try {
       const url =
         `${host}/api/qt/stock/kline/get?secid=${encodeURIComponent(secid)}` +
         `&klt=${klt}&fqt=1&lmt=${lmt}&end=20500101&iscca=1` +
         `&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57,f59&forcect=1`;
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
       if (!res.ok) continue;
       const json = await res.json();
       const lines = json?.data?.klines || [];
@@ -1636,6 +1802,15 @@ async function fetchEastKline(secid, klt, lmt) {
     }
   }
   return null;
+}
+
+async function fetchYahooKline(secid, klt, lmt) {
+  const interval = { 101: '1d', 102: '1wk', 103: '1mo' }[klt] || '1d';
+  const range =
+    interval === '1mo' ? '5y' : interval === '1wk' ? '2y' : lmt <= 10 ? '1mo' : lmt <= 40 ? '3mo' : '1y';
+  const pack = await fetchYahooChart(secid, { interval, range });
+  if (!pack?.points?.length) return null;
+  return { name: pack.name || '', points: pack.points.slice(-lmt) };
 }
 
 async function fetchTencentKline(secid, klt, lmt) {
@@ -1690,12 +1865,14 @@ async function fetchSinaKline(secid, klt, lmt) {
   };
 }
 
-/** 日/周/月/年 K：klt 101/102/103/106。东财不通时改走腾讯，日K再不行走新浪。 */
+/** 日/周/月/年 K：klt 101/102/103/106。东财不通时改走腾讯，再 Yahoo / 新浪。 */
 export async function fetchKline(secid, klt = 101, lmt = 80) {
   const east = await fetchEastKline(secid, klt, lmt);
   if (east?.points?.length) return east;
   const tx = await fetchTencentKline(secid, klt, lmt).catch(() => null);
   if (tx?.points?.length) return tx;
+  const yahoo = await fetchYahooKline(secid, klt, lmt).catch(() => null);
+  if (yahoo?.points?.length) return yahoo;
   const sina = await fetchSinaKline(secid, klt, lmt).catch(() => null);
   if (sina?.points?.length) return sina;
   return { name: '', points: [] };

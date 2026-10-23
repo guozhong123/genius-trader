@@ -26,8 +26,35 @@ function firstFriday(year, month0) {
 
 function eventResult(dateStr, now = new Date()) {
   const today = ymd(now);
-  if (dateStr < today) return '已公布，关注市场反应';
+  if (dateStr < today) return '已公布';
+  if (dateStr === today) return '今日公布';
   return '待公布';
+}
+
+function eventStatus(dateStr, now = new Date()) {
+  const today = ymd(now);
+  if (dateStr < today) return 'released';
+  if (dateStr === today) return 'today';
+  return 'pending';
+}
+
+/** 已公布事件的简化结果摘要（无实时官方数时给方向性提示） */
+function eventOutcome(type, dateStr, now = new Date()) {
+  const today = ymd(now);
+  if (dateStr > today) return '';
+  if (dateStr === today) {
+    return '窗口进行中，请以官网/权威媒体即时数据为准。';
+  }
+  if (type === 'nfp') {
+    return '已落地：关注非农与失业率是否显著偏离预期，以及美元/美债利率反应。';
+  }
+  if (type === 'cpi') {
+    return '关注窗已过：核对核心 CPI 同比/环比是否降温，利率预期与纳指联动最紧。';
+  }
+  if (type === 'fomc') {
+    return '决议已公布：看点阵图与声明偏鹰/偏鸽，风险资产波动常持续 1–2 个交易日。';
+  }
+  return '已公布，关注市场定价是否充分。';
 }
 
 const IMPACT = {
@@ -103,7 +130,9 @@ export function getMacroEvents(fromDate = new Date(), days = 60, lookback = 3) {
           tip: IMPACT.nfp.tip,
           impact: IMPACT.nfp.impact,
           level: 'high',
+          status: eventStatus(date, anchor),
           result: eventResult(date, anchor),
+          outcome: eventOutcome('nfp', date, anchor),
         });
       }
       for (const cpi of cpiWindowDays(y, m)) {
@@ -117,7 +146,9 @@ export function getMacroEvents(fromDate = new Date(), days = 60, lookback = 3) {
             tip: IMPACT.cpi.tip,
             impact: IMPACT.cpi.impact,
             level: 'high',
+            status: eventStatus(date, anchor),
             result: eventResult(date, anchor),
+            outcome: eventOutcome('cpi', date, anchor),
           });
         }
       }
@@ -135,7 +166,9 @@ export function getMacroEvents(fromDate = new Date(), days = 60, lookback = 3) {
         tip: IMPACT.fomc.tip,
         impact: IMPACT.fomc.impact,
         level: 'high',
+        status: eventStatus(date, anchor),
         result: eventResult(date, anchor),
+        outcome: eventOutcome('fomc', date, anchor),
       });
     }
   }

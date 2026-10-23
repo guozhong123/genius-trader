@@ -15,7 +15,7 @@ export const DEFAULT_INDICES = [
   { name: '创业板指', code: '399006', market: 'SZ', marketNo: 0, secid: '0.399006', kind: 'stock', label: '深' },
   { name: '沪深300', code: '000300', market: 'SH', marketNo: 1, secid: '1.000300', kind: 'stock', label: '沪' },
   { name: '恒生指数', code: 'HSI', market: 'HK', marketNo: 100, secid: '100.HSI', kind: 'stock', label: '港' },
-  { name: '纳斯达克', code: 'NDX', market: 'US', marketNo: 100, secid: '100.NDX', kind: 'stock', label: '美' },
+  { name: '纳斯达克100', code: 'NDX', market: 'US', marketNo: 100, secid: '100.NDX', kind: 'stock', label: '美' },
   { name: '日经225', code: 'N225', market: 'JP', marketNo: 100, secid: '100.N225', kind: 'stock', label: '日' },
   { name: '韩国KOSPI', code: 'KS11', market: 'KR', marketNo: 100, secid: '100.KS11', kind: 'stock', label: '韩' },
 ];
@@ -37,7 +37,7 @@ export const INDEX_PRESETS = [
   { name: '恒生科技', code: 'HSTECH', market: 'HK', marketNo: 100, secid: '100.HSTECH', kind: 'stock', label: '港' },
   { name: '恒生中国企', code: 'HSCEI', market: 'HK', marketNo: 100, secid: '100.HSCEI', kind: 'stock', label: '港' },
   // 美股
-  { name: '纳斯达克', code: 'NDX', market: 'US', marketNo: 100, secid: '100.NDX', kind: 'stock', label: '美' },
+  { name: '纳斯达克100', code: 'NDX', market: 'US', marketNo: 100, secid: '100.NDX', kind: 'stock', label: '美' },
   { name: '道琼斯', code: 'DJIA', market: 'US', marketNo: 100, secid: '100.DJIA', kind: 'stock', label: '美' },
   { name: '标普500', code: 'SPX', market: 'US', marketNo: 100, secid: '100.SPX', kind: 'stock', label: '美' },
   { name: '费城半导体', code: 'SOX', market: 'US', marketNo: 100, secid: '100.SOX', kind: 'stock', label: '美' },
@@ -133,15 +133,25 @@ export function uniqueIndices(list) {
   const out = [];
   let goldUsed = false;
   for (const x of rows) {
-    const sid = x?.secid || '';
+    const sid = String(x?.secid || '').toUpperCase();
     if (!sid) continue;
+    // 纳斯达克 / 纳斯达克100 只留一条（统一用 100.NDX）
+    const normSid = sid === '100.NDX100' ? '100.NDX' : sid;
     if (isGoldIndex(x)) {
       if (goldUsed || (gold && x !== gold)) continue;
       goldUsed = true;
     }
-    if (seen.has(sid)) continue;
-    seen.add(sid);
-    out.push(x);
+    if (seen.has(normSid)) continue;
+    seen.add(normSid);
+    const row = { ...x, secid: normSid === '100.NDX' ? '100.NDX' : x.secid };
+    if (/^100\.NDX$/i.test(row.secid) || /^NDX100?$/i.test(row.code || '')) {
+      row.name = '纳斯达克100';
+      row.code = 'NDX';
+      row.secid = '100.NDX';
+      row.marketNo = 100;
+      row.label = row.label || '美';
+    }
+    out.push(row);
   }
   return out;
 }
@@ -161,6 +171,9 @@ export async function getSettings() {
 export async function saveSettings(partial) {
   const cur = await getSettings();
   const next = { ...cur, ...partial };
+  if (partial && Object.prototype.hasOwnProperty.call(partial, 'indices')) {
+    next.indices = uniqueIndices(next.indices);
+  }
   await chrome.storage.local.set({ [KEYS.settings]: next });
   return next;
 }

@@ -269,6 +269,13 @@
 
   .top-search #search-input {
     min-height: 36px;
+    color: var(--ink);
+    caret-color: var(--ink);
+  }
+
+  .top-search #search-input::placeholder {
+    color: var(--muted);
+    opacity: 1;
   }
 
   .top-nav {
@@ -616,29 +623,33 @@
 
     .list-row.has-pos {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-      gap: 6px 10px;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+      gap: 4px 8px;
       align-items: center;
       padding: 8px;
     }
 
-    .list-row.has-pos .col-name-block,
-    .list-row.has-pos .col-actions,
-    .list-row.has-pos .ai-probs,
-    .list-row.has-pos .pos-edit {
+    .list-row.has-pos .col-name-block {
       grid-column: 1 / -1;
     }
 
     .list-row.has-pos .col-actions {
+      grid-column: 1 / -1;
       display: flex;
       justify-content: flex-end;
+      align-items: center;
       gap: 6px;
+      margin-top: 0;
     }
 
     .list-row.has-pos .live-price {
+      grid-column: 1 / -1;
       min-width: 0;
       justify-self: start;
       white-space: nowrap;
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
     }
 
     .list-row.has-pos .live-price::before {
@@ -670,21 +681,40 @@
     }
 
     .list-row.has-pos .pos-edit {
+      grid-column: 3;
       justify-self: end;
+      align-self: center;
       min-height: 28px;
       padding: 4px 10px;
+      margin: 0;
     }
 
+    /* 无分析时的「—」占位不再单独占一行 */
     .list-row.has-pos .ai-probs {
+      display: none;
+    }
+
+    .list-row.has-pos .ai-probs:has(.on),
+    .list-row.has-pos .ai-probs:has(.ai-prob-time) {
+      display: flex;
+      grid-column: 1 / -1;
       flex-direction: row;
+      flex-wrap: wrap;
       justify-content: flex-start;
-      gap: 8px;
+      gap: 6px 8px;
       max-height: none;
     }
 
     .list-row.has-pos .pos-pnl {
-      align-items: flex-end;
+      grid-column: 1 / -1;
+      align-items: flex-start;
+      flex-direction: row;
+      flex-wrap: wrap;
+      gap: 4px 10px;
+      justify-content: flex-start;
+      text-align: left;
       max-height: none;
+      min-height: 0;
     }
 
     .top-actions {
@@ -791,9 +821,10 @@
       text-align: right;
     }
 
-    .list-row .col-actions button {
-      min-height: 28px;
-      min-width: 28px;
+    .list-row .col-actions button,
+    .list-row .col-actions .row-act {
+      min-height: 30px;
+      min-width: 30px;
     }
 
     #detail-panel {
@@ -852,9 +883,9 @@
     }
 
     .list-row.has-pos {
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-      gap: 8px 8px;
-      padding: 10px 8px;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+      gap: 4px 8px;
+      padding: 8px;
     }
 
     .list-row.has-pos .live-price {
@@ -873,12 +904,17 @@
       grid-column: 2;
     }
 
+    .list-row.has-pos .pos-edit {
+      grid-column: 3;
+      grid-row: auto;
+    }
+
     .list-row.has-pos .pos-pnl {
       grid-column: 1 / -1;
       align-items: flex-start;
       flex-direction: row;
       flex-wrap: wrap;
-      gap: 6px 10px;
+      gap: 4px 10px;
       justify-content: flex-start;
       text-align: left;
     }
@@ -1048,6 +1084,10 @@
     line-height: 1.15;
     font-variant-numeric: tabular-nums;
     text-align: right;
+  }
+
+  .pos-pnl:empty {
+    display: none;
   }
 
   .pnl {
@@ -1886,12 +1926,9 @@ button.pick-card {
   font-weight: 600;
   line-height: 1.2;
   text-align: left;
+  cursor: default;
   background: color-mix(in oklab, var(--accent) 8%, var(--panel-solid));
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--line) 85%, transparent);
-}
-
-.strategy-chip:hover {
-  background: color-mix(in oklab, var(--accent) 14%, var(--panel-solid));
 }
 
 .strategy-chip .tag {
@@ -2090,7 +2127,7 @@ button.pick-card {
     text-align: right;
   }
 
-  /* 持仓行：窄屏两列，避免桌面多列被挤重叠 */
+  /* 持仓行：窄屏紧凑排布，避免中间大片空白 */
   .list-head.has-pos {
     display: none;
   }
@@ -2098,29 +2135,32 @@ button.pick-card {
   .list-row.has-pos,
   .list-row.has-pos.has-ai {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 6px 10px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: 4px 8px;
     align-items: center;
     padding: 8px;
   }
 
-  .list-row.has-pos .col-name-block,
-  .list-row.has-pos .col-actions,
-  .list-row.has-pos .ai-probs,
-  .list-row.has-pos .pos-edit {
+  .list-row.has-pos .col-name-block {
     grid-column: 1 / -1;
   }
 
   .list-row.has-pos .col-actions {
+    grid-column: 1 / -1;
     display: flex;
     justify-content: flex-end;
+    align-items: center;
     gap: 6px;
   }
 
   .list-row.has-pos .live-price {
+    grid-column: 1 / -1;
     min-width: 0;
     justify-self: start;
     white-space: nowrap;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
   }
 
   .list-row.has-pos .live-price::before {
@@ -2152,22 +2192,37 @@ button.pick-card {
   }
 
   .list-row.has-pos .pos-edit {
+    grid-column: 3;
     justify-self: end;
     min-height: 28px;
     padding: 4px 10px;
   }
 
   .list-row.has-pos .ai-probs {
+    display: none;
+  }
+
+  .list-row.has-pos .ai-probs:has(.on),
+  .list-row.has-pos .ai-probs:has(.ai-prob-time) {
+    display: flex;
+    grid-column: 1 / -1;
     flex-direction: row;
-    justify-content: flex-start;
     flex-wrap: wrap;
-    gap: 8px;
+    justify-content: flex-start;
+    gap: 6px 8px;
     max-height: none;
   }
 
   .list-row.has-pos .pos-pnl {
-    align-items: flex-end;
+    grid-column: 1 / -1;
+    align-items: flex-start;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    justify-content: flex-start;
+    text-align: left;
     max-height: none;
+    min-height: 0;
   }
 
   .top-toolbar {
@@ -2225,9 +2280,9 @@ button.pick-card {
 @media (max-width: 480px) {
   .list-row.has-pos,
   .list-row.has-pos.has-ai {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 8px;
-    padding: 10px 8px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: 4px 8px;
+    padding: 8px;
   }
 
   .list-row.has-pos .live-price {
@@ -2238,15 +2293,59 @@ button.pick-card {
     font-size: 15px;
   }
 
+  .list-row.has-pos .pos-edit {
+    grid-column: 3;
+  }
+
   .list-row.has-pos .pos-pnl {
     grid-column: 1 / -1;
     align-items: flex-start;
     flex-direction: row;
     flex-wrap: wrap;
-    gap: 6px 10px;
+    gap: 4px 10px;
     justify-content: flex-start;
     text-align: left;
   }
+}
+
+/* 列表操作：置顶 / 分组 / 删除 */
+.row-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  min-width: 28px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  border: 1px solid color-mix(in oklab, var(--line) 90%, transparent);
+  background: color-mix(in oklab, var(--panel-solid) 88%, transparent);
+  color: var(--muted);
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.row-act:hover {
+  color: var(--ink);
+  border-color: color-mix(in oklab, var(--accent) 45%, var(--line));
+  background: color-mix(in oklab, var(--accent) 10%, var(--panel-solid));
+}
+
+.row-act.is-on {
+  color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent) 40%, var(--line));
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+}
+
+.row-act.danger {
+  color: var(--up);
+}
+
+.row-act.danger:hover {
+  color: #fff;
+  background: var(--up);
+  border-color: var(--up);
 }
 
 .more-menu {

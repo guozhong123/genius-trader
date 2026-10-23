@@ -11,6 +11,7 @@ import {
   reorderWatchlist,
   saveSettings,
   setWatchlist,
+  uniqueIndices,
   updateItem,
   emptySimBook,
   SIM_START_CASH,
@@ -263,7 +264,7 @@ const els = {
   simTrades: $('sim-trades'),
 };
 
-const NEWS_REFRESH_MS = 2 * 60 * 1000;
+const NEWS_REFRESH_MS = 90 * 1000;
 const MACRO_HINT = /非农|CPI|PCE|美联储|降息|加息/;
 
 function quoteKey(item) {
@@ -402,7 +403,7 @@ function scrollPageTop() {
   document.querySelector('.page-shell')?.scrollTo?.(0, 0);
 }
 
-const APP_VIEWS = ['watch', 'pulse', 'predict', 'data', 'etf', 'sim'];
+const APP_VIEWS = ['watch', 'pulse', 'predict', 'data', 'etf'];
 const SIM_FEE_RATE = 0.0005; // 万五
 const SIM_FEE_MIN = 5;
 
@@ -523,11 +524,6 @@ function setView(view) {
   if (state.view === 'predict') {
     renderPredictView();
     void loadPredictFlow();
-  }
-  if (state.view === 'sim') {
-    ensureSimBook();
-    renderSimView();
-    void markSimToMarket();
   }
   if (state.view === 'etf') ensureHeatmap();
   syncMarketAiBtn();
@@ -943,8 +939,8 @@ function costLineHtml(item, livePrice) {
   return `<div class="pos-fields" data-live="${Number.isFinite(live) ? live : ''}">
     <div class="pos-field pos-read"><span class="pos-label">成本</span><span class="pos-val tabular-nums">${esc(costText)}</span></div>
     <div class="pos-field pos-read"><span class="pos-label">手数</span><span class="pos-val tabular-nums">${esc(lotsText)}</span></div>
-    <div class="pos-pnl">${pnlHtml(cost, live, lots, item)}${stopHtml(item, cost, live)}</div>
     <button type="button" data-edit-pos="${key}" class="pos-edit" title="修改成本与手数">改</button>
+    <div class="pos-pnl">${pnlHtml(cost, live, lots, item)}${stopHtml(item, cost, live)}</div>
   </div>`;
 }
 
@@ -1020,9 +1016,9 @@ function rowHtml(item) {
       ${costLineHtml(item, price)}
       ${aiProbCell(item)}
       <div class="col-actions">
-        <button data-move-group="${escAttr(itemKey(item))}" class="rounded px-1 text-[10px] ring-soft" style="color:var(--muted)" title="改分组">组</button>
-        <button data-pin="${escAttr(itemKey(item))}" class="rounded px-1 text-[10px] ring-soft" style="color:var(--muted)">${item.pinned ? '取消' : '顶'}</button>
-        <button data-remove="${escAttr(itemKey(item))}" class="rounded px-1 text-[10px] ring-soft" style="color:var(--up)">删</button>
+        <button type="button" data-move-group="${escAttr(itemKey(item))}" class="row-act" title="改分组">组</button>
+        <button type="button" data-pin="${escAttr(itemKey(item))}" class="row-act${item.pinned ? ' is-on' : ''}" title="${item.pinned ? '取消置顶' : '置顶'}">${item.pinned ? '取消' : '置顶'}</button>
+        <button type="button" data-remove="${escAttr(itemKey(item))}" class="row-act danger" title="删除">删</button>
       </div>
     </article>`;
 }
@@ -1177,10 +1173,12 @@ function bindListEvents() {
       e.stopPropagation();
       const item = state.list.find((x) => itemKey(x) === btn.getAttribute('data-remove'));
       if (!item) return;
-      if (item.kind === 'fund') {
-        const ok = await confirmDialog('删除基金', `确定删除「${item.name || item.code}」吗？`);
-        if (!ok) return;
-      }
+      const kindLabel = item.kind === 'fund' ? '基金' : '股票';
+      const ok = await confirmDialog(
+        `删除${kindLabel}`,
+        `确定删除「${item.name || item.code}」吗？删除后可从搜索重新添加。`,
+      );
+      if (!ok) return;
       state.list = await removeItem(item);
       renderGroupTabs();
       renderList();
@@ -1459,7 +1457,6 @@ function renderStrategyDesk() {
   const tape = judgeTape(state.center);
   const ai = latestMarketAi();
   const candidates = strategyMainCandidates();
-  const pool = planPoolList();
   const envColor =
     tape?.label === '宜等' ? 'var(--down)' : tape?.label === '可找买点' ? 'var(--up)' : 'var(--accent)';
   const aiAge = ai?.generatedAt
@@ -1476,38 +1473,16 @@ function renderStrategyDesk() {
           const warn = c.tag === '价已走弱' || c.tag === '不宜再追';
           const pct =
             c.pct == null || !Number.isFinite(Number(c.pct)) ? '' : `<span class="pct">${fmtPct(c.pct)}</span>`;
-          const payload = encodeURIComponent(
-            JSON.stringify({
-              name: c.name,
-              code: c.code || '',
-              market: c.market || '',
-              theme: c.theme,
-              tag: c.tag,
-            }),
-          );
-          return `<button type="button" class="strategy-chip${warn ? ' warn' : ''}" data-plan-add="${escAttr(
-            payload,
-          )}" title="加入今日计划池（不代表立刻买入）">
+          return `<div class="strategy-chip${warn ? ' warn' : ''}" title="主线观察，不代表立刻买入">
             <span class="tag">${esc(c.tag)}</span>
             <span class="meta">${esc(c.theme)}${c.name && c.name !== c.theme ? ` · ${esc(c.name)}` : ''}</span>
             ${pct}
-          </button>`;
+          </div>`;
         })
         .join('')}</div>`
     : `<p class="strategy-empty">${
         state.trendLoading ? '主线加载中…' : '暂无主线候选。可先点「大盘分析」或打开盘况。'
       }</p>`;
-  const poolHtml = pool.length
-    ? `<div class="strategy-plan-row">${pool
-        .map(
-          (p) => `<span class="strategy-plan-item">
-            <span>${esc(p.name)}${p.theme && p.theme !== p.name ? ` · ${esc(p.theme)}` : ''}</span>
-            ${p.code ? `<button type="button" data-plan-watch="${escAttr(p.id)}" title="加入自选">自选</button>` : ''}
-            <button type="button" data-plan-remove="${escAttr(p.id)}" title="移出计划池">×</button>
-          </span>`,
-        )
-        .join('')}</div>`
-    : `<p class="strategy-empty">计划池空着。点上方主线候选加入（最多 5 只），和自选分开。</p>`;
 
   el.innerHTML = `
     <div class="strategy-desk-head">
@@ -1531,12 +1506,8 @@ function renderStrategyDesk() {
       }
     </div>
     <div>
-      <p class="strategy-section-label">主线候选 · 点一下进计划池</p>
+      <p class="strategy-section-label">主线候选</p>
       ${candHtml}
-    </div>
-    <div>
-      <p class="strategy-section-label">计划池 ${pool.length}/5</p>
-      ${poolHtml}
     </div>
     <div class="strategy-actions">
       <button type="button" data-strategy-pulse>看盘况</button>
@@ -2613,9 +2584,9 @@ function closeReportDrawer() {
 
 function syncMarketAiBtn() {
   if (!els.marketAiBtn) return;
-  // 每个 tab 最多一个 AI：盘况/预测/模拟盘用页内按钮，其它页用顶栏「大盘分析」
+  // 每个 tab 最多一个 AI：盘况/预测用页内按钮，其它页用顶栏「大盘分析」
   // 用占位隐藏而不是 display:none，避免顶栏右侧重排把中间 tab 挤歪
-  const hideTop = state.view === 'pulse' || state.view === 'predict' || state.view === 'sim';
+  const hideTop = state.view === 'pulse' || state.view === 'predict';
   els.marketAiBtn.classList.remove('hidden');
   els.marketAiBtn.classList.toggle('toolbar-slot-hide', hideTop);
   els.marketAiBtn.setAttribute('aria-hidden', hideTop ? 'true' : 'false');
@@ -2969,6 +2940,20 @@ async function ensureFundQuote(item) {
   }
 }
 
+function isForeignDetail(item) {
+  const mk = Number(item?.marketNo);
+  const sid = String(item?.secid || '');
+  const head = sid.split('.')[0];
+  return (
+    item?.market === 'US' ||
+    item?.market === 'HK' ||
+    item?.market === 'KR' ||
+    item?.market === 'JP' ||
+    mk >= 100 ||
+    ['100', '101', '105', '106', '107', '116', '177'].includes(head)
+  );
+}
+
 function syncPeriodTabs() {
   document.querySelectorAll('.period-btn').forEach((btn) => {
     const on = btn.dataset.period === state.period;
@@ -2976,6 +2961,9 @@ function syncPeriodTabs() {
     btn.classList.toggle('text-white', on);
     btn.style.color = on ? '#fff' : 'var(--muted)';
   });
+  const foreign = isForeignDetail(state.detail);
+  const axisWrap = document.querySelector('#stock-chart-wrap .detail-axis-btn')?.parentElement;
+  if (axisWrap) axisWrap.classList.toggle('hidden', foreign);
 }
 
 async function refreshDetailCharts() {
@@ -2984,24 +2972,39 @@ async function refreshDetailCharts() {
   const secid = item.secid || toSecid(item.market, item.code, item.marketNo);
   try {
     const period = state.period;
-    // 五日改为近 5 根日 K（蜡烛图），不再用五日分钟分时（网页端 his 源常被拦成「像当日分时」）
-    const minute = period === 'intraday';
+    const foreign = isForeignDetail(item);
+    // A 股五日：近 5 根日 K；海外五日：优先 5 日分钟分时（与日K区分开）
+    const minute = period === 'intraday' || (foreign && period === 'fiveday');
     const kltMap = { fiveday: 101, day: 101, week: 102, month: 103 };
     const klineLimit = period === 'fiveday' ? 5 : period === 'month' ? 60 : 90;
+    const mainFetch = async () => {
+      if (!minute) return fetchKline(secid, kltMap[period] || 101, klineLimit);
+      const intra = await fetchIntraday(secid, period === 'fiveday' ? 5 : 1);
+      if (intra?.points?.length) return { ...intra, _chart: 'intra' };
+      // 海外五日分钟失败时退回 5 根日 K，避免空白
+      if (period === 'fiveday') {
+        const k = await fetchKline(secid, 101, 5);
+        if (k?.points?.length) return { ...k, _chart: 'kline' };
+      }
+      return intra;
+    };
     const [mainRes, flowRes] = await Promise.allSettled([
-      minute ? fetchIntraday(secid, 1) : fetchKline(secid, kltMap[period] || 101, klineLimit),
-      fetchStockMoneyFlow(secid),
+      mainFetch(),
+      foreign ? Promise.resolve(null) : fetchStockMoneyFlow(secid),
     ]);
-    const mainData = mainRes.status === 'fulfilled' ? mainRes.value : null;
+    let mainData = mainRes.status === 'fulfilled' ? mainRes.value : null;
     const flow = flowRes.status === 'fulfilled' ? flowRes.value : null;
     if (mainRes.status === 'rejected') console.error(mainRes.reason);
     if (flowRes.status === 'rejected') console.error(flowRes.reason);
+    const useMinute =
+      minute && mainData?._chart !== 'kline' && Array.isArray(mainData?.points) && mainData.points[0]?.price != null;
 
-    const axisMode = chartAxisMode();
+    const axisMode = foreign ? 'live' : chartAxisMode();
+    syncPeriodTabs();
     const prices = mainData?.points?.map((p) => p.price ?? p.high) || [];
     const intraHi = prices.reduce((m, v) => (Number(v) > m ? Number(v) : m), -Infinity);
     const intraLo = prices.reduce((m, v) => (Number(v) > 0 && Number(v) < m ? Number(v) : m), Infinity);
-    const auto = minute ? {} : calcAutoLevels(mainData?.points || [], period === 'fiveday' ? 5 : 20);
+    const auto = useMinute ? {} : calcAutoLevels(mainData?.points || [], period === 'fiveday' ? 5 : 20);
     const base = Number(mainData?.preClose);
     const pctOf = (price) => {
       if (!(base > 0) || !(Number(price) > 0)) return '—';
@@ -3009,18 +3012,18 @@ async function refreshDetailCharts() {
       return `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`;
     };
     const markLine = buildLevelMarkLines({
-      preClose: minute ? mainData?.preClose : null,
-      resistance: minute ? (Number.isFinite(intraHi) ? intraHi : null) : auto.resistance,
-      support: minute ? (Number.isFinite(intraLo) ? intraLo : null) : auto.support,
-      resistanceName: minute ? `最高涨幅 ${pctOf(intraHi)}` : '压力',
-      supportName: minute ? `最低涨幅 ${pctOf(intraLo)}` : '支撑',
+      preClose: useMinute ? mainData?.preClose : null,
+      resistance: useMinute ? (Number.isFinite(intraHi) ? intraHi : null) : auto.resistance,
+      support: useMinute ? (Number.isFinite(intraLo) ? intraLo : null) : auto.support,
+      resistanceName: useMinute ? `最高涨幅 ${pctOf(intraHi)}` : '压力',
+      supportName: useMinute ? `最低涨幅 ${pctOf(intraLo)}` : '支撑',
     });
 
     // 清空占位后再渲染，保证容器已有尺寸
     els.chartMain.innerHTML = '';
     await waitFrames(1);
 
-    if (minute) {
+    if (useMinute) {
       const intra = mainData;
       if (intra?.points?.length) {
         renderIntradayChart(
@@ -3106,8 +3109,69 @@ async function refreshDetailCharts() {
   }
 }
 
+/** 上证 / 韩国急涨急跌：短时涨跌幅突变时 toast + 简讯 */
+const indexSpikeState = new Map();
+
+function noteIndexSpike(row) {
+  const code = String(row?.code || '');
+  const key = row?.secid || code;
+  if (!key || !/^(000001|KS11)$/i.test(code)) return null;
+  const pct = Number(row.changePct);
+  const price = Number(row.price);
+  if (!Number.isFinite(pct) || !(price > 0)) return null;
+  const now = Date.now();
+  const prev = indexSpikeState.get(key);
+  indexSpikeState.set(key, { pct, price, at: now });
+  if (!prev || !(now - prev.at < 12 * 60 * 1000)) return null;
+  const dPct = pct - prev.pct;
+  const dPricePct = prev.price > 0 ? ((price - prev.price) / prev.price) * 100 : 0;
+  const move = Math.abs(dPct) >= Math.abs(dPricePct) ? dPct : dPricePct;
+  // 约 10 分钟内相对跳变 ≥ 0.45% 视为急拉/急跌
+  if (Math.abs(move) < 0.45) return null;
+  const name = /KS11/i.test(code) ? '韩国KOSPI' : '上证指数';
+  const up = move > 0;
+  const msg = `${name}${up ? '快速拉升' : '快速回落'} ${move > 0 ? '+' : ''}${move.toFixed(2)}%（现 ${fmtPct(pct)}）`;
+  return {
+    id: `spike-${key}-${Math.round(now / 60000)}`,
+    title: msg,
+    time: new Date(now).toISOString(),
+    score: 8,
+    source: 'index-spike',
+    tone: up ? 'up' : 'down',
+    major: true,
+    impact: up
+      ? '短时放量上行，留意能否站稳；已追高仓位注意回撤。'
+      : '短时快速下挫，控制仓位、先看支撑与情绪是否扩散。',
+  };
+}
+
+function pushSpikeAlert(alert) {
+  if (!alert) return;
+  try {
+    const lastKey = `spikeToast:${alert.id}`;
+    if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem(lastKey)) return;
+    sessionStorage?.setItem?.(lastKey, '1');
+  } catch {
+    /* ignore storage */
+  }
+  flashStatus(alert.title);
+  const list = [...(state.settings?.cachedNews || [])];
+  if (list.some((n) => n.id === alert.id)) return;
+  list.unshift(alert);
+  state.settings = { ...state.settings, cachedNews: list.slice(0, 40) };
+  state.insightNews = mergeMajorAlerts(list, {
+    techLeaders: state.techLeaders || [],
+    todayEvents: getTodayEvents(),
+  });
+  saveSettings({ cachedNews: state.settings.cachedNews }).catch(() => {});
+  if (typeof syncBriefUnreadUi === 'function') syncBriefUnreadUi();
+}
+
 async function refreshIndices() {
   state.indices = await fetchIndices(state.settings.indices || []);
+  for (const row of state.indices || []) {
+    pushSpikeAlert(noteIndexSpike(row));
+  }
   renderIndices();
 }
 
@@ -4144,11 +4208,15 @@ function buildBriefInsightHtml() {
   const sh = idx.find((x) => x.code === '000001');
   const sz = idx.find((x) => x.code === '399001');
   const cy = idx.find((x) => x.code === '399006');
+  const ndx = idx.find((x) => /^NDX/i.test(x.code) || /纳斯达克/.test(x.name || ''));
+  const ks = idx.find((x) => /^KS11/i.test(x.code) || /KOSPI|韩国/.test(x.name || ''));
 
   const marketBits = [];
   if (sh) marketBits.push(`上证 ${fmtPct(sh.changePct)}`);
   if (sz) marketBits.push(`深证 ${fmtPct(sz.changePct)}`);
   if (cy) marketBits.push(`创业板 ${fmtPct(cy.changePct)}`);
+  if (ndx) marketBits.push(`纳指100 ${fmtPct(ndx.changePct)}`);
+  if (ks) marketBits.push(`韩国 ${fmtPct(ks.changePct)}`);
 
   const zd = state.center?.updown;
   const ov = state.center?.overview;
@@ -4166,6 +4234,15 @@ function buildBriefInsightHtml() {
   else if (mktAvg < -0.5) tips.push('主要指数偏弱，宜控制仓位、重视止损。');
   else tips.push('指数震荡，宜按计划分批，少追涨杀跌。');
 
+  if (ndx && Number.isFinite(Number(ndx.changePct))) {
+    if (ndx.changePct >= 1.2) tips.push(`纳斯达克100偏强（${fmtPct(ndx.changePct)}），隔夜情绪利好成长/科技联动。`);
+    else if (ndx.changePct <= -1.2) tips.push(`纳斯达克100偏弱（${fmtPct(ndx.changePct)}），A 股科技开盘宜更谨慎。`);
+  }
+  if (ks && Number.isFinite(Number(ks.changePct))) {
+    if (ks.changePct >= 1) tips.push(`韩国KOSPI偏强（${fmtPct(ks.changePct)}），留意半导体/存储链条情绪。`);
+    else if (ks.changePct <= -1) tips.push(`韩国KOSPI偏弱（${fmtPct(ks.changePct)}），相关映射股注意波动。`);
+  }
+
   const techStrong = [...tech].sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct)).slice(0, 6);
   if (techStrong.length) {
     const soft = techStrong.filter((t) => t.changePct <= -2).map((t) => t.name);
@@ -4173,8 +4250,8 @@ function buildBriefInsightHtml() {
     if (hot.length) tips.push(`科技龙头偏强：${hot.join('、')}，相关主题可关注联动，忌追高。`);
     if (soft.length) tips.push(`科技龙头偏弱：${soft.join('、')}，留意风险偏好与估值波动。`);
   }
-  if (news.some((n) => MACRO_HINT.test(n.title))) {
-    tips.push('有宏观重磅（如 CPI/非农/美联储），仓位宜更谨慎，等落地后再加大动作。');
+  if (news.some((n) => MACRO_HINT.test(n.title) || n.source === 'index-spike')) {
+    tips.push('有宏观重磅或指数急拉急跌提醒，仓位宜更谨慎，等落地后再加大动作。');
   }
 
   const techHtml = tech.length
@@ -4300,22 +4377,28 @@ function renderBriefCalendarHtml() {
   <div class="space-y-1.5">
     ${events
       .map((e) => {
-        const isToday = e.date === today;
+        const isToday = e.date === today || e.status === 'today';
+        const released = e.status === 'released' || (e.date && e.date < today);
         const typeColor =
           e.type === 'cpi' ? 'var(--up)' : e.type === 'nfp' ? '#b45309' : 'var(--accent)';
+        const statusLabel = released ? '已公布' : isToday ? '今日公布' : '待公布';
+        const statusColor = released ? 'var(--muted)' : isToday ? 'var(--accent)' : 'var(--down)';
         return `<div class="flex items-start gap-2 rounded-lg px-2.5 py-2 ${isToday ? 'ring-soft' : ''}" style="${isToday ? 'background:color-mix(in oklab,var(--accent) 8%,transparent)' : ''}">
           <span class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold" style="color:${typeColor};background:color-mix(in oklab,${typeColor} 12%,transparent)">${e.type.toUpperCase()}</span>
           <div class="min-w-0 flex-1">
-            <div class="text-[13px] font-semibold">${esc(e.date)} ${esc(e.title)}${isToday ? ' · 今日' : ''}</div>
+            <div class="flex flex-wrap items-center gap-1.5">
+              <span class="text-[13px] font-semibold">${esc(e.date)} ${esc(e.title)}</span>
+              <span class="rounded px-1.5 py-0.5 text-[10px] font-semibold" style="color:${statusColor};background:color-mix(in oklab,${statusColor} 12%,transparent)">${statusLabel}</span>
+            </div>
             <div class="text-[11px]" style="color:var(--muted)">${esc(e.tip)}</div>
+            ${e.outcome ? `<div class="mt-0.5 text-[11px] leading-snug"><span class="font-semibold" style="color:${statusColor}">结果：</span>${esc(e.outcome)}</div>` : ''}
             ${e.impact ? `<div class="mt-0.5 text-[11px] leading-snug"><span class="font-semibold text-accent">影响：</span>${esc(e.impact)}</div>` : ''}
-            ${e.result ? `<div class="mt-0.5 text-[10px]" style="color:var(--muted)">状态：${esc(e.result)}</div>` : ''}
           </div>
         </div>`;
       })
       .join('')}
   </div>
-  <p class="mt-2 text-[10px]" style="color:var(--muted)">滚动近三周重大窗口（非农 / CPI / FOMC）；CPI 关注窗可多日出现，状态随日期更新。请以官网为准。</p>`;
+  <p class="mt-2 text-[10px]" style="color:var(--muted)">近三周重大窗口（非农 / CPI / FOMC）。已公布条目给出结果解读与影响；具体数字请以官网为准。</p>`;
 }
 
 function syncBriefTabButtons() {
@@ -4786,28 +4869,10 @@ $('view-sim')?.addEventListener('click', (e) => {
   else if (btn.id === 'sim-reset-btn') void resetSimBook();
 });
 
-els.strategyDesk?.addEventListener('click', async (e) => {
-  const t = e.target.closest('[data-plan-add],[data-plan-remove],[data-plan-watch],[data-strategy-pulse]');
+els.strategyDesk?.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-strategy-pulse]');
   if (!t || !els.strategyDesk.contains(t)) return;
-  if (t.hasAttribute('data-strategy-pulse')) {
-    setView('pulse');
-    return;
-  }
-  if (t.hasAttribute('data-plan-remove')) {
-    await removePlanPoolItem(t.getAttribute('data-plan-remove'));
-    return;
-  }
-  if (t.hasAttribute('data-plan-watch')) {
-    await addPlanToWatch(t.getAttribute('data-plan-watch'));
-    return;
-  }
-  const raw = t.getAttribute('data-plan-add');
-  if (!raw) return;
-  try {
-    await addPlanPoolItem(JSON.parse(decodeURIComponent(raw)));
-  } catch (err) {
-    console.error(err);
-  }
+  setView('pulse');
 });
 els.reportDrawerClose?.addEventListener('click', () => closeReportDrawer());
 els.reportBackdrop?.addEventListener('click', () => closeReportDrawer());
@@ -4888,9 +4953,16 @@ async function bootApp() {
   if (state.settings?.funFlowNames && els.funNamesBtn) {
     els.funNamesBtn.classList.add('bg-accent', 'text-white');
   }
-  const savedView = ['watch', 'pulse', 'data', 'etf'].includes(state.settings?.lastView)
+  const savedView = ['watch', 'pulse', 'predict', 'data', 'etf'].includes(state.settings?.lastView)
     ? state.settings.lastView
     : 'watch';
+  // 指数去重（黄金重复、纳斯达克命名）写回一次
+  if (Array.isArray(state.settings?.indices)) {
+    const cleaned = uniqueIndices(state.settings.indices);
+    if (JSON.stringify(cleaned) !== JSON.stringify(state.settings.indices)) {
+      state.settings = await saveSettings({ indices: cleaned });
+    }
+  }
   state.primaryKind = state.settings?.lastPrimary === 'fund' ? 'fund' : 'stock';
   const savedGroup = state.settings?.lastGroup || 'all';
   state.secondaryGroup =
