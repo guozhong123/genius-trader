@@ -935,12 +935,16 @@ function costLineHtml(item, livePrice) {
   const live = Number(livePrice);
   const costText = cost != null ? String(cost) : '—';
   const lotsText = lots != null ? String(lots) : '—';
-  // 移动端与桌面统一：列表只读展示，点「改」弹窗编辑（避免窄屏输入框难用）
+  const stop = stopHtml(item, cost, live);
+  // 桌面靠 display:contents 进多列；移动端由 .pos-board 收成紧凑两行
   return `<div class="pos-fields" data-live="${Number.isFinite(live) ? live : ''}">
-    <div class="pos-field pos-read"><span class="pos-label">成本</span><span class="pos-val tabular-nums">${esc(costText)}</span></div>
-    <div class="pos-field pos-read"><span class="pos-label">手数</span><span class="pos-val tabular-nums">${esc(lotsText)}</span></div>
-    <button type="button" data-edit-pos="${key}" class="pos-edit" title="修改成本与手数">改</button>
-    <div class="pos-pnl">${pnlHtml(cost, live, lots, item)}${stopHtml(item, cost, live)}</div>
+    <div class="pos-meta-line">
+      <div class="pos-field pos-read pos-cost"><span class="pos-label">成本</span><span class="pos-val tabular-nums">${esc(costText)}</span></div>
+      <div class="pos-field pos-read pos-lots"><span class="pos-label">手数</span><span class="pos-val tabular-nums">${esc(lotsText)}</span></div>
+      ${stop ? `<span class="pos-stop-inline">${stop}</span>` : ''}
+    </div>
+    <div class="pos-pnl">${pnlHtml(cost, live, lots, item)}<span class="pos-stop-desk">${stop}</span></div>
+    <button type="button" data-edit-pos="${key}" class="pos-edit pos-edit-desk" title="修改成本与手数">改</button>
   </div>`;
 }
 
@@ -1012,10 +1016,13 @@ function rowHtml(item) {
         </div>
         <span class="pct-chip shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular-nums" style="${chip(pct)}">${fmtPct(pct)}</span>
       </div>
-      <div class="col-num live-price text-[13px] font-semibold leading-none ${tone(pct)}">${priceLabel}</div>
-      ${costLineHtml(item, price)}
+      <div class="pos-board">
+        <div class="col-num live-price text-[13px] font-semibold leading-none ${tone(pct)}">${priceLabel}</div>
+        ${costLineHtml(item, price)}
+      </div>
       ${aiProbCell(item)}
       <div class="col-actions">
+        <button type="button" data-edit-pos="${escAttr(itemKey(item))}" class="row-act pos-edit-mobile" title="修改成本与手数">改</button>
         <button type="button" data-move-group="${escAttr(itemKey(item))}" class="row-act" title="改分组">组</button>
         <button type="button" data-pin="${escAttr(itemKey(item))}" class="row-act${item.pinned ? ' is-on' : ''}" title="${item.pinned ? '取消置顶' : '置顶'}">${item.pinned ? '取消' : '置顶'}</button>
         <button type="button" data-remove="${escAttr(itemKey(item))}" class="row-act danger" title="删除">删</button>
