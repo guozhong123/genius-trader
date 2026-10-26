@@ -633,6 +633,95 @@ export async function askLhbReport(apiKey, facts, modelPref) {
   };
 }
 
+const LHB_PICK_SYSTEM = [
+  FACTS_GROUNDING,
+  '你是个人A股短线参谋。用户给你当天龙虎榜去重后的个股（净买入、涨跌、谁在买）。',
+  '只从名单里挑 3 只更值得短线关注买入的股票，必须恰好 3 只，禁止名单外的代码。',
+  '优先：北向或机构净买、净买入靠前、不是纯游资一日游打板。涨停且只有营业部/游资的票要降权。',
+  'reason 写一句人话，必须点明买家类型（北向/机构/游资/营业部）。',
+  '输出严格 JSON：',
+  '{"picks":[{"code":"600000","name":"浦发银行","reason":"北向净买，资金比游资干净"}],"note":"一句总判断"}',
+].join('');
+
+/** 从本机龙虎榜名单里挑 3 只建议买的票 */
+export async function askLhbPick3(apiKey, { date, rows, clock }, modelPref) {
+  const key = String(apiKey || '').trim();
+  if (!key) throw new Error('缺少 DeepSeek 密钥');
+  const lines = (rows || []).map(
+    (row, i) =>
+      `${i + 1}. ${row.code} ${row.name} 涨跌${signed(row.changePct)}% 净买${signed(row.netYi)}亿 买家:${(row.buyerTags || []).join('/') || '未标注'} 席位:${(row.buyers || [])
+        .map((b) => `${b.short || b.seat} ${signed(b.netYi)}亿`)
+        .join('、') || row.seats || '未提供'}`,
+  );
+  const facts = [
+    clock || '',
+    date ? `龙虎榜交易日 ${date}` : '龙虎榜日期未提供。',
+    lines.join('\n') || '没有龙虎榜。不要编造。',
+  ]
+    .filter(Boolean)
+    .join('\n');
+  const messages = [
+    { role: 'system', content: LHB_PICK_SYSTEM },
+    { role: 'user', content: facts },
+  ];
+  const preferred = modelPref === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash';
+  const attempts =
+    preferred === 'deepseek-v4-pro'
+      ? [
+          { model: 'deepseek-v4-pro', thinking: { type: 'disabled' } },
+          { model: 'deepseek-flash', thinking: { type: 'disabled' } },
+          { model: 'deepseek-chat' },
+        ]
+      : [
+          { model: 'deepseek-flash', thinking: { type: 'disabled' } },
+          { model: 'deepseek-chat' },
+        ];
+  let json = null;
+  let used = 'deepseek-flash';
+  let lastErr = null;
+  for (const attempt of attempts) {
+    try {
+      json = await postDeepseek(key, {
+        model: attempt.model,
+        temperature: 0.2,
+        response_format: { type: 'json_object' },
+        messages,
+        ...(attempt.thinking ? { thinking: attempt.thinking } : {}),
+      });
+      used = attempt.model;
+      break;
+    } catch (e) {
+      lastErr = e;
+      if (/401|invalid|api key|密钥/i.test(String(e?.message || ''))) throw e;
+    }
+  }
+  if (!json) throw lastErr || new Error('DeepSeek 分析失败');
+  const report = JSON.parse(json?.choices?.[0]?.message?.content || '{}');
+  const byCode = new Map((rows || []).map((r) => [String(r.code), r]));
+  const picks = (Array.isArray(report.picks) ? report.picks : [])
+    .map((p) => {
+      const code = String(p?.code || '').replace(/\D/g, '').slice(-6);
+      const row = byCode.get(code);
+      if (!row) return null;
+      return {
+        code: row.code,
+        name: row.name,
+        reason: clip(p.reason || '', 80),
+        buyerTags: row.buyerTags || [],
+        netYi: row.netYi,
+        changePct: row.changePct,
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 3);
+  return {
+    picks,
+    note: clip(report.note, 160),
+    generatedAt: Date.now(),
+    source: used,
+  };
+}
+
 export async function askSeatReport(apiKey, facts, modelPref) {
   const key = String(apiKey || '').trim();
   if (!key) throw new Error('缺少 DeepSeek 密钥');

@@ -76,6 +76,7 @@ import { analyzeMainForceIntent } from './lib/predict.js';
 import { mountCollabTable } from './lib/collab-table.js';
 import {
   askDeepseekReport,
+  askLhbPick3,
   askLhbReport,
   askMarketReport,
   askPredictPack,
@@ -260,6 +261,8 @@ const els = {
   lhbRefreshBtn: $('lhb-refresh-btn'),
   lhbMeta: $('lhb-meta'),
   lhbBoard: $('lhb-board'),
+  lhbAiMeta: $('lhb-ai-meta'),
+  lhbAiPicks: $('lhb-ai-picks'),
   lhbCollabStatus: $('lhb-collab-status'),
   lhbCollabTable: $('lhb-collab-table'),
   simAiBtn: $('sim-ai-btn'),
@@ -414,6 +417,9 @@ const APP_VIEWS = ['watch', 'pulse', 'lhb', 'data', 'etf'];
 let lhbCollabHandle = null;
 let lhbBoardCache = null;
 let lhbBoardLoading = false;
+let lhbAdviceCache = null;
+let lhbAdviceLoading = false;
+let lhbAdviceForDate = '';
 const SIM_FEE_RATE = 0.0005; // 万五
 const SIM_FEE_MIN = 5;
 
@@ -1770,6 +1776,20 @@ function lhbRowToItem(row) {
   };
 }
 
+function lhbBuyerHtml(row) {
+  const tags = row.buyerTags?.length ? row.buyerTags : [];
+  const chips = tags
+    .map((t) => `<span class="lhb-tag lhb-tag-${escAttr(t)}">${esc(t)}</span>`)
+    .join('');
+  const seats = (row.buyers || [])
+    .slice(0, 3)
+    .map((b) => `${b.short || b.seat} ${fmtYiBoard(b.netYi)}亿`)
+    .join(' · ');
+  const fallback = row.seats || '';
+  const detail = seats || fallback || '席位未披露';
+  return `<div class="lhb-buyers">${chips || '<span class="lhb-tag lhb-tag-营业部">营业部</span>'}<div class="lhb-buyer-seats" title="${escAttr(detail)}">${esc(detail)}</div></div>`;
+}
+
 function renderLhbBoard(pack) {
   if (!els.lhbBoard) return;
   const rows = pack?.rows || [];
@@ -1782,7 +1802,7 @@ function renderLhbBoard(pack) {
     <thead>
       <tr>
         <th>代码</th><th>名称</th><th>涨跌</th><th>收盘</th>
-        <th>买入亿</th><th>卖出亿</th><th>净买亿</th><th>上榜原因</th>
+        <th>净买亿</th><th>谁在买</th><th>上榜原因</th>
       </tr>
     </thead>
     <tbody>
@@ -1794,15 +1814,127 @@ function renderLhbBoard(pack) {
             <td class="lhb-name">${esc(r.name)}</td>
             <td class="tabular-nums ${tone(pct)}">${fmtPct(pct)}</td>
             <td class="tabular-nums">${Number.isFinite(Number(r.close)) ? Number(r.close).toFixed(2) : '—'}</td>
-            <td class="tabular-nums text-up">${fmtYiBoard(r.buyYi)}</td>
-            <td class="tabular-nums text-down">${fmtYiBoard(r.sellYi)}</td>
             <td class="tabular-nums ${tone(r.netYi)}">${fmtYiBoard(r.netYi)}</td>
+            <td>${lhbBuyerHtml(r)}</td>
             <td class="lhb-reason" title="${escAttr(r.reason || r.seats || '')}">${esc(r.reason || r.seats || '—')}</td>
           </tr>`;
         })
         .join('')}
     </tbody>
   </table>`;
+}
+
+function scoreLhbPick(row) {
+  const net = Number(row.netYi) || 0;
+  const pct = Number(row.changePct) || 0;
+  const tags = row.buyerTags || [];
+  const code = String(row.code || '');
+  let score = net;
+  if (tags.includes('北向')) score += 3.2;
+  if (tags.includes('机构')) score += 2.2;
+  if (tags.includes('游资')) score += 0.4;
+  if (net <= 0) score -= 10;
+  const band = /^(300|301|688|689)/.test(code) ? 19.5 : /^[48]/.test(code) ? 29.5 : 9.5;
+  if (pct >= band - 0.15 && !tags.includes('北向') && !tags.includes('机构')) score -= 3.5;
+  return score;
+}
+
+function heuristicLhbReason(row) {
+  const tags = row.buyerTags || [];
+  const top = row.buyers?.[0];
+  if (tags.includes('北向') && tags.includes('机构')) return '北向+机构同时净买，资金比纯游资干净。';
+  if (tags.includes('北向')) return `北向席位在买${top ? `（${top.short} ${fmtYiBoard(top.netYi)}亿）` : ''}。`;
+  if (tags.includes('机构')) return `有机构席位净买${top ? `，${top.short} ${fmtYiBoard(top.netYi)}亿` : ''}。`;
+  if (tags.includes('游资')) return `游资净买靠前，短线可看一眼，注意一日游。`;
+  return `榜上净买入 ${fmtYiBoard(row.netYi)} 亿，席位以营业部为主。`;
+}
+
+function pickLhbThree(rows) {
+  return [...(rows || [])]
+    .filter((r) => Number(r.netYi) > 0)
+    .sort((a, b) => scoreLhbPick(b) - scoreLhbPick(a))
+    .slice(0, 3)
+    .map((r) => ({
+      code: r.code,
+      name: r.name,
+      reason: heuristicLhbReason(r),
+      buyerTags: r.buyerTags || [],
+      netYi: r.netYi,
+      changePct: r.changePct,
+    }));
+}
+
+function renderLhbAdvice(pack) {
+  if (!els.lhbAiPicks) return;
+  const picks = pack?.picks || [];
+  if (!picks.length) {
+    els.lhbAiPicks.innerHTML =
+      '<p class="text-[12px]" style="color:var(--muted)">暂无建议。等榜单出来后再看。</p>';
+    return;
+  }
+  els.lhbAiPicks.innerHTML = picks
+    .map((p, i) => {
+      const tags = (p.buyerTags || [])
+        .map((t) => `<span class="lhb-tag lhb-tag-${escAttr(t)}">${esc(t)}</span>`)
+        .join('');
+      return `<button type="button" class="lhb-ai-pick" data-lhb-pick="${i}">
+        <div class="lhb-ai-pick-top">
+          <span class="lhb-ai-rank">${i + 1}</span>
+          <span class="lhb-ai-name">${esc(p.name)}</span>
+          <span class="tabular-nums" style="color:var(--muted)">${esc(p.code)}</span>
+          <span class="tabular-nums ${tone(p.changePct)}">${fmtPct(p.changePct)}</span>
+        </div>
+        <div class="lhb-ai-pick-tags">${tags}</div>
+        <p class="lhb-ai-reason">${esc(p.reason)}</p>
+      </button>`;
+    })
+    .join('');
+}
+
+async function refreshLhbAdvice(pack, force = false) {
+  if (!els.lhbAiPicks) return;
+  const date = pack?.date || '';
+  const heuristic = { picks: pickLhbThree(pack?.rows || []), note: '', source: 'local', generatedAt: Date.now() };
+  if (!force && lhbAdviceCache?.picks?.length && lhbAdviceForDate === date) {
+    renderLhbAdvice(lhbAdviceCache);
+    if (els.lhbAiMeta) {
+      els.lhbAiMeta.textContent = lhbAdviceCache.source && lhbAdviceCache.source !== 'local'
+        ? `建议买这三只 · ${date} · ${lhbAdviceCache.source}`
+        : `建议买这三只 · ${date}`;
+    }
+    return;
+  }
+  lhbAdviceCache = heuristic;
+  lhbAdviceForDate = date;
+  renderLhbAdvice(heuristic);
+  if (els.lhbAiMeta) els.lhbAiMeta.textContent = date ? `建议买这三只 · ${date}` : '建议买这三只';
+  const apiKey = String(state.settings?.deepseekApiKey || '').trim();
+  if (!apiKey || lhbAdviceLoading || !pack?.rows?.length) return;
+  lhbAdviceLoading = true;
+  if (els.lhbAiMeta) els.lhbAiMeta.textContent = `正在用 AI 从 ${pack.rows.length} 只里挑三只…`;
+  try {
+    const clock = marketClock();
+    const ai = await askLhbPick3(
+      apiKey,
+      { date, rows: pack.rows.slice(0, 40), clock: clock.line },
+      state.settings?.aiModel,
+    );
+    if (ai.picks?.length === 3) {
+      lhbAdviceCache = ai;
+      lhbAdviceForDate = date;
+      renderLhbAdvice(ai);
+      if (els.lhbAiMeta) {
+        els.lhbAiMeta.textContent = `${ai.note || '建议买这三只'} · ${date}`;
+      }
+    } else if (els.lhbAiMeta) {
+      els.lhbAiMeta.textContent = `建议买这三只 · ${date}`;
+    }
+  } catch (e) {
+    console.warn('lhb ai pick', e);
+    if (els.lhbAiMeta) els.lhbAiMeta.textContent = `建议买这三只 · ${date}（AI 未连上，先按席位排序）`;
+  } finally {
+    lhbAdviceLoading = false;
+  }
 }
 
 function openLhbDetail(index) {
@@ -1817,8 +1949,9 @@ async function refreshLhbBoard(force = false) {
   if (!force && lhbBoardCache?.rows?.length) {
     renderLhbBoard(lhbBoardCache);
     if (els.lhbMeta) {
-      els.lhbMeta.textContent = `龙虎榜日期 ${lhbBoardCache.date} · 共 ${lhbBoardCache.rows.length} 只（按净买入）`;
+      els.lhbMeta.textContent = `龙虎榜日期 ${lhbBoardCache.date} · 共 ${lhbBoardCache.rows.length} 只（已去重，按净买入）`;
     }
+    void refreshLhbAdvice(lhbBoardCache, false);
     return;
   }
   lhbBoardLoading = true;
@@ -1833,8 +1966,9 @@ async function refreshLhbBoard(force = false) {
     renderLhbBoard(pack);
     if (els.lhbMeta) {
       els.lhbMeta.textContent = pack.date
-        ? `龙虎榜日期 ${pack.date} · 共 ${pack.rows.length} 只（按净买入；今日未出则自动显示前一交易日）`
+        ? `龙虎榜日期 ${pack.date} · 共 ${pack.rows.length} 只（已去重，按净买入；今日未出则显示前一交易日）`
         : '暂未取到龙虎榜，请稍后再试';
+    void refreshLhbAdvice(pack, force);
     }
   } catch (e) {
     console.error(e);
@@ -5006,6 +5140,15 @@ els.lhbBoard?.addEventListener('keydown', (e) => {
   if (!row || !els.lhbBoard.contains(row)) return;
   e.preventDefault();
   openLhbDetail(row.getAttribute('data-lhb-open'));
+});
+els.lhbAiPicks?.addEventListener('click', (e) => {
+  const btn = e.target.closest?.('[data-lhb-pick]');
+  if (!btn || !els.lhbAiPicks.contains(btn)) return;
+  const pick = lhbAdviceCache?.picks?.[Number(btn.getAttribute('data-lhb-pick'))];
+  if (!pick) return;
+  const row = lhbBoardCache?.rows?.find((r) => r.code === pick.code) || pick;
+  const item = lhbRowToItem(row);
+  if (item) void openDetail(item);
 });
 
 els.strategyDesk?.addEventListener('click', (e) => {

@@ -1,39 +1,65 @@
 /**
- * 多人在线可编辑空白表：
- * - IndexedDB 本机持久化
- * - WebRTC 多人实时同步（同房间打开即可互相同步）
- * - WebSocket 兜底（可用时自动连）
+ * 多人在线空白表：
+ * - 无表头
+ * - 第一列永远自动填最近 30 个自然日（北京时间）
+ * - 其余格子可多人编辑（IndexedDB + WebRTC，日期键持久化）
  */
 import * as Y from 'yjs';
 import { WebrtcProvider } from 'y-webrtc';
 import { WebsocketProvider } from 'y-websocket';
 import { IndexeddbPersistence } from 'y-indexeddb';
 
-const COLS = 8;
-const ROWS = 16;
-const DEFAULT_HEADERS = ['代码', '名称', '方向', '逻辑', '仓位', '备注', '跟进', '结果'];
-const ROOM = 'genius-trader-lhb-sheet-v1';
+const COLS = 6;
+const DAYS = 30;
+const ROOM = 'genius-trader-lhb-sheet-v2';
 const WS_FALLBACKS = ['wss://demos.yjs.dev'];
 
-function ensureGrid(ymap) {
-  if (!ymap.has('headers')) {
-    const headers = new Y.Array();
-    headers.insert(0, DEFAULT_HEADERS.slice());
-    ymap.set('headers', headers);
-  }
-  if (!ymap.has('cells')) {
-    const cells = new Y.Array();
-    for (let r = 0; r < ROWS; r += 1) {
-      const row = new Y.Array();
-      row.insert(0, Array.from({ length: COLS }, () => ''));
-      cells.push([row]);
-    }
-    ymap.set('cells', cells);
-  }
+function shanghaiYmd(offsetDays) {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+  }).formatToParts(now);
+  const y = Number(parts.find((p) => p.type === 'year')?.value);
+  const m = Number(parts.find((p) => p.type === 'month')?.value);
+  const d = Number(parts.find((p) => p.type === 'day')?.value);
+  const utc = Date.UTC(y, m - 1, d - offsetDays);
+  return fmt.format(new Date(utc));
 }
 
-function cellKey(r, c) {
-  return `${r}:${c}`;
+function lastMonthDates() {
+  return Array.from({ length: DAYS }, (_, i) => shanghaiYmd(i));
+}
+
+function weekdayLabel(ymd) {
+  const [y, m, d] = String(ymd).split('-').map(Number);
+  const wd = new Date(Date.UTC(y, m - 1, d, 4)).getUTCDay();
+  return ['日', '一', '二', '三', '四', '五', '六'][wd] || '';
+}
+
+function displayDate(ymd) {
+  const [, m, d] = String(ymd).split('-');
+  return `${m}-${d} 周${weekdayLabel(ymd)}`;
+}
+
+function emptyRow() {
+  return Array.from({ length: COLS }, () => '');
+}
+
+function ensureRow(notes, date) {
+  if (notes.has(date)) return notes.get(date);
+  const row = new Y.Array();
+  row.insert(0, emptyRow());
+  notes.set(date, row);
+  return row;
 }
 
 function escapeAttr(s) {
@@ -52,8 +78,7 @@ export function mountCollabTable(root, opts = {}) {
   if (!root) return { destroy() {} };
 
   const doc = new Y.Doc();
-  const ymap = doc.getMap('sheet');
-  ensureGrid(ymap);
+  const notes = doc.getMap('notes');
 
   let webrtc = null;
   let websocket = null;
@@ -142,52 +167,35 @@ export function mountCollabTable(root, opts = {}) {
 
   emit();
 
-  const headers = () => ymap.get('headers');
-  const cells = () => ymap.get('cells');
-
   const render = () => {
     if (destroyed || !root.isConnected) return;
-    const h = headers();
-    const grid = cells();
-    if (!h || !grid) return;
-
-    const headHtml = Array.from({ length: COLS }, (_, c) => {
-      const val = h.get(c) ?? DEFAULT_HEADERS[c] ?? '';
-      return `<th><input data-h="${c}" value="${escapeAttr(val)}" spellcheck="false" /></th>`;
-    }).join('');
-
-    const bodyHtml = Array.from({ length: Math.max(ROWS, grid.length) }, (_, r) => {
-      const row = grid.get(r);
-      const tds = Array.from({ length: COLS }, (_, c) => {
-        const val = row?.get?.(c) ?? '';
-        return `<td><input data-r="${r}" data-c="${c}" value="${escapeAttr(val)}" spellcheck="false" /></td>`;
-      }).join('');
-      return `<tr>${tds}</tr>`;
-    }).join('');
+    const dates = lastMonthDates();
+    const bodyHtml = dates
+      .map((date, r) => {
+        const row = notes.get(date);
+        const dateCell = `<td class="collab-date">${escapeAttr(displayDate(date))}</td>`;
+        const tds = Array.from({ length: COLS }, (_, c) => {
+          const val = row?.get?.(c) ?? '';
+          return `<td><input data-date="${escapeAttr(date)}" data-r="${r}" data-c="${c}" value="${escapeAttr(val)}" spellcheck="false" /></td>`;
+        }).join('');
+        return `<tr>${dateCell}${tds}</tr>`;
+      })
+      .join('');
 
     const active = document.activeElement;
-    const focusKey =
-      active?.dataset?.r != null
-        ? cellKey(active.dataset.r, active.dataset.c)
-        : active?.dataset?.h != null
-          ? `h:${active.dataset.h}`
-          : null;
+    const focusDate = active?.dataset?.date;
+    const focusCol = active?.dataset?.c;
     const selStart = active?.selectionStart;
     const selEnd = active?.selectionEnd;
 
     root.innerHTML = `<div class="collab-table-wrap">
-      <table class="collab-table">
-        <thead><tr>${headHtml}</tr></thead>
+      <table class="collab-table collab-table-dates">
         <tbody>${bodyHtml}</tbody>
       </table>
     </div>`;
 
-    if (focusKey) {
-      const el = focusKey.startsWith('h:')
-        ? root.querySelector(`input[data-h="${focusKey.slice(2)}"]`)
-        : root.querySelector(
-            `input[data-r="${focusKey.split(':')[0]}"][data-c="${focusKey.split(':')[1]}"]`,
-          );
+    if (focusDate != null && focusCol != null) {
+      const el = root.querySelector(`input[data-date="${focusDate}"][data-c="${focusCol}"]`);
       if (el) {
         el.focus();
         if (typeof selStart === 'number' && typeof selEnd === 'number') {
@@ -205,34 +213,16 @@ export function mountCollabTable(root, opts = {}) {
   const onInput = (e) => {
     const t = e.target;
     if (!(t instanceof HTMLInputElement)) return;
+    const date = t.dataset.date;
+    const c = Number(t.dataset.c);
+    if (!date || Number.isNaN(c)) return;
     localEdit = true;
-    if (t.dataset.h != null) {
-      const c = Number(t.dataset.h);
-      const h = headers();
-      if (!h) return;
-      doc.transact(() => {
-        if (h.length <= c) h.insert(h.length, Array.from({ length: c - h.length + 1 }, () => ''));
-        h.delete(c, 1);
-        h.insert(c, [t.value]);
-      });
-    } else if (t.dataset.r != null && t.dataset.c != null) {
-      const r = Number(t.dataset.r);
-      const c = Number(t.dataset.c);
-      const grid = cells();
-      if (!grid) return;
-      doc.transact(() => {
-        while (grid.length <= r) {
-          const row = new Y.Array();
-          row.insert(0, Array.from({ length: COLS }, () => ''));
-          grid.push([row]);
-        }
-        const row = grid.get(r);
-        if (!row) return;
-        while (row.length <= c) row.insert(row.length, ['']);
-        row.delete(c, 1);
-        row.insert(c, [t.value]);
-      });
-    }
+    doc.transact(() => {
+      const row = ensureRow(notes, date);
+      while (row.length <= c) row.insert(row.length, ['']);
+      row.delete(c, 1);
+      row.insert(c, [t.value]);
+    });
     queueMicrotask(() => {
       localEdit = false;
     });
@@ -243,7 +233,7 @@ export function mountCollabTable(root, opts = {}) {
     if (localEdit) return;
     render();
   };
-  ymap.observeDeep(observer);
+  notes.observeDeep(observer);
   render();
   refreshPeers();
 
@@ -251,7 +241,7 @@ export function mountCollabTable(root, opts = {}) {
     destroy() {
       destroyed = true;
       root.removeEventListener('input', onInput);
-      ymap.unobserveDeep(observer);
+      notes.unobserveDeep(observer);
       try {
         webrtc?.destroy();
       } catch {

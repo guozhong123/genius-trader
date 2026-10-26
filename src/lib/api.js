@@ -2215,15 +2215,89 @@ export async function fetchBoardLeaders(code, limit = 1) {
 
 function seatTag(name) {
   const s = String(name || '');
-  if (s.includes('机构专用')) return '机构';
-  if (s.includes('沪股通') || s.includes('深股通')) return '北向';
-  if (/拉萨|江苏路|宛平南路|绍兴解放|源深路/.test(s)) return '游资';
-  return '';
+  if (/沪股通|深股通|港股通|北向/.test(s)) return '北向';
+  if (/机构专用|机构席位|投资者分类/.test(s)) return '机构';
+  if (/拉萨|江苏路|宛平南路|绍兴解放|源深路|华鑫上海|国金成都|开源西安西大街/.test(s)) return '游资';
+  return '营业部';
+}
+
+function shortSeatName(name) {
+  const s = String(name || '').trim();
+  if (!s) return '未知席位';
+  if (/沪股通/.test(s)) return '沪股通';
+  if (/深股通/.test(s)) return '深股通';
+  if (/港股通/.test(s)) return '港股通';
+  if (/机构专用/.test(s)) return '机构专用';
+  if (/投资者分类/.test(s)) return '机构(分类)';
+  const cleaned = s
+    .replace(/股份有限公司|有限责任公司|有限公司/g, '')
+    .replace(/证券营业部$/, '')
+    .trim();
+  const loc = cleaned.replace(/^.*?证券/, '').replace(/^.*?分公司/, '').trim();
+  return (loc || cleaned).slice(0, 14);
+}
+
+function tagsFromExplain(text) {
+  const s = String(text || '');
+  const tags = [];
+  if (/沪股通|深股通|港股通|北向/.test(s)) tags.push('北向');
+  if (/机构/.test(s)) tags.push('机构');
+  if (/游资/.test(s)) tags.push('游资');
+  if (/主力/.test(s)) tags.push('主力');
+  if (/普通席位/.test(s)) tags.push('营业部');
+  return tags;
+}
+
+function uniqueTags(list) {
+  const order = ['北向', '机构', '游资', '主力', '营业部'];
+  const set = new Set((list || []).filter(Boolean));
+  return order.filter((t) => set.has(t));
+}
+
+async function fetchBillboardSeats(date, pages = 2) {
+  const out = [];
+  const seen = new Set();
+  for (let page = 1; page <= pages; page += 1) {
+    const url =
+      'https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_OPERATEDEPT_TRADE_DETAILSNEW' +
+      '&columns=SECURITY_CODE,SECURITY_NAME_ABBR,OPERATEDEPT_NAME,NET_AMT,ACT_BUY,ACT_SELL,EXPLANATION' +
+      `&pageSize=400&pageNumber=${page}&sortColumns=NET_AMT&sortTypes=-1` +
+      `&filter=(TRADE_DATE='${date}')&source=WEB&client=WEB`;
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      if (!res.ok) break;
+      const json = await res.json();
+      const rows = json?.result?.data || [];
+      if (!rows.length) break;
+      for (const row of rows) {
+        const code = String(row.SECURITY_CODE || '');
+        const seat = String(row.OPERATEDEPT_NAME || '').trim();
+        if (!code || !seat) continue;
+        const key = `${code}|${seat}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const netYi = +(Number(row.NET_AMT || 0) / 1e8).toFixed(2);
+        out.push({
+          code,
+          name: String(row.SECURITY_NAME_ABBR || ''),
+          seat,
+          short: shortSeatName(seat),
+          tag: seatTag(seat),
+          netYi,
+        });
+      }
+      const total = Number(json?.result?.count || 0);
+      if (page * 400 >= total) break;
+    } catch {
+      break;
+    }
+  }
+  return out;
 }
 
 /**
- * 最近一个已披露交易日的龙虎榜个股（按净买入排序）。
- * 今日榜未出时自动回退到前一交易日。
+ * 最近一个已披露交易日的龙虎榜个股（按净买入排序，代码去重）。
+ * 附带席位买家标签（北向 / 机构 / 游资 / 营业部）。
  */
 export async function fetchDailyBillboard(limit = 60) {
   for (const date of shTradeDates(8)) {
@@ -2231,24 +2305,60 @@ export async function fetchDailyBillboard(limit = 60) {
       'https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_DAILYBILLBOARD_DETAILSNEW' +
       '&columns=SECURITY_CODE,SECURITY_NAME_ABBR,TRADE_DATE,CLOSE_PRICE,CHANGE_RATE,' +
       'BILLBOARD_NET_AMT,BILLBOARD_BUY_AMT,BILLBOARD_SELL_AMT,EXPLAIN,EXPLANATION' +
-      `&pageSize=${Math.max(20, limit)}&pageNumber=1&sortColumns=BILLBOARD_NET_AMT&sortTypes=-1` +
+      '&pageSize=200&pageNumber=1&sortColumns=BILLBOARD_NET_AMT&sortTypes=-1' +
       `&filter=(TRADE_DATE='${date}')&source=WEB&client=WEB`;
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
       if (!res.ok) continue;
       const rows = (await res.json())?.result?.data || [];
       if (!rows.length) continue;
-      const mapped = rows.slice(0, limit).map((row) => ({
-        code: String(row.SECURITY_CODE || ''),
-        name: String(row.SECURITY_NAME_ABBR || ''),
-        close: Number(row.CLOSE_PRICE),
-        changePct: Number(row.CHANGE_RATE),
-        netYi: +(Number(row.BILLBOARD_NET_AMT || 0) / 1e8).toFixed(2),
-        buyYi: +(Number(row.BILLBOARD_BUY_AMT || 0) / 1e8).toFixed(2),
-        sellYi: +(Number(row.BILLBOARD_SELL_AMT || 0) / 1e8).toFixed(2),
-        seats: String(row.EXPLAIN || '').trim(),
-        reason: String(row.EXPLANATION || '').trim(),
-      }));
+      const byCode = new Map();
+      for (const row of rows) {
+        const code = String(row.SECURITY_CODE || '');
+        if (!code) continue;
+        const netYi = +(Number(row.BILLBOARD_NET_AMT || 0) / 1e8).toFixed(2);
+        const cur = byCode.get(code);
+        if (cur && Number(cur.netYi) >= Number(netYi)) {
+          if (row.EXPLANATION && !cur.reason.includes(String(row.EXPLANATION))) {
+            cur.reason = [cur.reason, String(row.EXPLANATION).trim()].filter(Boolean).join('；');
+          }
+          continue;
+        }
+        byCode.set(code, {
+          code,
+          name: String(row.SECURITY_NAME_ABBR || ''),
+          close: Number(row.CLOSE_PRICE),
+          changePct: Number(row.CHANGE_RATE),
+          netYi,
+          buyYi: +(Number(row.BILLBOARD_BUY_AMT || 0) / 1e8).toFixed(2),
+          sellYi: +(Number(row.BILLBOARD_SELL_AMT || 0) / 1e8).toFixed(2),
+          seats: String(row.EXPLAIN || '').trim(),
+          reason: String(row.EXPLANATION || '').trim(),
+          buyers: [],
+          buyerTags: tagsFromExplain(`${row.EXPLAIN || ''} ${row.EXPLANATION || ''}`),
+        });
+      }
+      const seats = await fetchBillboardSeats(date).catch(() => []);
+      const seatsByCode = new Map();
+      for (const seat of seats) {
+        const list = seatsByCode.get(seat.code) || [];
+        list.push(seat);
+        seatsByCode.set(seat.code, list);
+      }
+      const mapped = [...byCode.values()]
+        .map((row) => {
+          const list = (seatsByCode.get(row.code) || [])
+            .filter((s) => Number(s.netYi) > 0)
+            .sort((a, b) => Number(b.netYi) - Number(a.netYi))
+            .slice(0, 4);
+          const tags = uniqueTags([
+            ...row.buyerTags,
+            ...list.map((s) => s.tag),
+          ]);
+          return { ...row, buyers: list, buyerTags: tags.length ? tags : ['营业部'] };
+        })
+        .sort((a, b) => Number(b.netYi) - Number(a.netYi))
+        .slice(0, limit);
       return { date, rows: mapped };
     } catch {
       /* try older day */
