@@ -2605,6 +2605,40 @@ button.pick-card {
   background: var(--panel-solid);
 }
 
+.lhb-table th.lhb-th-sort {
+  padding: 4px 6px;
+}
+
+.lhb-table th.lhb-th-sort.is-active .lhb-sort-btn {
+  color: var(--accent);
+}
+
+.lhb-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.lhb-sort-btn:hover,
+.lhb-sort-btn:focus-visible {
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  outline: none;
+}
+
+.lhb-sort-mark {
+  font-size: 10px;
+  line-height: 1;
+}
+
 .lhb-table .lhb-row {
   cursor: pointer;
   transition: background 0.12s ease;

@@ -423,6 +423,8 @@ let lhbAdviceLoading = false;
 let lhbAdviceForDate = '';
 const LHB_FILTERS = ['北向', '机构', '主力', '游资'];
 const lhbFilterOn = new Set(LHB_FILTERS);
+const LHB_SORT_KEYS = { livePct: '今日涨跌', prevPct: '前一日涨跌', netYi: '净买亿' };
+let lhbSort = { key: 'netYi', dir: 'desc' };
 const SIM_FEE_RATE = 0.0005; // 万五
 const SIM_FEE_MIN = 5;
 
@@ -1799,6 +1801,55 @@ function visibleLhbRows() {
   return (lhbBoardCache?.rows || []).filter(rowMatchesLhbFilter);
 }
 
+function lhbSortValue(row, key) {
+  if (key === 'livePct') return Number(row.liveChangePct);
+  if (key === 'prevPct') return Number(row.changePct);
+  if (key === 'netYi') return Number(row.netYi);
+  return NaN;
+}
+
+function sortedLhbRows(rows) {
+  const dir = lhbSort.dir === 'asc' ? 1 : -1;
+  const key = lhbSort.key;
+  return [...(rows || [])].sort((a, b) => {
+    const av = lhbSortValue(a, key);
+    const bv = lhbSortValue(b, key);
+    const aOk = Number.isFinite(av);
+    const bOk = Number.isFinite(bv);
+    if (!aOk && !bOk) return String(a.code || '').localeCompare(String(b.code || ''));
+    if (!aOk) return 1;
+    if (!bOk) return -1;
+    if (av !== bv) return (av - bv) * dir;
+    const netDiff = (Number(b.netYi) || 0) - (Number(a.netYi) || 0);
+    if (netDiff) return netDiff;
+    return String(a.code || '').localeCompare(String(b.code || ''));
+  });
+}
+
+function setLhbSort(key) {
+  if (!LHB_SORT_KEYS[key]) return;
+  if (lhbSort.key === key) {
+    lhbSort = { key, dir: lhbSort.dir === 'desc' ? 'asc' : 'desc' };
+  } else {
+    lhbSort = { key, dir: 'desc' };
+  }
+  if (!lhbBoardCache) return;
+  renderLhbBoard(lhbBoardCache);
+  if (els.lhbMeta) els.lhbMeta.textContent = lhbMetaText(lhbBoardCache, true);
+}
+
+function lhbSortTh(key) {
+  const label = LHB_SORT_KEYS[key] || key;
+  const active = lhbSort.key === key;
+  const mark = active ? (lhbSort.dir === 'asc' ? '↑' : '↓') : '';
+  const aria = active ? ` aria-sort="${lhbSort.dir === 'asc' ? 'ascending' : 'descending'}"` : '';
+  return `<th class="lhb-th-sort${active ? ' is-active' : ''}"${aria}>
+      <button type="button" class="lhb-sort-btn" data-lhb-sort="${escAttr(key)}" title="点击按${escAttr(label)}排序">
+        ${esc(label)}${mark ? `<span class="lhb-sort-mark">${mark}</span>` : ''}
+      </button>
+    </th>`;
+}
+
 function syncLhbFilterButtons() {
   els.lhbFilters?.querySelectorAll('[data-lhb-filter]').forEach((btn) => {
     const on = lhbFilterOn.has(btn.getAttribute('data-lhb-filter'));
@@ -1882,22 +1933,28 @@ function renderLhbBoard(pack) {
       '<p class="text-[12px]" style="color:var(--muted)">当前筛选下没有股票。点一下筛选项，默认全开即可看全部。</p>';
     return;
   }
+  const sorted = sortedLhbRows(rows);
   els.lhbBoard.innerHTML = `<table class="lhb-table">
     <thead>
       <tr>
-        <th>代码</th><th>名称</th><th>涨跌</th><th>收盘</th>
-        <th>净买亿</th><th>谁在买</th><th>上榜原因</th>
+        <th>代码</th><th>名称</th>
+        ${lhbSortTh('livePct')}${lhbSortTh('prevPct')}
+        <th>上榜收盘</th>
+        ${lhbSortTh('netYi')}
+        <th>谁在买</th><th>上榜原因</th>
       </tr>
     </thead>
     <tbody>
-      ${rows
+      ${sorted
         .map((r) => {
-          const pct = Number(r.changePct);
+          const livePct = Number(r.liveChangePct);
+          const prevPct = Number(r.changePct);
           const price = Number(r.close);
           return `<tr class="lhb-row" data-lhb-open="${escAttr(r.code)}" title="查看 ${escAttr(r.name || r.code)} 详情" role="button" tabindex="0">
             <td class="tabular-nums">${esc(r.code)}</td>
             <td class="lhb-name">${esc(r.name)}</td>
-            <td class="tabular-nums ${tone(pct)}">${fmtPct(pct)}</td>
+            <td class="tabular-nums ${tone(livePct)}">${fmtPct(Number.isFinite(livePct) ? livePct : null)}</td>
+            <td class="tabular-nums ${tone(prevPct)}">${fmtPct(Number.isFinite(prevPct) ? prevPct : null)}</td>
             <td class="tabular-nums">${Number.isFinite(price) ? price.toFixed(2) : '—'}</td>
             <td class="tabular-nums ${tone(r.netYi)}">${fmtYiBoard(r.netYi)}</td>
             <td>${lhbBuyerHtml(r)}</td>
@@ -2045,7 +2102,10 @@ function lhbMetaText(pack, live = false) {
   const shown = (pack.rows || []).filter(rowMatchesLhbFilter).length;
   const total = pack.rows?.length || 0;
   const filterNote = shown === total ? '' : `，筛选后 ${shown} 只`;
-  return `名单 ${pack.date} · 涨跌为上榜日（便于排序） · 共 ${total} 只${filterNote}`;
+  const sortLabel = LHB_SORT_KEYS[lhbSort.key] || '净买亿';
+  const sortDir = lhbSort.dir === 'asc' ? '升序' : '降序';
+  const liveNote = live ? ' · 今日涨跌已刷新' : '';
+  return `名单 ${pack.date} · 按${sortLabel}${sortDir} · 共 ${total} 只${filterNote}${liveNote}`;
 }
 
 async function refreshLhbBoard(force = false) {
@@ -5260,6 +5320,13 @@ els.lhbFilters?.addEventListener('click', (e) => {
   if (els.lhbAiMeta) els.lhbAiMeta.textContent = `建议买这三只 · ${lhbBoardCache.date || ''}`;
 });
 els.lhbBoard?.addEventListener('click', (e) => {
+  const sortBtn = e.target.closest?.('[data-lhb-sort]');
+  if (sortBtn && els.lhbBoard.contains(sortBtn)) {
+    e.preventDefault();
+    e.stopPropagation();
+    setLhbSort(sortBtn.getAttribute('data-lhb-sort'));
+    return;
+  }
   const row = e.target.closest?.('[data-lhb-open]');
   if (!row || !els.lhbBoard.contains(row)) return;
   openLhbDetail(row.getAttribute('data-lhb-open'));
