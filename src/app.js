@@ -259,6 +259,7 @@ const els = {
   chartPredictK: $('chart-predict-k'),
   chartPredictFlow: $('chart-predict-flow'),
   lhbRefreshBtn: $('lhb-refresh-btn'),
+  lhbAsof: $('lhb-asof'),
   lhbMeta: $('lhb-meta'),
   lhbBoard: $('lhb-board'),
   lhbFilters: $('lhb-filters'),
@@ -2097,6 +2098,48 @@ function openLhbDetail(code) {
   void openDetail(item);
 }
 
+function lhbWeekday(ymd) {
+  const [y, m, d] = String(ymd || '').split('-').map(Number);
+  if (!y || !m || !d) return '';
+  return ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][new Date(Date.UTC(y, m - 1, d)).getUTCDay()] || '';
+}
+
+function lhbClockHm(ts = Date.now()) {
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(ts);
+}
+
+function lhbDateLabel(ymd) {
+  if (!ymd) return '';
+  const wd = lhbWeekday(ymd);
+  return wd ? `${ymd}（${wd}）` : ymd;
+}
+
+function lhbAsofText(pack) {
+  if (!pack?.date) return '还没确认这份榜是哪一天的';
+  const today = marketClock().today;
+  const when = lhbDateLabel(pack.date);
+  if (pack.date === today) return `${when} · 今日收盘后披露`;
+  return `${when} · 最近已披露的榜（非今日）`;
+}
+
+function syncLhbAsof(pack, { loading = false } = {}) {
+  if (!els.lhbAsof) return;
+  if (loading && pack?.date) {
+    els.lhbAsof.textContent = `刷新中 · 上次是 ${lhbDateLabel(pack.date)}`;
+    return;
+  }
+  if (loading) {
+    els.lhbAsof.textContent = '正在确认这份榜是哪一天的…';
+    return;
+  }
+  els.lhbAsof.textContent = lhbAsofText(pack);
+}
+
 function lhbMetaText(pack, live = false) {
   if (!pack?.date) return '暂未取到龙虎榜，请稍后再试';
   const shown = (pack.rows || []).filter(rowMatchesLhbFilter).length;
@@ -2104,8 +2147,14 @@ function lhbMetaText(pack, live = false) {
   const filterNote = shown === total ? '' : `，筛选后 ${shown} 只`;
   const sortLabel = LHB_SORT_KEYS[lhbSort.key] || '净买亿';
   const sortDir = lhbSort.dir === 'asc' ? '升序' : '降序';
-  const liveNote = live ? ' · 今日涨跌已刷新' : '';
-  return `名单 ${pack.date} · 按${sortLabel}${sortDir} · 共 ${total} 只${filterNote}${liveNote}`;
+  const fetchedAt = Number(pack.fetchedAt);
+  const refreshNote = Number.isFinite(fetchedAt)
+    ? `刷新于 ${lhbClockHm(fetchedAt)}`
+    : live
+      ? `刷新于 ${lhbClockHm()}`
+      : '';
+  const liveNote = live ? ' · 今日涨跌已更新' : '';
+  return `当前龙虎榜是${lhbDateLabel(pack.date)}的 · ${refreshNote} · 按${sortLabel}${sortDir} · 共 ${total} 只${filterNote}${liveNote}`;
 }
 
 async function refreshLhbBoard(force = false) {
@@ -2114,6 +2163,7 @@ async function refreshLhbBoard(force = false) {
     await applyLhbLiveQuotes(lhbBoardCache);
     renderLhbBoard(lhbBoardCache);
     if (els.lhbMeta) els.lhbMeta.textContent = lhbMetaText(lhbBoardCache, true);
+    syncLhbAsof(lhbBoardCache);
     lhbCollabHandle?.setOptions?.(lhbStockOptions());
     void refreshLhbAdvice({ ...lhbBoardCache, rows: visibleLhbRows() }, false);
     return;
@@ -2123,18 +2173,26 @@ async function refreshLhbBoard(force = false) {
     els.lhbRefreshBtn.disabled = true;
     els.lhbRefreshBtn.textContent = '刷新中…';
   }
-  if (els.lhbMeta) els.lhbMeta.textContent = '正在拉取最近已披露的龙虎榜与实时行情…';
+  syncLhbAsof(lhbBoardCache, { loading: true });
+  if (els.lhbMeta) {
+    els.lhbMeta.textContent = lhbBoardCache?.date
+      ? `正在刷新龙虎榜… 上次是 ${lhbDateLabel(lhbBoardCache.date)} 的`
+      : '正在拉取最近已披露的龙虎榜，确认是哪一天的名单…';
+  }
   try {
     const pack = await fetchDailyBillboard(80);
+    pack.fetchedAt = Date.now();
     await applyLhbLiveQuotes(pack);
     lhbBoardCache = pack;
     renderLhbBoard(pack);
     if (els.lhbMeta) els.lhbMeta.textContent = lhbMetaText(pack, true);
+    syncLhbAsof(pack);
     lhbCollabHandle?.setOptions?.(lhbStockOptions());
     void refreshLhbAdvice({ ...pack, rows: visibleLhbRows() }, force);
   } catch (e) {
     console.error(e);
     if (els.lhbMeta) els.lhbMeta.textContent = `加载失败：${e?.message || e}`;
+    syncLhbAsof(lhbBoardCache);
     if (els.lhbBoard) {
       els.lhbBoard.innerHTML =
         '<p class="text-[12px]" style="color:var(--muted)">龙虎榜加载失败，请点「刷新榜单」重试。</p>';

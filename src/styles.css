@@ -2552,6 +2552,18 @@ button.pick-card {
 }
 
 /* 龙虎榜分析台 */
+.lhb-asof {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in oklab, var(--accent) 35%, var(--line));
+}
+
 .lhb-board {
   max-height: min(42vh, 420px);
   border-radius: 10px;
