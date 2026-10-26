@@ -2095,9 +2095,9 @@ function ensureLhbCollab() {
       }
       if (synced) {
         els.lhbCollabStatus.textContent =
-          peers > 1 ? `已同步 · 当前 ${peers} 人在线` : '已同步 · 等待其他人加入';
+          peers > 1 ? `已共享 · 当前 ${peers} 人在线` : '已连上共享房间 · 三只股票全员可见';
       } else {
-        els.lhbCollabStatus.textContent = '连接协作服务中…（本机也可先编辑）';
+        els.lhbCollabStatus.textContent = '正在连共享房间…（先可本机编辑）';
       }
     },
   });

@@ -12,7 +12,7 @@ import { IndexeddbPersistence } from 'y-indexeddb';
 const PICKS = 3;
 const DAYS = 30;
 const ROOM = 'genius-trader-lhb-sheet-v3';
-const WS_FALLBACKS = ['wss://demos.yjs.dev'];
+const WS_SERVERS = ['wss://demos.yjs.dev/ws'];
 
 function shanghaiParts() {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -75,13 +75,8 @@ function toneClass(n) {
   return v > 0 ? 'text-up' : 'text-down';
 }
 
-function ensurePicks(arr) {
-  while (arr.length < PICKS) {
-    const m = new Y.Map();
-    m.set('code', '');
-    m.set('name', '');
-    arr.push([m]);
-  }
+function slotKey(i) {
+  return String(i);
 }
 
 /**
@@ -96,8 +91,7 @@ export function mountCollabTable(root, opts = {}) {
   if (!root) return { destroy() {}, setOptions() {} };
 
   const doc = new Y.Doc();
-  const picks = doc.getArray('picks');
-  ensurePicks(picks);
+  const picks = doc.getMap('slots');
 
   let webrtc = null;
   let websocket = null;
@@ -105,6 +99,7 @@ export function mountCollabTable(root, opts = {}) {
   let destroyed = false;
   let peers = 0;
   let mode = 'local';
+  let remoteLive = false;
   let menuRow = null;
   let menuQuery = '';
   let options = [];
@@ -113,8 +108,8 @@ export function mountCollabTable(root, opts = {}) {
 
   const emit = (patch = {}) => {
     opts.onStatus?.({
-      synced: mode !== 'local' || !!idb,
-      peers,
+      synced: remoteLive,
+      peers: Math.max(remoteLive ? peers : 1, peers),
       mode,
       ...patch,
     });
@@ -133,13 +128,13 @@ export function mountCollabTable(root, opts = {}) {
       /* ignore */
     }
     peers = Math.max(1, set.size);
+    if (set.size > 1) remoteLive = true;
     emit();
   };
 
   try {
     idb = new IndexeddbPersistence(ROOM, doc);
     idb.on('synced', () => {
-      ensurePicks(picks);
       emit({ mode });
       render();
       void hydrateChanges();
@@ -167,24 +162,33 @@ export function mountCollabTable(root, opts = {}) {
     webrtc.awareness.on('change', refreshPeers);
     webrtc.on('peers', refreshPeers);
     webrtc.on('status', ({ connected }) => {
-      if (connected) mode = 'webrtc';
+      if (connected) {
+        mode = 'webrtc';
+        remoteLive = true;
+      }
       emit();
     });
   } catch (e) {
     console.warn('collab webrtc', e);
   }
 
-  for (const url of WS_FALLBACKS) {
+  for (const url of WS_SERVERS) {
     try {
       websocket = new WebsocketProvider(url, ROOM, doc, { connect: true });
       websocket.on('status', ({ status }) => {
         if (status === 'connected') {
           mode = 'websocket';
+          remoteLive = true;
           emit();
         }
       });
       websocket.on('sync', (synced) => {
-        if (synced) emit();
+        if (synced) {
+          remoteLive = true;
+          render();
+          void hydrateChanges();
+          emit();
+        }
       });
       websocket.awareness.on('change', refreshPeers);
       break;
@@ -197,7 +201,7 @@ export function mountCollabTable(root, opts = {}) {
   emit();
 
   function readPick(i) {
-    const m = picks.get(i);
+    const m = picks.get(slotKey(i));
     return {
       code: String(m?.get?.('code') || ''),
       name: String(m?.get?.('name') || ''),
@@ -205,10 +209,12 @@ export function mountCollabTable(root, opts = {}) {
   }
 
   function writePick(i, patch) {
-    ensurePicks(picks);
-    const m = picks.get(i);
-    if (!m) return;
     doc.transact(() => {
+      let m = picks.get(slotKey(i));
+      if (!(m instanceof Y.Map)) {
+        m = new Y.Map();
+        picks.set(slotKey(i), m);
+      }
       if (patch.code != null) m.set('code', String(patch.code));
       if (patch.name != null) m.set('name', String(patch.name));
     });
@@ -249,7 +255,6 @@ export function mountCollabTable(root, opts = {}) {
 
   const render = () => {
     if (destroyed || !root.isConnected) return;
-    ensurePicks(picks);
     const dates = lastMonthDates();
     const head = `<th class="collab-name-h">名称</th>${dates
       .map((d) => `<th class="collab-date-h">${escapeHtml(displayDate(d))}</th>`)
