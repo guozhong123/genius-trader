@@ -185,7 +185,7 @@
           </div>
         </section>
 
-        <!-- 龙虎榜：上日榜单 + 多人在线空白表 -->
+        <!-- 龙虎榜 -->
         <section id="view-lhb" class="view-pane hidden space-y-2">
           <div class="glass rounded-xl p-3">
             <div class="flex flex-wrap items-start justify-between gap-2">
@@ -195,7 +195,7 @@
                   <span id="lhb-asof" class="lhb-asof">正在确认这份榜是哪一天的…</span>
                 </div>
                 <p class="mt-0.5 text-[11px] leading-relaxed" style="color: var(--muted)">
-                  刷新后会标明当前龙虎榜是哪一天披露的。今日涨跌是实时行情，前一日涨跌是上一个交易日，不是上榜当天。点列头可排序。可用北向 / 机构 / 主力 / 游资筛选，默认全开。点击一行看详情。
+                  今日涨跌是当天行情，前一日涨跌是上一个交易日，两列不是同一个数。点列头可排序。可用北向 / 机构 / 主力 / 游资筛选，默认全开。点击一行看详情。
                 </p>
               </div>
               <button type="button" id="lhb-refresh-btn" class="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white shrink-0">刷新榜单</button>
@@ -213,16 +213,6 @@
               <p id="lhb-ai-meta" class="mt-0.5 text-[11px]" style="color: var(--muted)">榜单出来后自动给三只</p>
               <div id="lhb-ai-picks" class="lhb-ai-picks mt-2"></div>
             </div>
-          </div>
-          <div class="glass rounded-xl p-3">
-            <div class="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-              <div class="text-sm font-semibold">协作空白表</div>
-              <span id="lhb-collab-status" class="text-[11px]" style="color: var(--muted)">连接中…</span>
-            </div>
-            <p class="mb-2 text-[11px] leading-relaxed" style="color: var(--muted)">
-              每天选 3 只，全员共享：谁选的股票，其他人打开就能看到、也能改。第一列搜索名称，表头近 30 天，格子是每日涨幅。
-            </p>
-            <div id="lhb-collab-table" class="lhb-collab-host"></div>
           </div>
         </section>
 

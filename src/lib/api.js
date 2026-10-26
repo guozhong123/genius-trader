@@ -2395,16 +2395,24 @@ export function previousSessionChange(points, todayYmd) {
   const rows = [];
   for (const point of points || []) {
     const date = String(point?.date || '').slice(0, 10);
-    const changePct = Number(point?.changePct);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(changePct)) continue;
-    rows.push({ date, changePct });
+    const close = Number(point?.close);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !(close > 0)) continue;
+    const given = Number(point?.changePct);
+    rows.push({ date, close, changePct: Number.isFinite(given) ? given : null });
   }
   if (!rows.length) return null;
   const today = String(todayYmd || '').slice(0, 10);
-  const last = rows[rows.length - 1];
-  const pick = today && last.date >= today ? rows[rows.length - 2] : last;
-  if (!pick || !Number.isFinite(pick.changePct)) return null;
-  return { date: pick.date, changePct: +pick.changePct.toFixed(2) };
+  let idx = rows.length - 1;
+  // 今天这根不能当成前一日。涨跌用前一根收盘算，避免接口把当天涨跌填进每一根。
+  if (today && rows[idx].date >= today) idx -= 1;
+  if (idx < 0) return null;
+  const row = rows[idx];
+  const base = idx > 0 ? rows[idx - 1].close : 0;
+  const fromClose = base > 0 ? ((row.close - base) / base) * 100 : null;
+  const changePct = Number.isFinite(fromClose) ? fromClose : row.changePct;
+  if (!Number.isFinite(changePct)) return null;
+  if (today && row.date >= today) return null;
+  return { date: row.date, changePct: +Number(changePct).toFixed(2) };
 }
 
 async function fetchRecentDayPoints(secid) {
