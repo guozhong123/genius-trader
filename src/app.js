@@ -1759,6 +1759,17 @@ function fmtYiBoard(n) {
   return `${v > 0 ? '+' : ''}${v.toFixed(2)}`;
 }
 
+function lhbRowToItem(row) {
+  if (!row?.code) return null;
+  const item = toQuoteItem(row);
+  return {
+    ...item,
+    price: Number.isFinite(Number(row.close)) ? Number(row.close) : item.price,
+    changePct: Number.isFinite(Number(row.changePct)) ? Number(row.changePct) : item.changePct,
+    label: marketLabel(item.market),
+  };
+}
+
 function renderLhbBoard(pack) {
   if (!els.lhbBoard) return;
   const rows = pack?.rows || [];
@@ -1776,9 +1787,9 @@ function renderLhbBoard(pack) {
     </thead>
     <tbody>
       ${rows
-        .map((r) => {
+        .map((r, i) => {
           const pct = Number(r.changePct);
-          return `<tr>
+          return `<tr class="lhb-row" data-lhb-open="${i}" title="查看 ${escAttr(r.name || r.code)} 详情" role="button" tabindex="0">
             <td class="tabular-nums">${esc(r.code)}</td>
             <td class="lhb-name">${esc(r.name)}</td>
             <td class="tabular-nums ${tone(pct)}">${fmtPct(pct)}</td>
@@ -1792,6 +1803,13 @@ function renderLhbBoard(pack) {
         .join('')}
     </tbody>
   </table>`;
+}
+
+function openLhbDetail(index) {
+  const row = lhbBoardCache?.rows?.[Number(index)];
+  const item = lhbRowToItem(row);
+  if (!item) return;
+  void openDetail(item);
 }
 
 async function refreshLhbBoard(force = false) {
@@ -4977,6 +4995,18 @@ els.aiAdviceHistory?.addEventListener('click', () => {
 els.reportOpenBtn?.addEventListener('click', () => openReportDrawer());
 els.marketAiBtn?.addEventListener('click', () => runMarketAi());
 els.lhbRefreshBtn?.addEventListener('click', () => void refreshLhbBoard(true));
+els.lhbBoard?.addEventListener('click', (e) => {
+  const row = e.target.closest?.('[data-lhb-open]');
+  if (!row || !els.lhbBoard.contains(row)) return;
+  openLhbDetail(row.getAttribute('data-lhb-open'));
+});
+els.lhbBoard?.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const row = e.target.closest?.('[data-lhb-open]');
+  if (!row || !els.lhbBoard.contains(row)) return;
+  e.preventDefault();
+  openLhbDetail(row.getAttribute('data-lhb-open'));
+});
 
 els.strategyDesk?.addEventListener('click', (e) => {
   const t = e.target.closest('[data-strategy-pulse]');

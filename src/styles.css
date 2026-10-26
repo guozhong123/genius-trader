@@ -2582,6 +2582,17 @@ button.pick-card {
   background: var(--panel-solid);
 }
 
+.lhb-table .lhb-row {
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.lhb-table .lhb-row:hover,
+.lhb-table .lhb-row:focus-visible {
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+  outline: none;
+}
+
 .lhb-table .lhb-name {
   font-weight: 600;
   max-width: 6.5rem;
