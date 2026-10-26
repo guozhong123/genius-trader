@@ -35,6 +35,7 @@ import {
   fetchTencentStockQuote,
   fetchIndustryMove,
   fetchDragonTiger,
+  fetchDailyBillboard,
   fetchLimitSentiment,
   fetchTrackedFlows,
   fetchBoardLeaders,
@@ -72,8 +73,10 @@ import { getTodayEvents, getUpcomingEvents, getMajorUpcomingEvents, marketCalend
 import { buildLevelMarkLines, calcAutoLevels } from './lib/levels.js';
 import { normalizeGroups, repairStockGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
+import { mountCollabTable } from './lib/collab-table.js';
 import {
   askDeepseekReport,
+  askLhbPick3,
   askLhbReport,
   askMarketReport,
   askPredictPack,
@@ -255,6 +258,15 @@ const els = {
   predictIndexName: $('predict-index-name'),
   chartPredictK: $('chart-predict-k'),
   chartPredictFlow: $('chart-predict-flow'),
+  lhbRefreshBtn: $('lhb-refresh-btn'),
+  lhbAsof: $('lhb-asof'),
+  lhbMeta: $('lhb-meta'),
+  lhbBoard: $('lhb-board'),
+  lhbFilters: $('lhb-filters'),
+  lhbAiMeta: $('lhb-ai-meta'),
+  lhbAiPicks: $('lhb-ai-picks'),
+  lhbCollabStatus: $('lhb-collab-status'),
+  lhbCollabTable: $('lhb-collab-table'),
   simAiBtn: $('sim-ai-btn'),
   simMarkBtn: $('sim-mark-btn'),
   simResetBtn: $('sim-reset-btn'),
@@ -403,7 +415,17 @@ function scrollPageTop() {
   document.querySelector('.page-shell')?.scrollTo?.(0, 0);
 }
 
-const APP_VIEWS = ['watch', 'pulse', 'predict', 'data', 'etf'];
+const APP_VIEWS = ['watch', 'pulse', 'lhb', 'data', 'etf'];
+let lhbCollabHandle = null;
+let lhbBoardCache = null;
+let lhbBoardLoading = false;
+let lhbAdviceCache = null;
+let lhbAdviceLoading = false;
+let lhbAdviceForDate = '';
+const LHB_FILTERS = ['北向', '机构', '主力', '游资'];
+const lhbFilterOn = new Set(LHB_FILTERS);
+const LHB_SORT_KEYS = { livePct: '今日涨跌', prevPct: '前一日涨跌', netYi: '净买亿' };
+let lhbSort = { key: 'netYi', dir: 'desc' };
 const SIM_FEE_RATE = 0.0005; // 万五
 const SIM_FEE_MIN = 5;
 
@@ -521,9 +543,11 @@ function setView(view) {
     refreshPulse();
     loadTrendSheet();
   }
-  if (state.view === 'predict') {
-    renderPredictView();
-    void loadPredictFlow();
+  if (state.view === 'lhb') {
+    void ensureLhbView();
+  } else if (lhbCollabHandle) {
+    lhbCollabHandle.destroy();
+    lhbCollabHandle = null;
   }
   if (state.view === 'etf') ensureHeatmap();
   syncMarketAiBtn();
@@ -1741,6 +1765,477 @@ function materializeForecastBars(lastClose, bars, dates) {
   });
 }
 
+function fmtYiBoard(n) {
+  if (!Number.isFinite(Number(n))) return '—';
+  const v = Number(n);
+  return `${v > 0 ? '+' : ''}${v.toFixed(2)}`;
+}
+
+function lhbRowToItem(row) {
+  if (!row?.code) return null;
+  const item = toQuoteItem(row);
+  const livePct = Number(row.liveChangePct);
+  const livePrice = Number(row.livePrice);
+  return {
+    ...item,
+    price: Number.isFinite(livePrice)
+      ? livePrice
+      : Number.isFinite(Number(row.close))
+        ? Number(row.close)
+        : item.price,
+    changePct: Number.isFinite(livePct)
+      ? livePct
+      : Number.isFinite(Number(row.changePct))
+        ? Number(row.changePct)
+        : item.changePct,
+    label: marketLabel(item.market),
+  };
+}
+
+function rowMatchesLhbFilter(row) {
+  if (lhbFilterOn.size === LHB_FILTERS.length) return true;
+  if (!lhbFilterOn.size) return false;
+  return (row.buyerTags || []).some((t) => lhbFilterOn.has(t));
+}
+
+function visibleLhbRows() {
+  return (lhbBoardCache?.rows || []).filter(rowMatchesLhbFilter);
+}
+
+function lhbSortValue(row, key) {
+  if (key === 'livePct') return Number(row.liveChangePct);
+  if (key === 'prevPct') return Number(row.changePct);
+  if (key === 'netYi') return Number(row.netYi);
+  return NaN;
+}
+
+function sortedLhbRows(rows) {
+  const dir = lhbSort.dir === 'asc' ? 1 : -1;
+  const key = lhbSort.key;
+  return [...(rows || [])].sort((a, b) => {
+    const av = lhbSortValue(a, key);
+    const bv = lhbSortValue(b, key);
+    const aOk = Number.isFinite(av);
+    const bOk = Number.isFinite(bv);
+    if (!aOk && !bOk) return String(a.code || '').localeCompare(String(b.code || ''));
+    if (!aOk) return 1;
+    if (!bOk) return -1;
+    if (av !== bv) return (av - bv) * dir;
+    const netDiff = (Number(b.netYi) || 0) - (Number(a.netYi) || 0);
+    if (netDiff) return netDiff;
+    return String(a.code || '').localeCompare(String(b.code || ''));
+  });
+}
+
+function setLhbSort(key) {
+  if (!LHB_SORT_KEYS[key]) return;
+  if (lhbSort.key === key) {
+    lhbSort = { key, dir: lhbSort.dir === 'desc' ? 'asc' : 'desc' };
+  } else {
+    lhbSort = { key, dir: 'desc' };
+  }
+  if (!lhbBoardCache) return;
+  renderLhbBoard(lhbBoardCache);
+  if (els.lhbMeta) els.lhbMeta.textContent = lhbMetaText(lhbBoardCache, true);
+}
+
+function lhbSortTh(key) {
+  const label = LHB_SORT_KEYS[key] || key;
+  const active = lhbSort.key === key;
+  const mark = active ? (lhbSort.dir === 'asc' ? '↑' : '↓') : '';
+  const aria = active ? ` aria-sort="${lhbSort.dir === 'asc' ? 'ascending' : 'descending'}"` : '';
+  return `<th class="lhb-th-sort${active ? ' is-active' : ''}"${aria}>
+      <button type="button" class="lhb-sort-btn" data-lhb-sort="${escAttr(key)}" title="点击按${escAttr(label)}排序">
+        ${esc(label)}${mark ? `<span class="lhb-sort-mark">${mark}</span>` : ''}
+      </button>
+    </th>`;
+}
+
+function syncLhbFilterButtons() {
+  els.lhbFilters?.querySelectorAll('[data-lhb-filter]').forEach((btn) => {
+    const on = lhbFilterOn.has(btn.getAttribute('data-lhb-filter'));
+    btn.classList.toggle('on', on);
+  });
+}
+
+async function applyLhbLiveQuotes(pack) {
+  const rows = pack?.rows || [];
+  if (!rows.length) return pack;
+  const items = rows.map((r) => toQuoteItem(r)).filter((x) => x?.code);
+  const map = {};
+  for (let i = 0; i < items.length; i += 40) {
+    try {
+      Object.assign(map, await fetchQuotes(items.slice(i, i + 40)));
+    } catch {
+      /* keep listed prices */
+    }
+  }
+  state.quotes = { ...state.quotes, ...map };
+  for (const row of rows) {
+    const item = toQuoteItem(row);
+    const q = map[quoteKey(item)] || {};
+    if (Number.isFinite(Number(q.price))) row.livePrice = Number(q.price);
+    if (Number.isFinite(Number(q.changePct))) row.liveChangePct = Number(q.changePct);
+    if (q.name) row.name = q.name;
+  }
+  return pack;
+}
+
+function lhbStockOptions() {
+  return (lhbBoardCache?.rows || []).map((r) => ({
+    code: r.code,
+    name: r.name,
+    market: marketOfCode(r.code),
+  }));
+}
+
+async function loadLhbDayChanges(stock) {
+  const code = String(stock?.code || '').replace(/\D/g, '').slice(-6);
+  if (!code) return {};
+  const market = stock.market || marketOfCode(code);
+  const secid = toSecid(market, code);
+  const k = await fetchKline(secid, 101, 40);
+  const map = {};
+  for (const p of k?.points || []) {
+    const day = String(p.date || '').slice(0, 10);
+    if (day && Number.isFinite(Number(p.changePct))) map[day] = Number(p.changePct);
+  }
+  const q = state.quotes[quoteKey({ kind: 'stock', market, code })];
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
+  if (Number.isFinite(Number(q?.changePct))) map[today] = Number(q.changePct);
+  return map;
+}
+
+function lhbBuyerHtml(row) {
+  const tags = row.buyerTags?.length ? row.buyerTags : [];
+  const chips = tags
+    .map((t) => `<span class="lhb-tag lhb-tag-${escAttr(t)}">${esc(t)}</span>`)
+    .join('');
+  const seats = (row.buyers || [])
+    .slice(0, 3)
+    .map((b) => `${b.short || b.seat} ${fmtYiBoard(b.netYi)}亿`)
+    .join(' · ');
+  const fallback = row.seats || '';
+  const detail = seats || fallback || '席位未披露';
+  return `<div class="lhb-buyers">${chips || '<span class="lhb-tag lhb-tag-营业部">营业部</span>'}<div class="lhb-buyer-seats" title="${escAttr(detail)}">${esc(detail)}</div></div>`;
+}
+
+function renderLhbBoard(pack) {
+  if (!els.lhbBoard) return;
+  const all = pack?.rows || [];
+  const rows = all.filter(rowMatchesLhbFilter);
+  if (!all.length) {
+    els.lhbBoard.innerHTML =
+      '<p class="text-[12px]" style="color:var(--muted)">暂无龙虎榜数据。收盘后通常会晚些披露，可稍后点「刷新榜单」。</p>';
+    return;
+  }
+  if (!rows.length) {
+    els.lhbBoard.innerHTML =
+      '<p class="text-[12px]" style="color:var(--muted)">当前筛选下没有股票。点一下筛选项，默认全开即可看全部。</p>';
+    return;
+  }
+  const sorted = sortedLhbRows(rows);
+  els.lhbBoard.innerHTML = `<table class="lhb-table">
+    <thead>
+      <tr>
+        <th>代码</th><th>名称</th>
+        ${lhbSortTh('livePct')}${lhbSortTh('prevPct')}
+        <th>上榜收盘</th>
+        ${lhbSortTh('netYi')}
+        <th>谁在买</th><th>上榜原因</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${sorted
+        .map((r) => {
+          const livePct = Number(r.liveChangePct);
+          const prevPct = Number(r.changePct);
+          const price = Number(r.close);
+          return `<tr class="lhb-row" data-lhb-open="${escAttr(r.code)}" title="查看 ${escAttr(r.name || r.code)} 详情" role="button" tabindex="0">
+            <td class="tabular-nums">${esc(r.code)}</td>
+            <td class="lhb-name">${esc(r.name)}</td>
+            <td class="tabular-nums ${tone(livePct)}">${fmtPct(Number.isFinite(livePct) ? livePct : null)}</td>
+            <td class="tabular-nums ${tone(prevPct)}">${fmtPct(Number.isFinite(prevPct) ? prevPct : null)}</td>
+            <td class="tabular-nums">${Number.isFinite(price) ? price.toFixed(2) : '—'}</td>
+            <td class="tabular-nums ${tone(r.netYi)}">${fmtYiBoard(r.netYi)}</td>
+            <td>${lhbBuyerHtml(r)}</td>
+            <td class="lhb-reason" title="${escAttr(r.reason || r.seats || '')}">${esc(r.reason || r.seats || '—')}</td>
+          </tr>`;
+        })
+        .join('')}
+    </tbody>
+  </table>`;
+}
+
+function scoreLhbPick(row) {
+  const net = Number(row.netYi) || 0;
+  const pct = Number(row.changePct) || 0;
+  const tags = row.buyerTags || [];
+  const code = String(row.code || '');
+  let score = net;
+  if (tags.includes('北向')) score += 3.2;
+  if (tags.includes('机构')) score += 2.2;
+  if (tags.includes('游资')) score += 0.4;
+  if (net <= 0) score -= 10;
+  const band = /^(300|301|688|689)/.test(code) ? 19.5 : /^[48]/.test(code) ? 29.5 : 9.5;
+  if (pct >= band - 0.15 && !tags.includes('北向') && !tags.includes('机构')) score -= 3.5;
+  return score;
+}
+
+function heuristicLhbReason(row) {
+  const tags = row.buyerTags || [];
+  const top = row.buyers?.[0];
+  if (tags.includes('北向') && tags.includes('机构')) return '北向+机构同时净买，资金比纯游资干净。';
+  if (tags.includes('北向')) return `北向席位在买${top ? `（${top.short} ${fmtYiBoard(top.netYi)}亿）` : ''}。`;
+  if (tags.includes('机构')) return `有机构席位净买${top ? `，${top.short} ${fmtYiBoard(top.netYi)}亿` : ''}。`;
+  if (tags.includes('游资')) return `游资净买靠前，短线可看一眼，注意一日游。`;
+  return `榜上净买入 ${fmtYiBoard(row.netYi)} 亿，席位以营业部为主。`;
+}
+
+function pickLhbThree(rows) {
+  return [...(rows || [])]
+    .filter((r) => Number(r.netYi) > 0)
+    .sort((a, b) => scoreLhbPick(b) - scoreLhbPick(a))
+    .slice(0, 3)
+    .map((r) => ({
+      code: r.code,
+      name: r.name,
+      reason: heuristicLhbReason(r),
+      buyerTags: r.buyerTags || [],
+      netYi: r.netYi,
+      changePct: Number.isFinite(Number(r.liveChangePct)) ? Number(r.liveChangePct) : r.changePct,
+    }));
+}
+
+function livePctOf(code, fallback) {
+  const row = (lhbBoardCache?.rows || []).find((r) => r.code === String(code));
+  const live = Number(row?.liveChangePct);
+  if (Number.isFinite(live)) return live;
+  const n = Number(fallback);
+  return Number.isFinite(n) ? n : null;
+}
+
+function renderLhbAdvice(pack) {
+  if (!els.lhbAiPicks) return;
+  const picks = (pack?.picks || []).map((p) => ({
+    ...p,
+    changePct: livePctOf(p.code, p.changePct),
+  }));
+  if (!picks.length) {
+    els.lhbAiPicks.innerHTML =
+      '<p class="text-[12px]" style="color:var(--muted)">暂无建议。等榜单出来后再看。</p>';
+    return;
+  }
+  els.lhbAiPicks.innerHTML = picks
+    .map((p, i) => {
+      const tags = (p.buyerTags || [])
+        .map((t) => `<span class="lhb-tag lhb-tag-${escAttr(t)}">${esc(t)}</span>`)
+        .join('');
+      return `<button type="button" class="lhb-ai-pick" data-lhb-pick="${i}">
+        <div class="lhb-ai-pick-top">
+          <span class="lhb-ai-rank">${i + 1}</span>
+          <span class="lhb-ai-name">${esc(p.name)}</span>
+          <span class="tabular-nums" style="color:var(--muted)">${esc(p.code)}</span>
+          <span class="tabular-nums ${tone(p.changePct)}">${fmtPct(p.changePct)}</span>
+        </div>
+        <div class="lhb-ai-pick-tags">${tags}</div>
+        <p class="lhb-ai-reason">${esc(p.reason)}</p>
+      </button>`;
+    })
+    .join('');
+}
+
+async function refreshLhbAdvice(pack, force = false) {
+  if (!els.lhbAiPicks) return;
+  const date = pack?.date || '';
+  const heuristic = { picks: pickLhbThree(pack?.rows || []), note: '', source: 'local', generatedAt: Date.now() };
+  if (!force && lhbAdviceCache?.picks?.length && lhbAdviceForDate === date) {
+    renderLhbAdvice(lhbAdviceCache);
+    if (els.lhbAiMeta) {
+      els.lhbAiMeta.textContent = lhbAdviceCache.source && lhbAdviceCache.source !== 'local'
+        ? `建议买这三只 · ${date} · ${lhbAdviceCache.source}`
+        : `建议买这三只 · ${date}`;
+    }
+    return;
+  }
+  lhbAdviceCache = heuristic;
+  lhbAdviceForDate = date;
+  renderLhbAdvice(heuristic);
+  if (els.lhbAiMeta) els.lhbAiMeta.textContent = date ? `建议买这三只 · ${date}` : '建议买这三只';
+  const apiKey = String(state.settings?.deepseekApiKey || '').trim();
+  if (!apiKey || lhbAdviceLoading || !pack?.rows?.length) return;
+  lhbAdviceLoading = true;
+  if (els.lhbAiMeta) els.lhbAiMeta.textContent = `正在用 AI 从 ${pack.rows.length} 只里挑三只…`;
+  try {
+    const clock = marketClock();
+    const ai = await askLhbPick3(
+      apiKey,
+      { date, rows: pack.rows.slice(0, 40), clock: clock.line },
+      state.settings?.aiModel,
+    );
+    if (ai.picks?.length === 3) {
+      lhbAdviceCache = ai;
+      lhbAdviceForDate = date;
+      renderLhbAdvice(ai);
+      if (els.lhbAiMeta) {
+        els.lhbAiMeta.textContent = `${ai.note || '建议买这三只'} · ${date}`;
+      }
+    } else if (els.lhbAiMeta) {
+      els.lhbAiMeta.textContent = `建议买这三只 · ${date}`;
+    }
+  } catch (e) {
+    console.warn('lhb ai pick', e);
+    if (els.lhbAiMeta) els.lhbAiMeta.textContent = `建议买这三只 · ${date}（AI 未连上，先按席位排序）`;
+  } finally {
+    lhbAdviceLoading = false;
+  }
+}
+
+function openLhbDetail(code) {
+  const row = lhbBoardCache?.rows?.find((r) => r.code === String(code));
+  const item = lhbRowToItem(row);
+  if (!item) return;
+  void openDetail(item);
+}
+
+function lhbWeekday(ymd) {
+  const [y, m, d] = String(ymd || '').split('-').map(Number);
+  if (!y || !m || !d) return '';
+  return ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][new Date(Date.UTC(y, m - 1, d)).getUTCDay()] || '';
+}
+
+function lhbClockHm(ts = Date.now()) {
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(ts);
+}
+
+function lhbDateLabel(ymd) {
+  if (!ymd) return '';
+  const wd = lhbWeekday(ymd);
+  return wd ? `${ymd}（${wd}）` : ymd;
+}
+
+function lhbAsofText(pack) {
+  if (!pack?.date) return '还没确认这份榜是哪一天的';
+  const today = marketClock().today;
+  const when = lhbDateLabel(pack.date);
+  if (pack.date === today) return `${when} · 今日收盘后披露`;
+  return `${when} · 最近已披露的榜（非今日）`;
+}
+
+function syncLhbAsof(pack, { loading = false } = {}) {
+  if (!els.lhbAsof) return;
+  if (loading && pack?.date) {
+    els.lhbAsof.textContent = `刷新中 · 上次是 ${lhbDateLabel(pack.date)}`;
+    return;
+  }
+  if (loading) {
+    els.lhbAsof.textContent = '正在确认这份榜是哪一天的…';
+    return;
+  }
+  els.lhbAsof.textContent = lhbAsofText(pack);
+}
+
+function lhbMetaText(pack, live = false) {
+  if (!pack?.date) return '暂未取到龙虎榜，请稍后再试';
+  const shown = (pack.rows || []).filter(rowMatchesLhbFilter).length;
+  const total = pack.rows?.length || 0;
+  const filterNote = shown === total ? '' : `，筛选后 ${shown} 只`;
+  const sortLabel = LHB_SORT_KEYS[lhbSort.key] || '净买亿';
+  const sortDir = lhbSort.dir === 'asc' ? '升序' : '降序';
+  const fetchedAt = Number(pack.fetchedAt);
+  const refreshNote = Number.isFinite(fetchedAt)
+    ? `刷新于 ${lhbClockHm(fetchedAt)}`
+    : live
+      ? `刷新于 ${lhbClockHm()}`
+      : '';
+  const liveNote = live ? ' · 今日涨跌已更新' : '';
+  return `当前龙虎榜是${lhbDateLabel(pack.date)}的 · ${refreshNote} · 按${sortLabel}${sortDir} · 共 ${total} 只${filterNote}${liveNote}`;
+}
+
+async function refreshLhbBoard(force = false) {
+  if (lhbBoardLoading) return;
+  if (!force && lhbBoardCache?.rows?.length) {
+    await applyLhbLiveQuotes(lhbBoardCache);
+    renderLhbBoard(lhbBoardCache);
+    if (els.lhbMeta) els.lhbMeta.textContent = lhbMetaText(lhbBoardCache, true);
+    syncLhbAsof(lhbBoardCache);
+    lhbCollabHandle?.setOptions?.(lhbStockOptions());
+    void refreshLhbAdvice({ ...lhbBoardCache, rows: visibleLhbRows() }, false);
+    return;
+  }
+  lhbBoardLoading = true;
+  if (els.lhbRefreshBtn) {
+    els.lhbRefreshBtn.disabled = true;
+    els.lhbRefreshBtn.textContent = '刷新中…';
+  }
+  syncLhbAsof(lhbBoardCache, { loading: true });
+  if (els.lhbMeta) {
+    els.lhbMeta.textContent = lhbBoardCache?.date
+      ? `正在刷新龙虎榜… 上次是 ${lhbDateLabel(lhbBoardCache.date)} 的`
+      : '正在拉取最近已披露的龙虎榜，确认是哪一天的名单…';
+  }
+  try {
+    const pack = await fetchDailyBillboard(80);
+    pack.fetchedAt = Date.now();
+    await applyLhbLiveQuotes(pack);
+    lhbBoardCache = pack;
+    renderLhbBoard(pack);
+    if (els.lhbMeta) els.lhbMeta.textContent = lhbMetaText(pack, true);
+    syncLhbAsof(pack);
+    lhbCollabHandle?.setOptions?.(lhbStockOptions());
+    void refreshLhbAdvice({ ...pack, rows: visibleLhbRows() }, force);
+  } catch (e) {
+    console.error(e);
+    if (els.lhbMeta) els.lhbMeta.textContent = `加载失败：${e?.message || e}`;
+    syncLhbAsof(lhbBoardCache);
+    if (els.lhbBoard) {
+      els.lhbBoard.innerHTML =
+        '<p class="text-[12px]" style="color:var(--muted)">龙虎榜加载失败，请点「刷新榜单」重试。</p>';
+    }
+  } finally {
+    lhbBoardLoading = false;
+    if (els.lhbRefreshBtn) {
+      els.lhbRefreshBtn.disabled = false;
+      els.lhbRefreshBtn.textContent = '刷新榜单';
+    }
+  }
+}
+
+function ensureLhbCollab() {
+  if (!els.lhbCollabTable) return;
+  if (lhbCollabHandle) {
+    lhbCollabHandle.setOptions?.(lhbStockOptions());
+    return;
+  }
+  lhbCollabHandle = mountCollabTable(els.lhbCollabTable, {
+    getOptions: lhbStockOptions,
+    loadDayChanges: loadLhbDayChanges,
+    onStatus: ({ synced, peers, error }) => {
+      if (!els.lhbCollabStatus) return;
+      if (error) {
+        els.lhbCollabStatus.textContent = error;
+        return;
+      }
+      if (synced) {
+        els.lhbCollabStatus.textContent =
+          peers > 1 ? `已共享 · 当前 ${peers} 人在线` : '已连上共享房间 · 三只股票全员可见';
+      } else {
+        els.lhbCollabStatus.textContent = '正在连共享房间…（先可本机编辑）';
+      }
+    },
+  });
+}
+
+async function ensureLhbView() {
+  ensureLhbCollab();
+  await refreshLhbBoard(false);
+}
+
 function renderPredictView() {
   const pack = state.settings?.predictPack;
   if (els.predictAiBtn) {
@@ -2591,9 +3086,9 @@ function closeReportDrawer() {
 
 function syncMarketAiBtn() {
   if (!els.marketAiBtn) return;
-  // 每个 tab 最多一个 AI：盘况/预测用页内按钮，其它页用顶栏「大盘分析」
+  // 每个 tab 最多一个 AI：盘况用页内按钮，其它页用顶栏「大盘分析」
   // 用占位隐藏而不是 display:none，避免顶栏右侧重排把中间 tab 挤歪
-  const hideTop = state.view === 'pulse' || state.view === 'predict';
+  const hideTop = state.view === 'pulse';
   els.marketAiBtn.classList.remove('hidden');
   els.marketAiBtn.classList.toggle('toolbar-slot-hide', hideTop);
   els.marketAiBtn.setAttribute('aria-hidden', hideTop ? 'true' : 'false');
@@ -4858,22 +5353,57 @@ els.aiAdviceHistory?.addEventListener('click', () => {
 });
 els.reportOpenBtn?.addEventListener('click', () => openReportDrawer());
 els.marketAiBtn?.addEventListener('click', () => runMarketAi());
-els.predictAiBtn?.addEventListener('click', () => runPredictAi());
-// 模拟盘按钮：直接绑 + 容器委托，避免取不到节点时无反应
-els.simAiBtn?.addEventListener('click', (e) => {
-  e.preventDefault();
-  e.stopPropagation();
-  void runSimAi();
+els.lhbRefreshBtn?.addEventListener('click', () => void refreshLhbBoard(true));
+els.lhbFilters?.addEventListener('click', (e) => {
+  const btn = e.target.closest?.('[data-lhb-filter]');
+  if (!btn || !els.lhbFilters.contains(btn)) return;
+  const tag = btn.getAttribute('data-lhb-filter');
+  if (!tag) return;
+  if (lhbFilterOn.has(tag)) lhbFilterOn.delete(tag);
+  else lhbFilterOn.add(tag);
+  if (!lhbFilterOn.size) LHB_FILTERS.forEach((t) => lhbFilterOn.add(t));
+  syncLhbFilterButtons();
+  if (!lhbBoardCache) return;
+  renderLhbBoard(lhbBoardCache);
+  if (els.lhbMeta) els.lhbMeta.textContent = lhbMetaText(lhbBoardCache, true);
+  const heuristic = {
+    picks: pickLhbThree(visibleLhbRows()),
+    note: '',
+    source: 'local',
+    generatedAt: Date.now(),
+  };
+  lhbAdviceCache = heuristic;
+  lhbAdviceForDate = `${lhbBoardCache.date || ''}:${[...lhbFilterOn].sort().join(',')}`;
+  renderLhbAdvice(heuristic);
+  if (els.lhbAiMeta) els.lhbAiMeta.textContent = `建议买这三只 · ${lhbBoardCache.date || ''}`;
 });
-els.simMarkBtn?.addEventListener('click', () => markSimToMarket());
-els.simResetBtn?.addEventListener('click', () => resetSimBook());
-$('view-sim')?.addEventListener('click', (e) => {
-  const btn = e.target.closest?.('#sim-ai-btn, #sim-mark-btn, #sim-reset-btn');
-  if (!btn) return;
+els.lhbBoard?.addEventListener('click', (e) => {
+  const sortBtn = e.target.closest?.('[data-lhb-sort]');
+  if (sortBtn && els.lhbBoard.contains(sortBtn)) {
+    e.preventDefault();
+    e.stopPropagation();
+    setLhbSort(sortBtn.getAttribute('data-lhb-sort'));
+    return;
+  }
+  const row = e.target.closest?.('[data-lhb-open]');
+  if (!row || !els.lhbBoard.contains(row)) return;
+  openLhbDetail(row.getAttribute('data-lhb-open'));
+});
+els.lhbBoard?.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const row = e.target.closest?.('[data-lhb-open]');
+  if (!row || !els.lhbBoard.contains(row)) return;
   e.preventDefault();
-  if (btn.id === 'sim-ai-btn') void runSimAi();
-  else if (btn.id === 'sim-mark-btn') void markSimToMarket();
-  else if (btn.id === 'sim-reset-btn') void resetSimBook();
+  openLhbDetail(row.getAttribute('data-lhb-open'));
+});
+els.lhbAiPicks?.addEventListener('click', (e) => {
+  const btn = e.target.closest?.('[data-lhb-pick]');
+  if (!btn || !els.lhbAiPicks.contains(btn)) return;
+  const pick = lhbAdviceCache?.picks?.[Number(btn.getAttribute('data-lhb-pick'))];
+  if (!pick) return;
+  const row = lhbBoardCache?.rows?.find((r) => r.code === pick.code) || pick;
+  const item = lhbRowToItem(row);
+  if (item) void openDetail(item);
 });
 
 els.strategyDesk?.addEventListener('click', (e) => {
@@ -4960,9 +5490,8 @@ async function bootApp() {
   if (state.settings?.funFlowNames && els.funNamesBtn) {
     els.funNamesBtn.classList.add('bg-accent', 'text-white');
   }
-  const savedView = ['watch', 'pulse', 'predict', 'data', 'etf'].includes(state.settings?.lastView)
-    ? state.settings.lastView
-    : 'watch';
+  const rawView = state.settings?.lastView === 'predict' ? 'lhb' : state.settings?.lastView;
+  const savedView = ['watch', 'pulse', 'lhb', 'data', 'etf'].includes(rawView) ? rawView : 'watch';
   // 指数去重（黄金重复、纳斯达克命名）写回一次
   if (Array.isArray(state.settings?.indices)) {
     const cleaned = uniqueIndices(state.settings.indices);

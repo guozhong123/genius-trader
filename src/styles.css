@@ -2550,3 +2550,404 @@ button.pick-card {
     font-size: 12px;
   }
 }
+
+/* 龙虎榜分析台 */
+.lhb-asof {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in oklab, var(--accent) 35%, var(--line));
+}
+
+.lhb-board {
+  max-height: min(42vh, 420px);
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--line) 85%, transparent);
+}
+
+.lhb-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.lhb-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.lhb-filter-btn {
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid color-mix(in oklab, var(--line) 80%, transparent);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.lhb-filter-btn.on {
+  color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent) 45%, var(--line));
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+}
+
+.lhb-table th,
+.lhb-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid color-mix(in oklab, var(--line) 70%, transparent);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.lhb-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--panel-solid);
+}
+
+.lhb-table th.lhb-th-sort {
+  padding: 4px 6px;
+}
+
+.lhb-table th.lhb-th-sort.is-active .lhb-sort-btn {
+  color: var(--accent);
+}
+
+.lhb-sort-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin: 0;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.lhb-sort-btn:hover,
+.lhb-sort-btn:focus-visible {
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  outline: none;
+}
+
+.lhb-sort-mark {
+  font-size: 10px;
+  line-height: 1;
+}
+
+.lhb-table .lhb-row {
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.lhb-table .lhb-row:hover,
+.lhb-table .lhb-row:focus-visible {
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+  outline: none;
+}
+
+.lhb-table .lhb-name {
+  font-weight: 600;
+  max-width: 6.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lhb-table .lhb-reason {
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.lhb-table td:has(.lhb-buyers) {
+  white-space: normal;
+}
+
+.lhb-buyers {
+  min-width: 10rem;
+  max-width: 18rem;
+  white-space: normal;
+  line-height: 1.35;
+}
+
+.lhb-buyer-seats {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.lhb-tag {
+  display: inline-block;
+  margin: 0 3px 2px 0;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.6;
+}
+
+.lhb-tag-北向 {
+  color: #1d4ed8;
+  background: color-mix(in oklab, #3b82f6 16%, transparent);
+}
+
+.lhb-tag-机构 {
+  color: #6d28d9;
+  background: color-mix(in oklab, #8b5cf6 16%, transparent);
+}
+
+.lhb-tag-游资 {
+  color: #c2410c;
+  background: color-mix(in oklab, #f97316 16%, transparent);
+}
+
+.lhb-tag-主力 {
+  color: #b45309;
+  background: color-mix(in oklab, #f59e0b 16%, transparent);
+}
+
+.lhb-tag-营业部 {
+  color: var(--muted);
+  background: color-mix(in oklab, var(--muted) 12%, transparent);
+}
+
+.lhb-ai-picks {
+  display: grid;
+  gap: 8px;
+}
+
+.lhb-ai-pick {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border-radius: 10px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in oklab, var(--line) 80%, transparent);
+  background: color-mix(in oklab, var(--accent) 5%, var(--panel-solid));
+  color: inherit;
+  cursor: pointer;
+}
+
+.lhb-ai-pick:hover {
+  border-color: color-mix(in oklab, var(--accent) 45%, var(--line));
+}
+
+.lhb-ai-pick-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.lhb-ai-rank {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.lhb-ai-name {
+  font-weight: 700;
+}
+
+.lhb-ai-reason {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.collab-table-sheet {
+  width: max(100%, 1100px);
+  table-layout: auto;
+}
+
+.collab-table .collab-name-h,
+.collab-table .collab-name-cell {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  min-width: 8.5rem;
+  width: 8.5rem;
+  background: var(--panel-solid);
+}
+
+.collab-table .collab-name-h {
+  z-index: 3;
+}
+
+.collab-table .collab-date-h {
+  min-width: 3.4rem;
+  padding: 5px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.collab-table .collab-pct {
+  min-width: 3.4rem;
+  padding: 4px;
+  font-size: 11px;
+  text-align: center;
+}
+
+.collab-name-cell {
+  position: relative;
+}
+
+.collab-name-input {
+  width: 100%;
+  min-height: 34px;
+  padding: 5px 8px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  font-family: inherit;
+}
+
+.collab-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  z-index: 8;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid color-mix(in oklab, var(--line) 80%, transparent);
+  border-radius: 8px;
+  background: var(--panel-solid);
+  box-shadow: 0 8px 24px color-mix(in oklab, #000 16%, transparent);
+}
+
+.collab-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.collab-menu-item:hover {
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+}
+
+.collab-menu-item span {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.collab-menu-empty {
+  padding: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.lhb-collab-host {
+  min-height: 280px;
+}
+
+.collab-table-wrap {
+  overflow: auto;
+  max-height: min(52vh, 520px);
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--line) 85%, transparent);
+}
+
+.collab-table {
+  width: max(100%, 720px);
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+.collab-table th,
+.collab-table td {
+  border: 1px solid color-mix(in oklab, var(--line) 75%, transparent);
+  padding: 0;
+}
+
+.collab-table th {
+  background: color-mix(in oklab, var(--accent) 8%, var(--panel-solid));
+}
+
+.collab-table input {
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 8px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.collab-table th input {
+  font-weight: 700;
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.collab-table input:focus {
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+}
+
+@media (max-width: 640px) {
+  .lhb-board {
+    max-height: 36vh;
+  }
+
+  .lhb-table {
+    font-size: 11px;
+  }
+
+  .lhb-table .lhb-reason {
+    max-width: 8rem;
+  }
+
+  .lhb-buyers {
+    min-width: 8rem;
+    max-width: 12rem;
+  }
+}

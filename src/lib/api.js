@@ -927,7 +927,6 @@ async function fetchEastIndices(list) {
     const secid = meta.secid || toSecid(meta.market, meta.code, meta.marketNo);
     const row =
       diff.find((d) => String(d.f12).toUpperCase() === String(meta.code).toUpperCase()) ||
-      diff[i] ||
       {};
     let price = Number(row.f2);
     const prev = Number(row.f18);
@@ -944,6 +943,47 @@ async function fetchEastIndices(list) {
   });
 }
 
+function indexQuoteComplete(row) {
+  return Number(row?.price) > 0 && Number.isFinite(Number(row?.changePct));
+}
+
+async function fetchYahooSnapshots(list) {
+  const rows = [];
+  await Promise.all(
+    (list || []).map(async (meta) => {
+      const secid = meta.secid || toSecid(meta.market, meta.code, meta.marketNo);
+      const sym = yahooSymbol(secid);
+      if (!sym) return;
+      try {
+        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=5d`;
+        const res = await fetch(url, {
+          signal: AbortSignal.timeout(8000),
+          headers: { Accept: 'application/json' },
+        });
+        if (!res.ok) return;
+        const json = await res.json();
+        const info = json?.chart?.result?.[0]?.meta || {};
+        const price = Number(info.regularMarketPrice);
+        const prev = Number(info.chartPreviousClose || info.previousClose);
+        let changePct = Number(info.regularMarketChangePercent);
+        if (!Number.isFinite(changePct) && price > 0 && prev > 0) changePct = ((price - prev) / prev) * 100;
+        if (!(price > 0)) return;
+        rows.push({
+          ...meta,
+          secid,
+          price,
+          changePct: Number.isFinite(changePct) ? changePct : null,
+          prevClose: Number.isFinite(prev) ? prev : null,
+          name: meta.name,
+        });
+      } catch {
+        /* next */
+      }
+    }),
+  );
+  return rows;
+}
+
 export async function fetchIndices(list) {
   if (!list?.length) return [];
   let east = [];
@@ -957,16 +997,32 @@ export async function fetchIndices(list) {
   }
   const priced = east.filter((row) => Number(row.price) > 0).length;
   if (!priced) noteQuoteListDown();
-  if (east.length === list.length && priced >= Math.ceil(list.length * 0.6)) return east;
-  const tx = await fetchTencentSnapshots(list);
-  const bySecid = new Map(tx.map((row) => [row.secid, row]));
-  const base = east.length === list.length ? east : list.map((meta) => ({ ...meta, secid: meta.secid || toSecid(meta.market, meta.code, meta.marketNo) }));
-  return base.map((row) => {
-    if (Number(row.price) > 0 && Number.isFinite(Number(row.changePct))) return row;
-    const alt = bySecid.get(row.secid);
-    if (!(Number(alt?.price) > 0)) return row;
-    return { ...row, ...alt, name: alt.name || row.name };
+  const byEast = new Map((east || []).map((row) => [row.secid || toSecid(row.market, row.code, row.marketNo), row]));
+  let merged = list.map((meta) => {
+    const secid = meta.secid || toSecid(meta.market, meta.code, meta.marketNo);
+    const hit = byEast.get(secid);
+    return hit ? { ...meta, ...hit, secid, name: meta.name || hit.name } : { ...meta, secid };
   });
+  const fill = (alts) => {
+    const map = new Map((alts || []).map((row) => [row.secid, row]));
+    merged = merged.map((row) => {
+      if (indexQuoteComplete(row)) return row;
+      const alt = map.get(row.secid);
+      if (!(Number(alt?.price) > 0)) return row;
+      return {
+        ...row,
+        ...alt,
+        name: row.name || alt.name,
+        changePct: Number.isFinite(Number(alt.changePct)) ? Number(alt.changePct) : row.changePct,
+      };
+    });
+  };
+  if (merged.some((row) => !indexQuoteComplete(row))) {
+    fill(await fetchTencentSnapshots(list).catch(() => []));
+  }
+  const missing = merged.filter((row) => !indexQuoteComplete(row));
+  if (missing.length) fill(await fetchYahooSnapshots(missing).catch(() => []));
+  return merged;
 }
 
 function formatTrendTime(rawTime, ndays = 1) {
@@ -1636,7 +1692,7 @@ function tencentSymbol(secid) {
   }
   if (mk === '101') {
     const c = String(code).toUpperCase();
-    if (c === 'GC00Y' || c === 'GC') return 'hf_GC';
+    if (c === 'GC00Y' || c === 'GC' || c.startsWith('GC')) return 'hf_GC';
   }
   if (mk === '177') return `kr${code}`;
   return '';
@@ -1661,6 +1717,7 @@ function yahooSymbol(secid) {
     };
     return map[c] || '';
   }
+  if (mk === '101' && /^GC/i.test(c)) return 'GC=F';
   if (mk === '105' || mk === '106' || mk === '107') return c;
   if (mk === '116') return `${c.padStart(4, '0')}.HK`;
   return '';
@@ -1674,8 +1731,33 @@ function isForeignSecid(secid) {
 function parseTencentQuoteLine(line) {
   const matched = line.match(/v_([a-z0-9_.]+)="([^"]*)"/i);
   if (!matched) return null;
+  const sym = matched[1].toLowerCase();
+  if (sym.startsWith('hf_')) {
+    const bits = String(matched[2] || '').split(',');
+    const price = Number(bits[0]);
+    const changePct = Number(bits[1]);
+    const prev = Number(bits[7]);
+    if (!(price > 0)) return null;
+    let pct = Number.isFinite(changePct) ? changePct : null;
+    if ((!Number.isFinite(pct) || pct === 0) && prev > 0) {
+      const computed = ((price - prev) / prev) * 100;
+      if (Number.isFinite(computed)) pct = computed;
+    }
+    return {
+      symbol: sym,
+      name: bits[bits.length - 1] || '',
+      price,
+      prevClose: Number.isFinite(prev) ? prev : null,
+      open: Number(bits[2]),
+      change: Number.isFinite(pct) && prev > 0 ? (price - prev) : null,
+      changePct: pct,
+      high: Number(bits[4]),
+      low: Number(bits[5]),
+      amount: null,
+    };
+  }
   const parts = matched[2].split('~');
-  if (matched[1].toLowerCase().startsWith('gz')) {
+  if (sym.startsWith('gz')) {
     const price = Number(parts[3]);
     const change = Number(parts[4]);
     const changePct = Number(parts[5]);
@@ -1698,7 +1780,10 @@ function parseTencentQuoteLine(line) {
   if (!Number.isFinite(price) || price <= 0) return null;
   const change = Number(parts[31]);
   let changePct = Number(parts[32]);
-  if (!Number.isFinite(changePct) && prev > 0) changePct = ((price - prev) / prev) * 100;
+  if ((!Number.isFinite(changePct) || changePct === 0) && prev > 0) {
+    const computed = ((price - prev) / prev) * 100;
+    if (Number.isFinite(computed) && (changePct !== 0 || Math.abs(computed) >= 0.005)) changePct = computed;
+  }
   return {
     symbol: matched[1].toLowerCase(),
     name: parts[1] || '',
@@ -2215,10 +2300,156 @@ export async function fetchBoardLeaders(code, limit = 1) {
 
 function seatTag(name) {
   const s = String(name || '');
-  if (s.includes('机构专用')) return '机构';
-  if (s.includes('沪股通') || s.includes('深股通')) return '北向';
-  if (/拉萨|江苏路|宛平南路|绍兴解放|源深路/.test(s)) return '游资';
-  return '';
+  if (/沪股通|深股通|港股通|北向/.test(s)) return '北向';
+  if (/机构专用|机构席位|投资者分类/.test(s)) return '机构';
+  if (/拉萨|江苏路|宛平南路|绍兴解放|源深路|华鑫上海|国金成都|开源西安西大街/.test(s)) return '游资';
+  return '营业部';
+}
+
+function shortSeatName(name) {
+  const s = String(name || '').trim();
+  if (!s) return '未知席位';
+  if (/沪股通/.test(s)) return '沪股通';
+  if (/深股通/.test(s)) return '深股通';
+  if (/港股通/.test(s)) return '港股通';
+  if (/机构专用/.test(s)) return '机构专用';
+  if (/投资者分类/.test(s)) return '机构(分类)';
+  const cleaned = s
+    .replace(/股份有限公司|有限责任公司|有限公司/g, '')
+    .replace(/证券营业部$/, '')
+    .trim();
+  const loc = cleaned.replace(/^.*?证券/, '').replace(/^.*?分公司/, '').trim();
+  return (loc || cleaned).slice(0, 14);
+}
+
+function tagsFromExplain(text) {
+  const s = String(text || '');
+  const tags = [];
+  if (/沪股通|深股通|港股通|北向/.test(s)) tags.push('北向');
+  if (/机构/.test(s)) tags.push('机构');
+  if (/游资/.test(s)) tags.push('游资');
+  if (/主力/.test(s)) tags.push('主力');
+  if (/普通席位/.test(s)) tags.push('营业部');
+  return tags;
+}
+
+function uniqueTags(list) {
+  const order = ['北向', '机构', '游资', '主力', '营业部'];
+  const set = new Set((list || []).filter(Boolean));
+  return order.filter((t) => set.has(t));
+}
+
+async function fetchBillboardSeats(date, pages = 2) {
+  const out = [];
+  const seen = new Set();
+  for (let page = 1; page <= pages; page += 1) {
+    const url =
+      'https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_OPERATEDEPT_TRADE_DETAILSNEW' +
+      '&columns=SECURITY_CODE,SECURITY_NAME_ABBR,OPERATEDEPT_NAME,NET_AMT,ACT_BUY,ACT_SELL,EXPLANATION' +
+      `&pageSize=400&pageNumber=${page}&sortColumns=NET_AMT&sortTypes=-1` +
+      `&filter=(TRADE_DATE='${date}')&source=WEB&client=WEB`;
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      if (!res.ok) break;
+      const json = await res.json();
+      const rows = json?.result?.data || [];
+      if (!rows.length) break;
+      for (const row of rows) {
+        const code = String(row.SECURITY_CODE || '');
+        const seat = String(row.OPERATEDEPT_NAME || '').trim();
+        if (!code || !seat) continue;
+        const key = `${code}|${seat}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const netYi = +(Number(row.NET_AMT || 0) / 1e8).toFixed(2);
+        out.push({
+          code,
+          name: String(row.SECURITY_NAME_ABBR || ''),
+          seat,
+          short: shortSeatName(seat),
+          tag: seatTag(seat),
+          netYi,
+        });
+      }
+      const total = Number(json?.result?.count || 0);
+      if (page * 400 >= total) break;
+    } catch {
+      break;
+    }
+  }
+  return out;
+}
+
+/**
+ * 最近一个已披露交易日的龙虎榜个股（按净买入排序，代码去重）。
+ * 附带席位买家标签（北向 / 机构 / 游资 / 营业部）。
+ */
+export async function fetchDailyBillboard(limit = 60) {
+  for (const date of shTradeDates(8)) {
+    const url =
+      'https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_DAILYBILLBOARD_DETAILSNEW' +
+      '&columns=SECURITY_CODE,SECURITY_NAME_ABBR,TRADE_DATE,CLOSE_PRICE,CHANGE_RATE,' +
+      'BILLBOARD_NET_AMT,BILLBOARD_BUY_AMT,BILLBOARD_SELL_AMT,EXPLAIN,EXPLANATION' +
+      '&pageSize=200&pageNumber=1&sortColumns=BILLBOARD_NET_AMT&sortTypes=-1' +
+      `&filter=(TRADE_DATE='${date}')&source=WEB&client=WEB`;
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      if (!res.ok) continue;
+      const rows = (await res.json())?.result?.data || [];
+      if (!rows.length) continue;
+      const byCode = new Map();
+      for (const row of rows) {
+        const code = String(row.SECURITY_CODE || '');
+        if (!code) continue;
+        const netYi = +(Number(row.BILLBOARD_NET_AMT || 0) / 1e8).toFixed(2);
+        const cur = byCode.get(code);
+        if (cur && Number(cur.netYi) >= Number(netYi)) {
+          if (row.EXPLANATION && !cur.reason.includes(String(row.EXPLANATION))) {
+            cur.reason = [cur.reason, String(row.EXPLANATION).trim()].filter(Boolean).join('；');
+          }
+          continue;
+        }
+        byCode.set(code, {
+          code,
+          name: String(row.SECURITY_NAME_ABBR || ''),
+          close: Number(row.CLOSE_PRICE),
+          changePct: Number(row.CHANGE_RATE),
+          netYi,
+          buyYi: +(Number(row.BILLBOARD_BUY_AMT || 0) / 1e8).toFixed(2),
+          sellYi: +(Number(row.BILLBOARD_SELL_AMT || 0) / 1e8).toFixed(2),
+          seats: String(row.EXPLAIN || '').trim(),
+          reason: String(row.EXPLANATION || '').trim(),
+          buyers: [],
+          buyerTags: tagsFromExplain(`${row.EXPLAIN || ''} ${row.EXPLANATION || ''}`),
+        });
+      }
+      const seats = await fetchBillboardSeats(date).catch(() => []);
+      const seatsByCode = new Map();
+      for (const seat of seats) {
+        const list = seatsByCode.get(seat.code) || [];
+        list.push(seat);
+        seatsByCode.set(seat.code, list);
+      }
+      const mapped = [...byCode.values()]
+        .map((row) => {
+          const list = (seatsByCode.get(row.code) || [])
+            .filter((s) => Number(s.netYi) > 0)
+            .sort((a, b) => Number(b.netYi) - Number(a.netYi))
+            .slice(0, 4);
+          const tags = uniqueTags([
+            ...row.buyerTags,
+            ...list.map((s) => s.tag),
+          ]);
+          return { ...row, buyers: list, buyerTags: tags.length ? tags : ['营业部'] };
+        })
+        .sort((a, b) => Number(b.netYi) - Number(a.netYi))
+        .slice(0, limit);
+      return { date, rows: mapped };
+    } catch {
+      /* try older day */
+    }
+  }
+  return { date: '', rows: [] };
 }
 
 /** 当日龙虎榜净买入靠前的席位。机构、北向、常见游资席位优先。 */

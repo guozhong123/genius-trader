@@ -50,7 +50,7 @@
             <div class="top-nav flex shrink-0 rounded-lg p-0.5 text-xs font-semibold" style="background: var(--panel-solid); border: 1px solid var(--line)">
               <button data-view="watch" class="view-tab rounded-md bg-accent px-2 py-1.5 text-white">自选</button>
               <button data-view="pulse" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">盘况</button>
-              <button data-view="predict" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">预测</button>
+              <button data-view="lhb" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">龙虎榜</button>
               <button data-view="data" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">资金</button>
               <button data-view="etf" class="view-tab rounded-md px-2 py-1.5" style="color: var(--muted)">热力图</button>
             </div>
@@ -185,41 +185,44 @@
           </div>
         </section>
 
-        <!-- 预测：TA 做T建议 + 大盘预测K线（仅手动点 AI） -->
-        <section id="view-predict" class="view-pane hidden space-y-2">
+        <!-- 龙虎榜：上日榜单 + 多人在线空白表 -->
+        <section id="view-lhb" class="view-pane hidden space-y-2">
           <div class="glass rounded-xl p-3">
             <div class="flex flex-wrap items-start justify-between gap-2">
               <div class="min-w-0">
-                <div class="text-sm font-semibold">预测 · TA 与大盘K线</div>
+                <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                  <div class="text-sm font-semibold">龙虎榜 · 分析台</div>
+                  <span id="lhb-asof" class="lhb-asof">正在确认这份榜是哪一天的…</span>
+                </div>
                 <p class="mt-0.5 text-[11px] leading-relaxed" style="color: var(--muted)">
-                  给「早盘急跌午后修复」这类做 T / 低吸情景；右侧预测K线是模型推演，不是实盘。点 AI 才会请求。
+                  刷新后会标明当前龙虎榜是哪一天披露的。今日涨跌是实时行情，前一日涨跌是上榜日。点列头可排序。可用北向 / 机构 / 主力 / 游资筛选，默认全开。点击一行看详情。
                 </p>
               </div>
-              <button type="button" id="predict-ai-btn" class="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white shrink-0">AI 预测</button>
+              <button type="button" id="lhb-refresh-btn" class="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white shrink-0">刷新榜单</button>
             </div>
-            <p id="predict-meta" class="mt-2 text-[11px]" style="color: var(--muted)">还没有预测。点「AI 预测」拉取。</p>
-          </div>
-          <div class="grid gap-2 lg:grid-cols-2">
-            <div class="glass rounded-xl p-3">
-              <div class="text-sm font-semibold mb-2">情景与操作建议</div>
-              <div id="predict-ta" class="text-[12px] leading-relaxed" style="color: var(--muted)">—</div>
+            <div id="lhb-filters" class="lhb-filters mt-2" role="group" aria-label="买家类型筛选">
+              <button type="button" class="lhb-filter-btn on" data-lhb-filter="北向">北向</button>
+              <button type="button" class="lhb-filter-btn on" data-lhb-filter="机构">机构</button>
+              <button type="button" class="lhb-filter-btn on" data-lhb-filter="主力">主力</button>
+              <button type="button" class="lhb-filter-btn on" data-lhb-filter="游资">游资</button>
             </div>
-            <div class="glass rounded-xl p-3">
-              <div class="mb-1 flex items-center justify-between gap-2">
-                <div class="text-sm font-semibold">大盘预测 K 线</div>
-                <span id="predict-index-name" class="text-[10px]" style="color: var(--muted)">上证指数 · 默认看明天</span>
-              </div>
-              <div id="chart-predict-k" class="h-72 w-full sm:h-80"></div>
-              <p class="mt-1 text-[10px]" style="color: var(--muted)">默认聚焦「明天」起的推演段（已跳过周末/节假日）；左侧少量真实日K作对照。</p>
+            <p id="lhb-meta" class="mt-2 text-[11px]" style="color: var(--muted)">正在加载龙虎榜…</p>
+            <div id="lhb-board" class="lhb-board mt-2 overflow-auto"></div>
+            <div class="lhb-ai mt-3">
+              <div class="text-sm font-semibold">AI 建议 · 买这三只</div>
+              <p id="lhb-ai-meta" class="mt-0.5 text-[11px]" style="color: var(--muted)">榜单出来后自动给三只</p>
+              <div id="lhb-ai-picks" class="lhb-ai-picks mt-2"></div>
             </div>
           </div>
           <div class="glass rounded-xl p-3">
-            <div class="mb-1 flex flex-wrap items-center gap-2">
-              <div class="text-sm font-semibold">沪深主力资金（预测）</div>
-              <span id="predict-flow-asof" class="text-[10px]" style="color: var(--muted)"></span>
+            <div class="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+              <div class="text-sm font-semibold">协作空白表</div>
+              <span id="lhb-collab-status" class="text-[11px]" style="color: var(--muted)">连接中…</span>
             </div>
-            <div id="chart-predict-flow" class="h-56 w-full sm:h-64"></div>
-            <p class="mt-1 text-[10px]" style="color: var(--muted)">实线为今日已走出的主力净流入；虚线为 AI 对后续时段的推演（点「AI 预测」后生成）。</p>
+            <p class="mb-2 text-[11px] leading-relaxed" style="color: var(--muted)">
+              每天选 3 只，全员共享：谁选的股票，其他人打开就能看到、也能改。第一列搜索名称，表头近 30 天，格子是每日涨幅。
+            </p>
+            <div id="lhb-collab-table" class="lhb-collab-host"></div>
           </div>
         </section>
 
