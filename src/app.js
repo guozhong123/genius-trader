@@ -261,6 +261,7 @@ const els = {
   lhbRefreshBtn: $('lhb-refresh-btn'),
   lhbMeta: $('lhb-meta'),
   lhbBoard: $('lhb-board'),
+  lhbFilters: $('lhb-filters'),
   lhbAiMeta: $('lhb-ai-meta'),
   lhbAiPicks: $('lhb-ai-picks'),
   lhbCollabStatus: $('lhb-collab-status'),
@@ -420,6 +421,8 @@ let lhbBoardLoading = false;
 let lhbAdviceCache = null;
 let lhbAdviceLoading = false;
 let lhbAdviceForDate = '';
+const LHB_FILTERS = ['北向', '机构', '主力', '游资'];
+const lhbFilterOn = new Set(LHB_FILTERS);
 const SIM_FEE_RATE = 0.0005; // 万五
 const SIM_FEE_MIN = 5;
 
@@ -1768,12 +1771,87 @@ function fmtYiBoard(n) {
 function lhbRowToItem(row) {
   if (!row?.code) return null;
   const item = toQuoteItem(row);
+  const livePct = Number(row.liveChangePct);
+  const livePrice = Number(row.livePrice);
   return {
     ...item,
-    price: Number.isFinite(Number(row.close)) ? Number(row.close) : item.price,
-    changePct: Number.isFinite(Number(row.changePct)) ? Number(row.changePct) : item.changePct,
+    price: Number.isFinite(livePrice)
+      ? livePrice
+      : Number.isFinite(Number(row.close))
+        ? Number(row.close)
+        : item.price,
+    changePct: Number.isFinite(livePct)
+      ? livePct
+      : Number.isFinite(Number(row.changePct))
+        ? Number(row.changePct)
+        : item.changePct,
     label: marketLabel(item.market),
   };
+}
+
+function rowMatchesLhbFilter(row) {
+  if (lhbFilterOn.size === LHB_FILTERS.length) return true;
+  if (!lhbFilterOn.size) return false;
+  return (row.buyerTags || []).some((t) => lhbFilterOn.has(t));
+}
+
+function visibleLhbRows() {
+  return (lhbBoardCache?.rows || []).filter(rowMatchesLhbFilter);
+}
+
+function syncLhbFilterButtons() {
+  els.lhbFilters?.querySelectorAll('[data-lhb-filter]').forEach((btn) => {
+    const on = lhbFilterOn.has(btn.getAttribute('data-lhb-filter'));
+    btn.classList.toggle('on', on);
+  });
+}
+
+async function applyLhbLiveQuotes(pack) {
+  const rows = pack?.rows || [];
+  if (!rows.length) return pack;
+  const items = rows.map((r) => toQuoteItem(r)).filter((x) => x?.code);
+  const map = {};
+  for (let i = 0; i < items.length; i += 40) {
+    try {
+      Object.assign(map, await fetchQuotes(items.slice(i, i + 40)));
+    } catch {
+      /* keep listed prices */
+    }
+  }
+  state.quotes = { ...state.quotes, ...map };
+  for (const row of rows) {
+    const item = toQuoteItem(row);
+    const q = map[quoteKey(item)] || {};
+    if (Number.isFinite(Number(q.price))) row.livePrice = Number(q.price);
+    if (Number.isFinite(Number(q.changePct))) row.liveChangePct = Number(q.changePct);
+    if (q.name) row.name = q.name;
+  }
+  return pack;
+}
+
+function lhbStockOptions() {
+  return (lhbBoardCache?.rows || []).map((r) => ({
+    code: r.code,
+    name: r.name,
+    market: marketOfCode(r.code),
+  }));
+}
+
+async function loadLhbDayChanges(stock) {
+  const code = String(stock?.code || '').replace(/\D/g, '').slice(-6);
+  if (!code) return {};
+  const market = stock.market || marketOfCode(code);
+  const secid = toSecid(market, code);
+  const k = await fetchKline(secid, 101, 40);
+  const map = {};
+  for (const p of k?.points || []) {
+    const day = String(p.date || '').slice(0, 10);
+    if (day && Number.isFinite(Number(p.changePct))) map[day] = Number(p.changePct);
+  }
+  const q = state.quotes[quoteKey({ kind: 'stock', market, code })];
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
+  if (Number.isFinite(Number(q?.changePct))) map[today] = Number(q.changePct);
+  return map;
 }
 
 function lhbBuyerHtml(row) {
@@ -1792,28 +1870,36 @@ function lhbBuyerHtml(row) {
 
 function renderLhbBoard(pack) {
   if (!els.lhbBoard) return;
-  const rows = pack?.rows || [];
-  if (!rows.length) {
+  const all = pack?.rows || [];
+  const rows = all.filter(rowMatchesLhbFilter);
+  if (!all.length) {
     els.lhbBoard.innerHTML =
       '<p class="text-[12px]" style="color:var(--muted)">暂无龙虎榜数据。收盘后通常会晚些披露，可稍后点「刷新榜单」。</p>';
+    return;
+  }
+  if (!rows.length) {
+    els.lhbBoard.innerHTML =
+      '<p class="text-[12px]" style="color:var(--muted)">当前筛选下没有股票。点一下筛选项，默认全开即可看全部。</p>';
     return;
   }
   els.lhbBoard.innerHTML = `<table class="lhb-table">
     <thead>
       <tr>
-        <th>代码</th><th>名称</th><th>涨跌</th><th>收盘</th>
+        <th>代码</th><th>名称</th><th>今涨跌</th><th>现价</th>
         <th>净买亿</th><th>谁在买</th><th>上榜原因</th>
       </tr>
     </thead>
     <tbody>
       ${rows
-        .map((r, i) => {
-          const pct = Number(r.changePct);
-          return `<tr class="lhb-row" data-lhb-open="${i}" title="查看 ${escAttr(r.name || r.code)} 详情" role="button" tabindex="0">
+        .map((r) => {
+          const live = Number(r.liveChangePct);
+          const pct = Number.isFinite(live) ? live : Number(r.changePct);
+          const price = Number.isFinite(Number(r.livePrice)) ? Number(r.livePrice) : Number(r.close);
+          return `<tr class="lhb-row" data-lhb-open="${escAttr(r.code)}" title="查看 ${escAttr(r.name || r.code)} 详情" role="button" tabindex="0">
             <td class="tabular-nums">${esc(r.code)}</td>
             <td class="lhb-name">${esc(r.name)}</td>
             <td class="tabular-nums ${tone(pct)}">${fmtPct(pct)}</td>
-            <td class="tabular-nums">${Number.isFinite(Number(r.close)) ? Number(r.close).toFixed(2) : '—'}</td>
+            <td class="tabular-nums">${Number.isFinite(price) ? price.toFixed(2) : '—'}</td>
             <td class="tabular-nums ${tone(r.netYi)}">${fmtYiBoard(r.netYi)}</td>
             <td>${lhbBuyerHtml(r)}</td>
             <td class="lhb-reason" title="${escAttr(r.reason || r.seats || '')}">${esc(r.reason || r.seats || '—')}</td>
@@ -1860,7 +1946,7 @@ function pickLhbThree(rows) {
       reason: heuristicLhbReason(r),
       buyerTags: r.buyerTags || [],
       netYi: r.netYi,
-      changePct: r.changePct,
+      changePct: Number.isFinite(Number(r.liveChangePct)) ? Number(r.liveChangePct) : r.changePct,
     }));
 }
 
@@ -1937,21 +2023,29 @@ async function refreshLhbAdvice(pack, force = false) {
   }
 }
 
-function openLhbDetail(index) {
-  const row = lhbBoardCache?.rows?.[Number(index)];
+function openLhbDetail(code) {
+  const row = lhbBoardCache?.rows?.find((r) => r.code === String(code));
   const item = lhbRowToItem(row);
   if (!item) return;
   void openDetail(item);
 }
 
+function lhbMetaText(pack, live = false) {
+  if (!pack?.date) return '暂未取到龙虎榜，请稍后再试';
+  const shown = (pack.rows || []).filter(rowMatchesLhbFilter).length;
+  const total = pack.rows?.length || 0;
+  const filterNote = shown === total ? '' : `，筛选后 ${shown} 只`;
+  return `名单 ${pack.date} · 涨跌为实时${live ? '' : ''} · 共 ${total} 只${filterNote}`;
+}
+
 async function refreshLhbBoard(force = false) {
   if (lhbBoardLoading) return;
   if (!force && lhbBoardCache?.rows?.length) {
+    await applyLhbLiveQuotes(lhbBoardCache);
     renderLhbBoard(lhbBoardCache);
-    if (els.lhbMeta) {
-      els.lhbMeta.textContent = `龙虎榜日期 ${lhbBoardCache.date} · 共 ${lhbBoardCache.rows.length} 只（已去重，按净买入）`;
-    }
-    void refreshLhbAdvice(lhbBoardCache, false);
+    if (els.lhbMeta) els.lhbMeta.textContent = lhbMetaText(lhbBoardCache, true);
+    lhbCollabHandle?.setOptions?.(lhbStockOptions());
+    void refreshLhbAdvice({ ...lhbBoardCache, rows: visibleLhbRows() }, false);
     return;
   }
   lhbBoardLoading = true;
@@ -1959,17 +2053,15 @@ async function refreshLhbBoard(force = false) {
     els.lhbRefreshBtn.disabled = true;
     els.lhbRefreshBtn.textContent = '刷新中…';
   }
-  if (els.lhbMeta) els.lhbMeta.textContent = '正在拉取最近已披露的龙虎榜…';
+  if (els.lhbMeta) els.lhbMeta.textContent = '正在拉取最近已披露的龙虎榜与实时行情…';
   try {
     const pack = await fetchDailyBillboard(80);
+    await applyLhbLiveQuotes(pack);
     lhbBoardCache = pack;
     renderLhbBoard(pack);
-    if (els.lhbMeta) {
-      els.lhbMeta.textContent = pack.date
-        ? `龙虎榜日期 ${pack.date} · 共 ${pack.rows.length} 只（已去重，按净买入；今日未出则显示前一交易日）`
-        : '暂未取到龙虎榜，请稍后再试';
-    void refreshLhbAdvice(pack, force);
-    }
+    if (els.lhbMeta) els.lhbMeta.textContent = lhbMetaText(pack, true);
+    lhbCollabHandle?.setOptions?.(lhbStockOptions());
+    void refreshLhbAdvice({ ...pack, rows: visibleLhbRows() }, force);
   } catch (e) {
     console.error(e);
     if (els.lhbMeta) els.lhbMeta.textContent = `加载失败：${e?.message || e}`;
@@ -1988,8 +2080,13 @@ async function refreshLhbBoard(force = false) {
 
 function ensureLhbCollab() {
   if (!els.lhbCollabTable) return;
-  if (lhbCollabHandle) return;
+  if (lhbCollabHandle) {
+    lhbCollabHandle.setOptions?.(lhbStockOptions());
+    return;
+  }
   lhbCollabHandle = mountCollabTable(els.lhbCollabTable, {
+    getOptions: lhbStockOptions,
+    loadDayChanges: loadLhbDayChanges,
     onStatus: ({ synced, peers, error }) => {
       if (!els.lhbCollabStatus) return;
       if (error) {
@@ -5129,6 +5226,29 @@ els.aiAdviceHistory?.addEventListener('click', () => {
 els.reportOpenBtn?.addEventListener('click', () => openReportDrawer());
 els.marketAiBtn?.addEventListener('click', () => runMarketAi());
 els.lhbRefreshBtn?.addEventListener('click', () => void refreshLhbBoard(true));
+els.lhbFilters?.addEventListener('click', (e) => {
+  const btn = e.target.closest?.('[data-lhb-filter]');
+  if (!btn || !els.lhbFilters.contains(btn)) return;
+  const tag = btn.getAttribute('data-lhb-filter');
+  if (!tag) return;
+  if (lhbFilterOn.has(tag)) lhbFilterOn.delete(tag);
+  else lhbFilterOn.add(tag);
+  if (!lhbFilterOn.size) LHB_FILTERS.forEach((t) => lhbFilterOn.add(t));
+  syncLhbFilterButtons();
+  if (!lhbBoardCache) return;
+  renderLhbBoard(lhbBoardCache);
+  if (els.lhbMeta) els.lhbMeta.textContent = lhbMetaText(lhbBoardCache, true);
+  const heuristic = {
+    picks: pickLhbThree(visibleLhbRows()),
+    note: '',
+    source: 'local',
+    generatedAt: Date.now(),
+  };
+  lhbAdviceCache = heuristic;
+  lhbAdviceForDate = `${lhbBoardCache.date || ''}:${[...lhbFilterOn].sort().join(',')}`;
+  renderLhbAdvice(heuristic);
+  if (els.lhbAiMeta) els.lhbAiMeta.textContent = `建议买这三只 · ${lhbBoardCache.date || ''}`;
+});
 els.lhbBoard?.addEventListener('click', (e) => {
   const row = e.target.closest?.('[data-lhb-open]');
   if (!row || !els.lhbBoard.contains(row)) return;

@@ -2564,6 +2564,29 @@ button.pick-card {
   font-size: 12px;
 }
 
+.lhb-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.lhb-filter-btn {
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid color-mix(in oklab, var(--line) 80%, transparent);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.lhb-filter-btn.on {
+  color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent) 45%, var(--line));
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+}
+
 .lhb-table th,
 .lhb-table td {
   padding: 6px 8px;
@@ -2718,18 +2741,101 @@ button.pick-card {
   color: var(--muted);
 }
 
-.collab-table-dates {
-  width: max(100%, 820px);
+.collab-table-sheet {
+  width: max(100%, 1100px);
+  table-layout: auto;
 }
 
-.collab-table .collab-date {
-  width: 6.4rem;
-  padding: 5px 8px;
-  font-size: 11px;
+.collab-table .collab-name-h,
+.collab-table .collab-name-cell {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  min-width: 8.5rem;
+  width: 8.5rem;
+  background: var(--panel-solid);
+}
+
+.collab-table .collab-name-h {
+  z-index: 3;
+}
+
+.collab-table .collab-date-h {
+  min-width: 3.4rem;
+  padding: 5px 4px;
+  font-size: 10px;
   font-weight: 700;
   color: var(--accent);
+  text-align: center;
   white-space: nowrap;
-  background: color-mix(in oklab, var(--accent) 8%, var(--panel-solid));
+}
+
+.collab-table .collab-pct {
+  min-width: 3.4rem;
+  padding: 4px;
+  font-size: 11px;
+  text-align: center;
+}
+
+.collab-name-cell {
+  position: relative;
+}
+
+.collab-name-input {
+  width: 100%;
+  min-height: 34px;
+  padding: 5px 8px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  font-family: inherit;
+}
+
+.collab-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  z-index: 8;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid color-mix(in oklab, var(--line) 80%, transparent);
+  border-radius: 8px;
+  background: var(--panel-solid);
+  box-shadow: 0 8px 24px color-mix(in oklab, #000 16%, transparent);
+}
+
+.collab-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.collab-menu-item:hover {
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+}
+
+.collab-menu-item span {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.collab-menu-empty {
+  padding: 8px;
+  font-size: 11px;
+  color: var(--muted);
 }
 
 .lhb-collab-host {
@@ -2746,7 +2852,7 @@ button.pick-card {
 .collab-table {
   width: max(100%, 720px);
   border-collapse: collapse;
-  table-layout: fixed;
+  table-layout: auto;
 }
 
 .collab-table th,

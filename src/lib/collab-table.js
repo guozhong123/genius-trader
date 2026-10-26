@@ -1,18 +1,32 @@
 /**
- * 多人在线空白表：
- * - 无表头
- * - 第一列永远自动填最近 30 个自然日（北京时间）
- * - 其余格子可多人编辑（IndexedDB + WebRTC，日期键持久化）
+ * 协作选股表：
+ * - 3 行股票（可输入或从龙虎榜下拉搜索）
+ * - 第一列股票名称，表头近 30 天日期
+ * - 格子自动填每日涨幅
  */
 import * as Y from 'yjs';
 import { WebrtcProvider } from 'y-webrtc';
 import { WebsocketProvider } from 'y-websocket';
 import { IndexeddbPersistence } from 'y-indexeddb';
 
-const COLS = 6;
+const PICKS = 3;
 const DAYS = 30;
-const ROOM = 'genius-trader-lhb-sheet-v2';
+const ROOM = 'genius-trader-lhb-sheet-v3';
 const WS_FALLBACKS = ['wss://demos.yjs.dev'];
+
+function shanghaiParts() {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+  }).formatToParts(new Date());
+  return {
+    y: Number(parts.find((p) => p.type === 'year')?.value),
+    m: Number(parts.find((p) => p.type === 'month')?.value),
+    d: Number(parts.find((p) => p.type === 'day')?.value),
+  };
+}
 
 function shanghaiYmd(offsetDays) {
   const fmt = new Intl.DateTimeFormat('en-CA', {
@@ -21,45 +35,17 @@ function shanghaiYmd(offsetDays) {
     month: '2-digit',
     day: '2-digit',
   });
-  const now = new Date();
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: 'numeric',
-    day: 'numeric',
-  }).formatToParts(now);
-  const y = Number(parts.find((p) => p.type === 'year')?.value);
-  const m = Number(parts.find((p) => p.type === 'month')?.value);
-  const d = Number(parts.find((p) => p.type === 'day')?.value);
-  const utc = Date.UTC(y, m - 1, d - offsetDays);
-  return fmt.format(new Date(utc));
+  const { y, m, d } = shanghaiParts();
+  return fmt.format(new Date(Date.UTC(y, m - 1, d - offsetDays)));
 }
 
 function lastMonthDates() {
-  return Array.from({ length: DAYS }, (_, i) => shanghaiYmd(i));
-}
-
-function weekdayLabel(ymd) {
-  const [y, m, d] = String(ymd).split('-').map(Number);
-  const wd = new Date(Date.UTC(y, m - 1, d, 4)).getUTCDay();
-  return ['日', '一', '二', '三', '四', '五', '六'][wd] || '';
+  return Array.from({ length: DAYS }, (_, i) => shanghaiYmd(DAYS - 1 - i));
 }
 
 function displayDate(ymd) {
   const [, m, d] = String(ymd).split('-');
-  return `${m}-${d} 周${weekdayLabel(ymd)}`;
-}
-
-function emptyRow() {
-  return Array.from({ length: COLS }, () => '');
-}
-
-function ensureRow(notes, date) {
-  if (notes.has(date)) return notes.get(date);
-  const row = new Y.Array();
-  row.insert(0, emptyRow());
-  notes.set(date, row);
-  return row;
+  return `${m}-${d}`;
 }
 
 function escapeAttr(s) {
@@ -70,15 +56,48 @@ function escapeAttr(s) {
     .replace(/>/g, '&gt;');
 }
 
+function escapeHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function fmtPct(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return '—';
+  return `${v > 0 ? '+' : ''}${v.toFixed(2)}%`;
+}
+
+function toneClass(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v === 0) return '';
+  return v > 0 ? 'text-up' : 'text-down';
+}
+
+function ensurePicks(arr) {
+  while (arr.length < PICKS) {
+    const m = new Y.Map();
+    m.set('code', '');
+    m.set('name', '');
+    arr.push([m]);
+  }
+}
+
 /**
  * @param {HTMLElement} root
- * @param {{ onStatus?: (s: { synced: boolean; peers: number; error?: string; mode?: string }) => void }} [opts]
+ * @param {{
+ *   onStatus?: (s: { synced: boolean; peers: number; error?: string; mode?: string }) => void,
+ *   getOptions?: () => { code: string, name: string, market?: string }[],
+ *   loadDayChanges?: (stock: { code: string, name: string, market?: string }) => Promise<Record<string, number>>,
+ * }} [opts]
  */
 export function mountCollabTable(root, opts = {}) {
-  if (!root) return { destroy() {} };
+  if (!root) return { destroy() {}, setOptions() {} };
 
   const doc = new Y.Doc();
-  const notes = doc.getMap('notes');
+  const picks = doc.getArray('picks');
+  ensurePicks(picks);
 
   let webrtc = null;
   let websocket = null;
@@ -86,6 +105,11 @@ export function mountCollabTable(root, opts = {}) {
   let destroyed = false;
   let peers = 0;
   let mode = 'local';
+  let menuRow = null;
+  let menuQuery = '';
+  let options = [];
+  const changeCache = new Map();
+  const loading = new Set();
 
   const emit = (patch = {}) => {
     opts.onStatus?.({
@@ -114,7 +138,12 @@ export function mountCollabTable(root, opts = {}) {
 
   try {
     idb = new IndexeddbPersistence(ROOM, doc);
-    idb.on('synced', () => emit({ mode }));
+    idb.on('synced', () => {
+      ensurePicks(picks);
+      emit({ mode });
+      render();
+      void hydrateChanges();
+    });
   } catch (e) {
     console.warn('collab idb', e);
   }
@@ -167,35 +196,116 @@ export function mountCollabTable(root, opts = {}) {
 
   emit();
 
+  function readPick(i) {
+    const m = picks.get(i);
+    return {
+      code: String(m?.get?.('code') || ''),
+      name: String(m?.get?.('name') || ''),
+    };
+  }
+
+  function writePick(i, patch) {
+    ensurePicks(picks);
+    const m = picks.get(i);
+    if (!m) return;
+    doc.transact(() => {
+      if (patch.code != null) m.set('code', String(patch.code));
+      if (patch.name != null) m.set('name', String(patch.name));
+    });
+  }
+
+  function filterOptions(q) {
+    const list = typeof opts.getOptions === 'function' ? opts.getOptions() : options;
+    const s = String(q || '').trim().toLowerCase();
+    const rows = list || [];
+    if (!s) return rows.slice(0, 20);
+    return rows
+      .filter((x) => `${x.name} ${x.code}`.toLowerCase().includes(s))
+      .slice(0, 20);
+  }
+
+  async function loadChanges(code, name) {
+    if (!code || !opts.loadDayChanges) return;
+    if (changeCache.has(code) || loading.has(code)) return;
+    loading.add(code);
+    try {
+      const map = await opts.loadDayChanges({ code, name });
+      changeCache.set(code, map || {});
+      render();
+    } catch (e) {
+      console.warn('collab kline', e);
+      changeCache.set(code, {});
+    } finally {
+      loading.delete(code);
+    }
+  }
+
+  async function hydrateChanges() {
+    for (let i = 0; i < PICKS; i += 1) {
+      const p = readPick(i);
+      if (p.code) void loadChanges(p.code, p.name);
+    }
+  }
+
   const render = () => {
     if (destroyed || !root.isConnected) return;
+    ensurePicks(picks);
     const dates = lastMonthDates();
-    const bodyHtml = dates
-      .map((date, r) => {
-        const row = notes.get(date);
-        const dateCell = `<td class="collab-date">${escapeAttr(displayDate(date))}</td>`;
-        const tds = Array.from({ length: COLS }, (_, c) => {
-          const val = row?.get?.(c) ?? '';
-          return `<td><input data-date="${escapeAttr(date)}" data-r="${r}" data-c="${c}" value="${escapeAttr(val)}" spellcheck="false" /></td>`;
-        }).join('');
-        return `<tr>${dateCell}${tds}</tr>`;
-      })
-      .join('');
+    const head = `<th class="collab-name-h">名称</th>${dates
+      .map((d) => `<th class="collab-date-h">${escapeHtml(displayDate(d))}</th>`)
+      .join('')}`;
+
+    const body = Array.from({ length: PICKS }, (_, r) => {
+      const pick = readPick(r);
+      const shown =
+        menuRow === r ? menuQuery : pick.name || pick.code || '';
+      const days = pick.code ? changeCache.get(pick.code) || {} : {};
+      const tds = dates
+        .map((d) => {
+          const pct = days[d];
+          const pending = pick.code && loading.has(pick.code) && pct == null;
+          return `<td class="collab-pct tabular-nums ${toneClass(pct)}">${
+            pending ? '…' : escapeHtml(fmtPct(pct))
+          }</td>`;
+        })
+        .join('');
+      const open = menuRow === r;
+      const hits = open ? filterOptions(menuQuery) : [];
+      const menu = open
+        ? `<div class="collab-menu" data-menu="${r}">${
+            hits.length
+              ? hits
+                  .map(
+                    (h) =>
+                      `<button type="button" class="collab-menu-item" data-pick-row="${r}" data-pick-code="${escapeAttr(h.code)}" data-pick-name="${escapeAttr(h.name)}"><b>${escapeHtml(h.name)}</b><span>${escapeHtml(h.code)}</span></button>`,
+                  )
+                  .join('')
+              : `<div class="collab-menu-empty">没有匹配的龙虎榜股票</div>`
+          }</div>`
+        : '';
+      return `<tr>
+        <td class="collab-name-cell">
+          <input class="collab-name-input" data-pick="${r}" value="${escapeAttr(shown)}" placeholder="输入或搜索股票" spellcheck="false" autocomplete="off" />
+          ${menu}
+        </td>
+        ${tds}
+      </tr>`;
+    }).join('');
 
     const active = document.activeElement;
-    const focusDate = active?.dataset?.date;
-    const focusCol = active?.dataset?.c;
+    const focusRow = active?.dataset?.pick;
     const selStart = active?.selectionStart;
     const selEnd = active?.selectionEnd;
 
     root.innerHTML = `<div class="collab-table-wrap">
-      <table class="collab-table collab-table-dates">
-        <tbody>${bodyHtml}</tbody>
+      <table class="collab-table collab-table-sheet">
+        <thead><tr>${head}</tr></thead>
+        <tbody>${body}</tbody>
       </table>
     </div>`;
 
-    if (focusDate != null && focusCol != null) {
-      const el = root.querySelector(`input[data-date="${focusDate}"][data-c="${focusCol}"]`);
+    if (focusRow != null) {
+      const el = root.querySelector(`input[data-pick="${focusRow}"]`);
       if (el) {
         el.focus();
         if (typeof selStart === 'number' && typeof selEnd === 'number') {
@@ -209,39 +319,133 @@ export function mountCollabTable(root, opts = {}) {
     }
   };
 
-  let localEdit = false;
+  const applyChoice = (row, code, name) => {
+    writePick(row, { code, name });
+    menuRow = null;
+    menuQuery = '';
+    if (code) void loadChanges(code, name);
+    render();
+  };
+
+  function paintMenu(row) {
+    const cell = root.querySelector(`input[data-pick="${row}"]`)?.closest('.collab-name-cell');
+    if (!cell) return;
+    cell.querySelector('.collab-menu')?.remove();
+    const hits = filterOptions(menuQuery);
+    const menu = document.createElement('div');
+    menu.className = 'collab-menu';
+    menu.dataset.menu = String(row);
+    if (!hits.length) {
+      menu.innerHTML = '<div class="collab-menu-empty">没有匹配的龙虎榜股票</div>';
+    } else {
+      menu.innerHTML = hits
+        .map(
+          (h) =>
+            `<button type="button" class="collab-menu-item" data-pick-row="${row}" data-pick-code="${escapeAttr(h.code)}" data-pick-name="${escapeAttr(h.name)}"><b>${escapeHtml(h.name)}</b><span>${escapeHtml(h.code)}</span></button>`,
+        )
+        .join('');
+    }
+    cell.appendChild(menu);
+  }
+
   const onInput = (e) => {
     const t = e.target;
-    if (!(t instanceof HTMLInputElement)) return;
-    const date = t.dataset.date;
-    const c = Number(t.dataset.c);
-    if (!date || Number.isNaN(c)) return;
-    localEdit = true;
-    doc.transact(() => {
-      const row = ensureRow(notes, date);
-      while (row.length <= c) row.insert(row.length, ['']);
-      row.delete(c, 1);
-      row.insert(c, [t.value]);
-    });
-    queueMicrotask(() => {
-      localEdit = false;
-    });
+    if (!(t instanceof HTMLInputElement) || t.dataset.pick == null) return;
+    const row = Number(t.dataset.pick);
+    menuRow = row;
+    menuQuery = t.value;
+    paintMenu(row);
+  };
+
+  const onFocusIn = (e) => {
+    const t = e.target;
+    if (!(t instanceof HTMLInputElement) || t.dataset.pick == null) return;
+    menuRow = Number(t.dataset.pick);
+    menuQuery = t.value;
+    paintMenu(menuRow);
+  };
+
+  const onFocusOut = (e) => {
+    const next = e.relatedTarget;
+    if (next && root.contains(next) && next.closest?.('.collab-menu')) return;
+    setTimeout(() => {
+      if (destroyed) return;
+      const active = document.activeElement;
+      if (active && root.contains(active) && (active.dataset.pick != null || active.closest?.('.collab-menu'))) {
+        return;
+      }
+      if (menuRow == null) return;
+      const row = menuRow;
+      const q = String(menuQuery || '').trim();
+      const hits = filterOptions(q);
+      const exact = hits.find((h) => h.code === q || h.name === q);
+      if (exact) applyChoice(row, exact.code, exact.name);
+      else if (q) writePick(row, { code: readPick(row).code, name: q });
+      menuRow = null;
+      menuQuery = '';
+      render();
+    }, 120);
+  };
+
+  const onPickMouseDown = (e) => {
+    const btn = e.target.closest?.('[data-pick-code]');
+    if (!btn || !root.contains(btn)) return;
+    e.preventDefault();
+    applyChoice(
+      Number(btn.getAttribute('data-pick-row')),
+      btn.getAttribute('data-pick-code') || '',
+      btn.getAttribute('data-pick-name') || '',
+    );
+  };
+
+  const onKey = (e) => {
+    if (e.key !== 'Enter' && e.key !== 'Escape') return;
+    const t = e.target;
+    if (!(t instanceof HTMLInputElement) || t.dataset.pick == null) return;
+    if (e.key === 'Escape') {
+      menuRow = null;
+      menuQuery = '';
+      render();
+      return;
+    }
+    const row = Number(t.dataset.pick);
+    const hits = filterOptions(t.value);
+    if (hits[0]) applyChoice(row, hits[0].code, hits[0].name);
   };
 
   root.addEventListener('input', onInput);
+  root.addEventListener('focusin', onFocusIn);
+  root.addEventListener('focusout', onFocusOut);
+  root.addEventListener('mousedown', onPickMouseDown);
+  root.addEventListener('keydown', onKey);
+
   const observer = () => {
-    if (localEdit) return;
+    if (menuRow != null) return;
     render();
+    void hydrateChanges();
   };
-  notes.observeDeep(observer);
+  picks.observeDeep(observer);
   render();
   refreshPeers();
+  void hydrateChanges();
 
   return {
+    setOptions(list) {
+      options = Array.isArray(list) ? list : [];
+      if (menuRow != null) render();
+    },
+    refreshChanges() {
+      changeCache.clear();
+      void hydrateChanges();
+    },
     destroy() {
       destroyed = true;
       root.removeEventListener('input', onInput);
-      notes.unobserveDeep(observer);
+      root.removeEventListener('focusin', onFocusIn);
+      root.removeEventListener('focusout', onFocusOut);
+      root.removeEventListener('mousedown', onPickMouseDown);
+      root.removeEventListener('keydown', onKey);
+      picks.unobserveDeep(observer);
       try {
         webrtc?.destroy();
       } catch {
