@@ -3515,8 +3515,10 @@ async function refreshDetailCharts() {
         }
       }
     } else {
+      const label =
+        period === 'fiveday' ? '五日K' : period === 'week' ? '周K' : period === 'month' ? '月K' : '日K';
       els.chartMain.innerHTML =
-        `<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">${period === 'fiveday' ? '暂无五日K线' : '暂无K线'}</div>`;
+        `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>暂无${esc(label)}（闭盘也应显示历史K线）</span><span class="text-[11px]">请稍后重试，或切回分时再切回来</span></div>`;
     }
 
     els.chartStockFlow.innerHTML = '';
