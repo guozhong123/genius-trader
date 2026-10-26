@@ -2380,9 +2380,87 @@ async function fetchBillboardSeats(date, pages = 2) {
   return out;
 }
 
+function ashareSecid(code) {
+  const c = String(code || '').replace(/\D/g, '').slice(-6);
+  if (!/^\d{6}$/.test(c)) return '';
+  if (/^(92|8|4|0|1|2|3)/.test(c)) return `0.${c}`;
+  return `1.${c}`;
+}
+
+/**
+ * 今日涨跌旁边的「前一日」：K 线里今天这根之前的那一根。
+ * 今天的日 K 还没出来时，最后一根就是上一个已收盘交易日。
+ */
+export function previousSessionChange(points, todayYmd) {
+  const rows = [];
+  for (const point of points || []) {
+    const date = String(point?.date || '').slice(0, 10);
+    const changePct = Number(point?.changePct);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(changePct)) continue;
+    rows.push({ date, changePct });
+  }
+  if (!rows.length) return null;
+  const today = String(todayYmd || '').slice(0, 10);
+  const last = rows[rows.length - 1];
+  const pick = today && last.date >= today ? rows[rows.length - 2] : last;
+  if (!pick || !Number.isFinite(pick.changePct)) return null;
+  return { date: pick.date, changePct: +pick.changePct.toFixed(2) };
+}
+
+async function fetchRecentDayPoints(secid) {
+  try {
+    const tx = await fetchTencentKline(secid, 101, 6);
+    if ((tx?.points?.length || 0) >= 2) return tx.points;
+  } catch {
+    /* next */
+  }
+  try {
+    const sina = await fetchSinaKline(secid, 101, 6);
+    if ((sina?.points?.length || 0) >= 2) return sina.points;
+  } catch {
+    /* next */
+  }
+  try {
+    const east = await fetchEastKline(secid, 101, 6);
+    if ((east?.points?.length || 0) >= 2) return east.points;
+  } catch {
+    /* next */
+  }
+  return [];
+}
+
+/** code -> { date, changePct }。前一日涨跌，不是龙虎榜上榜当天的 CHANGE_RATE。 */
+export async function fetchPreviousSessionChanges(codes, todayYmd) {
+  const list = [
+    ...new Set(
+      (codes || [])
+        .map((code) => String(code || '').replace(/\D/g, '').slice(-6))
+        .filter((code) => /^\d{6}$/.test(code)),
+    ),
+  ];
+  const today =
+    todayYmd || new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
+  const map = {};
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < list.length) {
+      const code = list[cursor];
+      cursor += 1;
+      const secid = ashareSecid(code);
+      if (!secid) continue;
+      const prev = previousSessionChange(await fetchRecentDayPoints(secid), today);
+      if (prev) map[code] = prev;
+    }
+  };
+  const width = Math.min(6, list.length);
+  if (width > 0) await Promise.all(Array.from({ length: width }, () => worker()));
+  return map;
+}
+
 /**
  * 最近一个已披露交易日的龙虎榜个股（按净买入排序，代码去重）。
  * 附带席位买家标签（北向 / 机构 / 游资 / 营业部）。
+ * prevChangePct 是上一个交易日的涨跌，不是上榜当天（上榜日若是今天，会和今日涨跌重复）。
  */
 export async function fetchDailyBillboard(limit = 60) {
   for (const date of shTradeDates(8)) {
@@ -2423,14 +2501,20 @@ export async function fetchDailyBillboard(limit = 60) {
           buyerTags: tagsFromExplain(`${row.EXPLAIN || ''} ${row.EXPLANATION || ''}`),
         });
       }
-      const seats = await fetchBillboardSeats(date).catch(() => []);
+      const ranked = [...byCode.values()]
+        .sort((a, b) => Number(b.netYi) - Number(a.netYi))
+        .slice(0, limit);
+      const [seats, prevByCode] = await Promise.all([
+        fetchBillboardSeats(date).catch(() => []),
+        fetchPreviousSessionChanges(ranked.map((row) => row.code)).catch(() => ({})),
+      ]);
       const seatsByCode = new Map();
       for (const seat of seats) {
         const list = seatsByCode.get(seat.code) || [];
         list.push(seat);
         seatsByCode.set(seat.code, list);
       }
-      const mapped = [...byCode.values()]
+      const mapped = ranked
         .map((row) => {
           const list = (seatsByCode.get(row.code) || [])
             .filter((s) => Number(s.netYi) > 0)
@@ -2440,10 +2524,15 @@ export async function fetchDailyBillboard(limit = 60) {
             ...row.buyerTags,
             ...list.map((s) => s.tag),
           ]);
-          return { ...row, buyers: list, buyerTags: tags.length ? tags : ['营业部'] };
-        })
-        .sort((a, b) => Number(b.netYi) - Number(a.netYi))
-        .slice(0, limit);
+          const prev = prevByCode[row.code];
+          return {
+            ...row,
+            buyers: list,
+            buyerTags: tags.length ? tags : ['营业部'],
+            prevChangePct: prev ? prev.changePct : null,
+            prevDate: prev?.date || '',
+          };
+        });
       return { date, rows: mapped };
     } catch {
       /* try older day */

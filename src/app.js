@@ -1804,7 +1804,7 @@ function visibleLhbRows() {
 
 function lhbSortValue(row, key) {
   if (key === 'livePct') return Number(row.liveChangePct);
-  if (key === 'prevPct') return Number(row.changePct);
+  if (key === 'prevPct') return Number(row.prevChangePct);
   if (key === 'netYi') return Number(row.netYi);
   return NaN;
 }
@@ -1839,13 +1839,15 @@ function setLhbSort(key) {
   if (els.lhbMeta) els.lhbMeta.textContent = lhbMetaText(lhbBoardCache, true);
 }
 
-function lhbSortTh(key) {
-  const label = LHB_SORT_KEYS[key] || key;
+function lhbSortTh(key, labelOverride) {
+  const label = labelOverride || LHB_SORT_KEYS[key] || key;
   const active = lhbSort.key === key;
   const mark = active ? (lhbSort.dir === 'asc' ? '↑' : '↓') : '';
   const aria = active ? ` aria-sort="${lhbSort.dir === 'asc' ? 'ascending' : 'descending'}"` : '';
+  const title =
+    key === 'prevPct' ? '上一个交易日的涨跌，不是上榜当天' : `点击按${label}排序`;
   return `<th class="lhb-th-sort${active ? ' is-active' : ''}"${aria}>
-      <button type="button" class="lhb-sort-btn" data-lhb-sort="${escAttr(key)}" title="点击按${escAttr(label)}排序">
+      <button type="button" class="lhb-sort-btn" data-lhb-sort="${escAttr(key)}" title="${escAttr(title)}">
         ${esc(label)}${mark ? `<span class="lhb-sort-mark">${mark}</span>` : ''}
       </button>
     </th>`;
@@ -1935,11 +1937,13 @@ function renderLhbBoard(pack) {
     return;
   }
   const sorted = sortedLhbRows(rows);
+  const prevDay = sorted.map((row) => row.prevDate).find(Boolean);
+  const prevLabel = prevDay ? `前一日 ${prevDay.slice(5)}` : '前一日涨跌';
   els.lhbBoard.innerHTML = `<table class="lhb-table">
     <thead>
       <tr>
         <th>代码</th><th>名称</th>
-        ${lhbSortTh('livePct')}${lhbSortTh('prevPct')}
+        ${lhbSortTh('livePct')}${lhbSortTh('prevPct', prevLabel)}
         <th>上榜收盘</th>
         ${lhbSortTh('netYi')}
         <th>谁在买</th><th>上榜原因</th>
@@ -1949,7 +1953,7 @@ function renderLhbBoard(pack) {
       ${sorted
         .map((r) => {
           const livePct = Number(r.liveChangePct);
-          const prevPct = Number(r.changePct);
+          const prevPct = Number(r.prevChangePct);
           const price = Number(r.close);
           return `<tr class="lhb-row" data-lhb-open="${escAttr(r.code)}" title="查看 ${escAttr(r.name || r.code)} 详情" role="button" tabindex="0">
             <td class="tabular-nums">${esc(r.code)}</td>
