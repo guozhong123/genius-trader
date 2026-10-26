@@ -18,6 +18,7 @@ export const DEFAULT_INDICES = [
   { name: '纳斯达克100', code: 'NDX', market: 'US', marketNo: 100, secid: '100.NDX', kind: 'stock', label: '美' },
   { name: '日经225', code: 'N225', market: 'JP', marketNo: 100, secid: '100.N225', kind: 'stock', label: '日' },
   { name: '韩国KOSPI', code: 'KS11', market: 'KR', marketNo: 100, secid: '100.KS11', kind: 'stock', label: '韩' },
+  { name: 'COMEX黄金', code: 'GC00Y', market: 'US', marketNo: 101, secid: '101.GC00Y', kind: 'stock', label: '期' },
 ];
 
 /** 可选大盘指数（仅指数/商品，不含概念板块） */

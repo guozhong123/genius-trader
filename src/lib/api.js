@@ -927,7 +927,6 @@ async function fetchEastIndices(list) {
     const secid = meta.secid || toSecid(meta.market, meta.code, meta.marketNo);
     const row =
       diff.find((d) => String(d.f12).toUpperCase() === String(meta.code).toUpperCase()) ||
-      diff[i] ||
       {};
     let price = Number(row.f2);
     const prev = Number(row.f18);
@@ -944,6 +943,47 @@ async function fetchEastIndices(list) {
   });
 }
 
+function indexQuoteComplete(row) {
+  return Number(row?.price) > 0 && Number.isFinite(Number(row?.changePct));
+}
+
+async function fetchYahooSnapshots(list) {
+  const rows = [];
+  await Promise.all(
+    (list || []).map(async (meta) => {
+      const secid = meta.secid || toSecid(meta.market, meta.code, meta.marketNo);
+      const sym = yahooSymbol(secid);
+      if (!sym) return;
+      try {
+        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=5d`;
+        const res = await fetch(url, {
+          signal: AbortSignal.timeout(8000),
+          headers: { Accept: 'application/json' },
+        });
+        if (!res.ok) return;
+        const json = await res.json();
+        const info = json?.chart?.result?.[0]?.meta || {};
+        const price = Number(info.regularMarketPrice);
+        const prev = Number(info.chartPreviousClose || info.previousClose);
+        let changePct = Number(info.regularMarketChangePercent);
+        if (!Number.isFinite(changePct) && price > 0 && prev > 0) changePct = ((price - prev) / prev) * 100;
+        if (!(price > 0)) return;
+        rows.push({
+          ...meta,
+          secid,
+          price,
+          changePct: Number.isFinite(changePct) ? changePct : null,
+          prevClose: Number.isFinite(prev) ? prev : null,
+          name: meta.name,
+        });
+      } catch {
+        /* next */
+      }
+    }),
+  );
+  return rows;
+}
+
 export async function fetchIndices(list) {
   if (!list?.length) return [];
   let east = [];
@@ -957,16 +997,32 @@ export async function fetchIndices(list) {
   }
   const priced = east.filter((row) => Number(row.price) > 0).length;
   if (!priced) noteQuoteListDown();
-  if (east.length === list.length && priced >= Math.ceil(list.length * 0.6)) return east;
-  const tx = await fetchTencentSnapshots(list);
-  const bySecid = new Map(tx.map((row) => [row.secid, row]));
-  const base = east.length === list.length ? east : list.map((meta) => ({ ...meta, secid: meta.secid || toSecid(meta.market, meta.code, meta.marketNo) }));
-  return base.map((row) => {
-    if (Number(row.price) > 0 && Number.isFinite(Number(row.changePct))) return row;
-    const alt = bySecid.get(row.secid);
-    if (!(Number(alt?.price) > 0)) return row;
-    return { ...row, ...alt, name: alt.name || row.name };
+  const byEast = new Map((east || []).map((row) => [row.secid || toSecid(row.market, row.code, row.marketNo), row]));
+  let merged = list.map((meta) => {
+    const secid = meta.secid || toSecid(meta.market, meta.code, meta.marketNo);
+    const hit = byEast.get(secid);
+    return hit ? { ...meta, ...hit, secid, name: meta.name || hit.name } : { ...meta, secid };
   });
+  const fill = (alts) => {
+    const map = new Map((alts || []).map((row) => [row.secid, row]));
+    merged = merged.map((row) => {
+      if (indexQuoteComplete(row)) return row;
+      const alt = map.get(row.secid);
+      if (!(Number(alt?.price) > 0)) return row;
+      return {
+        ...row,
+        ...alt,
+        name: row.name || alt.name,
+        changePct: Number.isFinite(Number(alt.changePct)) ? Number(alt.changePct) : row.changePct,
+      };
+    });
+  };
+  if (merged.some((row) => !indexQuoteComplete(row))) {
+    fill(await fetchTencentSnapshots(list).catch(() => []));
+  }
+  const missing = merged.filter((row) => !indexQuoteComplete(row));
+  if (missing.length) fill(await fetchYahooSnapshots(missing).catch(() => []));
+  return merged;
 }
 
 function formatTrendTime(rawTime, ndays = 1) {
@@ -1636,7 +1692,7 @@ function tencentSymbol(secid) {
   }
   if (mk === '101') {
     const c = String(code).toUpperCase();
-    if (c === 'GC00Y' || c === 'GC') return 'hf_GC';
+    if (c === 'GC00Y' || c === 'GC' || c.startsWith('GC')) return 'hf_GC';
   }
   if (mk === '177') return `kr${code}`;
   return '';
@@ -1661,6 +1717,7 @@ function yahooSymbol(secid) {
     };
     return map[c] || '';
   }
+  if (mk === '101' && /^GC/i.test(c)) return 'GC=F';
   if (mk === '105' || mk === '106' || mk === '107') return c;
   if (mk === '116') return `${c.padStart(4, '0')}.HK`;
   return '';
@@ -1674,8 +1731,33 @@ function isForeignSecid(secid) {
 function parseTencentQuoteLine(line) {
   const matched = line.match(/v_([a-z0-9_.]+)="([^"]*)"/i);
   if (!matched) return null;
+  const sym = matched[1].toLowerCase();
+  if (sym.startsWith('hf_')) {
+    const bits = String(matched[2] || '').split(',');
+    const price = Number(bits[0]);
+    const changePct = Number(bits[1]);
+    const prev = Number(bits[7]);
+    if (!(price > 0)) return null;
+    let pct = Number.isFinite(changePct) ? changePct : null;
+    if ((!Number.isFinite(pct) || pct === 0) && prev > 0) {
+      const computed = ((price - prev) / prev) * 100;
+      if (Number.isFinite(computed)) pct = computed;
+    }
+    return {
+      symbol: sym,
+      name: bits[bits.length - 1] || '',
+      price,
+      prevClose: Number.isFinite(prev) ? prev : null,
+      open: Number(bits[2]),
+      change: Number.isFinite(pct) && prev > 0 ? (price - prev) : null,
+      changePct: pct,
+      high: Number(bits[4]),
+      low: Number(bits[5]),
+      amount: null,
+    };
+  }
   const parts = matched[2].split('~');
-  if (matched[1].toLowerCase().startsWith('gz')) {
+  if (sym.startsWith('gz')) {
     const price = Number(parts[3]);
     const change = Number(parts[4]);
     const changePct = Number(parts[5]);
@@ -1698,7 +1780,10 @@ function parseTencentQuoteLine(line) {
   if (!Number.isFinite(price) || price <= 0) return null;
   const change = Number(parts[31]);
   let changePct = Number(parts[32]);
-  if (!Number.isFinite(changePct) && prev > 0) changePct = ((price - prev) / prev) * 100;
+  if ((!Number.isFinite(changePct) || changePct === 0) && prev > 0) {
+    const computed = ((price - prev) / prev) * 100;
+    if (Number.isFinite(computed) && (changePct !== 0 || Math.abs(computed) >= 0.005)) changePct = computed;
+  }
   return {
     symbol: matched[1].toLowerCase(),
     name: parts[1] || '',

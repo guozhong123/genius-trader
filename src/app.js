@@ -1885,16 +1885,15 @@ function renderLhbBoard(pack) {
   els.lhbBoard.innerHTML = `<table class="lhb-table">
     <thead>
       <tr>
-        <th>代码</th><th>名称</th><th>今涨跌</th><th>现价</th>
+        <th>代码</th><th>名称</th><th>涨跌</th><th>收盘</th>
         <th>净买亿</th><th>谁在买</th><th>上榜原因</th>
       </tr>
     </thead>
     <tbody>
       ${rows
         .map((r) => {
-          const live = Number(r.liveChangePct);
-          const pct = Number.isFinite(live) ? live : Number(r.changePct);
-          const price = Number.isFinite(Number(r.livePrice)) ? Number(r.livePrice) : Number(r.close);
+          const pct = Number(r.changePct);
+          const price = Number(r.close);
           return `<tr class="lhb-row" data-lhb-open="${escAttr(r.code)}" title="查看 ${escAttr(r.name || r.code)} 详情" role="button" tabindex="0">
             <td class="tabular-nums">${esc(r.code)}</td>
             <td class="lhb-name">${esc(r.name)}</td>
@@ -1950,9 +1949,20 @@ function pickLhbThree(rows) {
     }));
 }
 
+function livePctOf(code, fallback) {
+  const row = (lhbBoardCache?.rows || []).find((r) => r.code === String(code));
+  const live = Number(row?.liveChangePct);
+  if (Number.isFinite(live)) return live;
+  const n = Number(fallback);
+  return Number.isFinite(n) ? n : null;
+}
+
 function renderLhbAdvice(pack) {
   if (!els.lhbAiPicks) return;
-  const picks = pack?.picks || [];
+  const picks = (pack?.picks || []).map((p) => ({
+    ...p,
+    changePct: livePctOf(p.code, p.changePct),
+  }));
   if (!picks.length) {
     els.lhbAiPicks.innerHTML =
       '<p class="text-[12px]" style="color:var(--muted)">暂无建议。等榜单出来后再看。</p>';
@@ -2035,7 +2045,7 @@ function lhbMetaText(pack, live = false) {
   const shown = (pack.rows || []).filter(rowMatchesLhbFilter).length;
   const total = pack.rows?.length || 0;
   const filterNote = shown === total ? '' : `，筛选后 ${shown} 只`;
-  return `名单 ${pack.date} · 涨跌为实时${live ? '' : ''} · 共 ${total} 只${filterNote}`;
+  return `名单 ${pack.date} · 涨跌为上榜日（便于排序） · 共 ${total} 只${filterNote}`;
 }
 
 async function refreshLhbBoard(force = false) {
