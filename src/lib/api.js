@@ -2221,6 +2221,42 @@ function seatTag(name) {
   return '';
 }
 
+/**
+ * 最近一个已披露交易日的龙虎榜个股（按净买入排序）。
+ * 今日榜未出时自动回退到前一交易日。
+ */
+export async function fetchDailyBillboard(limit = 60) {
+  for (const date of shTradeDates(8)) {
+    const url =
+      'https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_DAILYBILLBOARD_DETAILSNEW' +
+      '&columns=SECURITY_CODE,SECURITY_NAME_ABBR,TRADE_DATE,CLOSE_PRICE,CHANGE_RATE,' +
+      'BILLBOARD_NET_AMT,BILLBOARD_BUY_AMT,BILLBOARD_SELL_AMT,EXPLAIN,EXPLANATION' +
+      `&pageSize=${Math.max(20, limit)}&pageNumber=1&sortColumns=BILLBOARD_NET_AMT&sortTypes=-1` +
+      `&filter=(TRADE_DATE='${date}')&source=WEB&client=WEB`;
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      if (!res.ok) continue;
+      const rows = (await res.json())?.result?.data || [];
+      if (!rows.length) continue;
+      const mapped = rows.slice(0, limit).map((row) => ({
+        code: String(row.SECURITY_CODE || ''),
+        name: String(row.SECURITY_NAME_ABBR || ''),
+        close: Number(row.CLOSE_PRICE),
+        changePct: Number(row.CHANGE_RATE),
+        netYi: +(Number(row.BILLBOARD_NET_AMT || 0) / 1e8).toFixed(2),
+        buyYi: +(Number(row.BILLBOARD_BUY_AMT || 0) / 1e8).toFixed(2),
+        sellYi: +(Number(row.BILLBOARD_SELL_AMT || 0) / 1e8).toFixed(2),
+        seats: String(row.EXPLAIN || '').trim(),
+        reason: String(row.EXPLANATION || '').trim(),
+      }));
+      return { date, rows: mapped };
+    } catch {
+      /* try older day */
+    }
+  }
+  return { date: '', rows: [] };
+}
+
 /** 当日龙虎榜净买入靠前的席位。机构、北向、常见游资席位优先。 */
 export async function fetchSeatHighlights(limit = 6) {
   for (const date of shTradeDates(4)) {

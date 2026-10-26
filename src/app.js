@@ -35,6 +35,7 @@ import {
   fetchTencentStockQuote,
   fetchIndustryMove,
   fetchDragonTiger,
+  fetchDailyBillboard,
   fetchLimitSentiment,
   fetchTrackedFlows,
   fetchBoardLeaders,
@@ -72,6 +73,7 @@ import { getTodayEvents, getUpcomingEvents, getMajorUpcomingEvents, marketCalend
 import { buildLevelMarkLines, calcAutoLevels } from './lib/levels.js';
 import { normalizeGroups, repairStockGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
+import { mountCollabTable } from './lib/collab-table.js';
 import {
   askDeepseekReport,
   askLhbReport,
@@ -255,6 +257,11 @@ const els = {
   predictIndexName: $('predict-index-name'),
   chartPredictK: $('chart-predict-k'),
   chartPredictFlow: $('chart-predict-flow'),
+  lhbRefreshBtn: $('lhb-refresh-btn'),
+  lhbMeta: $('lhb-meta'),
+  lhbBoard: $('lhb-board'),
+  lhbCollabStatus: $('lhb-collab-status'),
+  lhbCollabTable: $('lhb-collab-table'),
   simAiBtn: $('sim-ai-btn'),
   simMarkBtn: $('sim-mark-btn'),
   simResetBtn: $('sim-reset-btn'),
@@ -403,7 +410,10 @@ function scrollPageTop() {
   document.querySelector('.page-shell')?.scrollTo?.(0, 0);
 }
 
-const APP_VIEWS = ['watch', 'pulse', 'predict', 'data', 'etf'];
+const APP_VIEWS = ['watch', 'pulse', 'lhb', 'data', 'etf'];
+let lhbCollabHandle = null;
+let lhbBoardCache = null;
+let lhbBoardLoading = false;
 const SIM_FEE_RATE = 0.0005; // 万五
 const SIM_FEE_MIN = 5;
 
@@ -521,9 +531,11 @@ function setView(view) {
     refreshPulse();
     loadTrendSheet();
   }
-  if (state.view === 'predict') {
-    renderPredictView();
-    void loadPredictFlow();
+  if (state.view === 'lhb') {
+    void ensureLhbView();
+  } else if (lhbCollabHandle) {
+    lhbCollabHandle.destroy();
+    lhbCollabHandle = null;
   }
   if (state.view === 'etf') ensureHeatmap();
   syncMarketAiBtn();
@@ -1741,6 +1753,112 @@ function materializeForecastBars(lastClose, bars, dates) {
   });
 }
 
+function fmtYiBoard(n) {
+  if (!Number.isFinite(Number(n))) return '—';
+  const v = Number(n);
+  return `${v > 0 ? '+' : ''}${v.toFixed(2)}`;
+}
+
+function renderLhbBoard(pack) {
+  if (!els.lhbBoard) return;
+  const rows = pack?.rows || [];
+  if (!rows.length) {
+    els.lhbBoard.innerHTML =
+      '<p class="text-[12px]" style="color:var(--muted)">暂无龙虎榜数据。收盘后通常会晚些披露，可稍后点「刷新榜单」。</p>';
+    return;
+  }
+  els.lhbBoard.innerHTML = `<table class="lhb-table">
+    <thead>
+      <tr>
+        <th>代码</th><th>名称</th><th>涨跌</th><th>收盘</th>
+        <th>买入亿</th><th>卖出亿</th><th>净买亿</th><th>上榜原因</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rows
+        .map((r) => {
+          const pct = Number(r.changePct);
+          return `<tr>
+            <td class="tabular-nums">${esc(r.code)}</td>
+            <td class="lhb-name">${esc(r.name)}</td>
+            <td class="tabular-nums ${tone(pct)}">${fmtPct(pct)}</td>
+            <td class="tabular-nums">${Number.isFinite(Number(r.close)) ? Number(r.close).toFixed(2) : '—'}</td>
+            <td class="tabular-nums text-up">${fmtYiBoard(r.buyYi)}</td>
+            <td class="tabular-nums text-down">${fmtYiBoard(r.sellYi)}</td>
+            <td class="tabular-nums ${tone(r.netYi)}">${fmtYiBoard(r.netYi)}</td>
+            <td class="lhb-reason" title="${escAttr(r.reason || r.seats || '')}">${esc(r.reason || r.seats || '—')}</td>
+          </tr>`;
+        })
+        .join('')}
+    </tbody>
+  </table>`;
+}
+
+async function refreshLhbBoard(force = false) {
+  if (lhbBoardLoading) return;
+  if (!force && lhbBoardCache?.rows?.length) {
+    renderLhbBoard(lhbBoardCache);
+    if (els.lhbMeta) {
+      els.lhbMeta.textContent = `龙虎榜日期 ${lhbBoardCache.date} · 共 ${lhbBoardCache.rows.length} 只（按净买入）`;
+    }
+    return;
+  }
+  lhbBoardLoading = true;
+  if (els.lhbRefreshBtn) {
+    els.lhbRefreshBtn.disabled = true;
+    els.lhbRefreshBtn.textContent = '刷新中…';
+  }
+  if (els.lhbMeta) els.lhbMeta.textContent = '正在拉取最近已披露的龙虎榜…';
+  try {
+    const pack = await fetchDailyBillboard(80);
+    lhbBoardCache = pack;
+    renderLhbBoard(pack);
+    if (els.lhbMeta) {
+      els.lhbMeta.textContent = pack.date
+        ? `龙虎榜日期 ${pack.date} · 共 ${pack.rows.length} 只（按净买入；今日未出则自动显示前一交易日）`
+        : '暂未取到龙虎榜，请稍后再试';
+    }
+  } catch (e) {
+    console.error(e);
+    if (els.lhbMeta) els.lhbMeta.textContent = `加载失败：${e?.message || e}`;
+    if (els.lhbBoard) {
+      els.lhbBoard.innerHTML =
+        '<p class="text-[12px]" style="color:var(--muted)">龙虎榜加载失败，请点「刷新榜单」重试。</p>';
+    }
+  } finally {
+    lhbBoardLoading = false;
+    if (els.lhbRefreshBtn) {
+      els.lhbRefreshBtn.disabled = false;
+      els.lhbRefreshBtn.textContent = '刷新榜单';
+    }
+  }
+}
+
+function ensureLhbCollab() {
+  if (!els.lhbCollabTable) return;
+  if (lhbCollabHandle) return;
+  lhbCollabHandle = mountCollabTable(els.lhbCollabTable, {
+    onStatus: ({ synced, peers, error }) => {
+      if (!els.lhbCollabStatus) return;
+      if (error) {
+        els.lhbCollabStatus.textContent = error;
+        return;
+      }
+      if (synced) {
+        els.lhbCollabStatus.textContent =
+          peers > 1 ? `已同步 · 当前 ${peers} 人在线` : '已同步 · 等待其他人加入';
+      } else {
+        els.lhbCollabStatus.textContent = '连接协作服务中…（本机也可先编辑）';
+      }
+    },
+  });
+}
+
+async function ensureLhbView() {
+  ensureLhbCollab();
+  await refreshLhbBoard(false);
+}
+
 function renderPredictView() {
   const pack = state.settings?.predictPack;
   if (els.predictAiBtn) {
@@ -2591,9 +2709,9 @@ function closeReportDrawer() {
 
 function syncMarketAiBtn() {
   if (!els.marketAiBtn) return;
-  // 每个 tab 最多一个 AI：盘况/预测用页内按钮，其它页用顶栏「大盘分析」
+  // 每个 tab 最多一个 AI：盘况用页内按钮，其它页用顶栏「大盘分析」
   // 用占位隐藏而不是 display:none，避免顶栏右侧重排把中间 tab 挤歪
-  const hideTop = state.view === 'pulse' || state.view === 'predict';
+  const hideTop = state.view === 'pulse';
   els.marketAiBtn.classList.remove('hidden');
   els.marketAiBtn.classList.toggle('toolbar-slot-hide', hideTop);
   els.marketAiBtn.setAttribute('aria-hidden', hideTop ? 'true' : 'false');
@@ -4858,23 +4976,7 @@ els.aiAdviceHistory?.addEventListener('click', () => {
 });
 els.reportOpenBtn?.addEventListener('click', () => openReportDrawer());
 els.marketAiBtn?.addEventListener('click', () => runMarketAi());
-els.predictAiBtn?.addEventListener('click', () => runPredictAi());
-// 模拟盘按钮：直接绑 + 容器委托，避免取不到节点时无反应
-els.simAiBtn?.addEventListener('click', (e) => {
-  e.preventDefault();
-  e.stopPropagation();
-  void runSimAi();
-});
-els.simMarkBtn?.addEventListener('click', () => markSimToMarket());
-els.simResetBtn?.addEventListener('click', () => resetSimBook());
-$('view-sim')?.addEventListener('click', (e) => {
-  const btn = e.target.closest?.('#sim-ai-btn, #sim-mark-btn, #sim-reset-btn');
-  if (!btn) return;
-  e.preventDefault();
-  if (btn.id === 'sim-ai-btn') void runSimAi();
-  else if (btn.id === 'sim-mark-btn') void markSimToMarket();
-  else if (btn.id === 'sim-reset-btn') void resetSimBook();
-});
+els.lhbRefreshBtn?.addEventListener('click', () => void refreshLhbBoard(true));
 
 els.strategyDesk?.addEventListener('click', (e) => {
   const t = e.target.closest('[data-strategy-pulse]');
@@ -4960,9 +5062,8 @@ async function bootApp() {
   if (state.settings?.funFlowNames && els.funNamesBtn) {
     els.funNamesBtn.classList.add('bg-accent', 'text-white');
   }
-  const savedView = ['watch', 'pulse', 'predict', 'data', 'etf'].includes(state.settings?.lastView)
-    ? state.settings.lastView
-    : 'watch';
+  const rawView = state.settings?.lastView === 'predict' ? 'lhb' : state.settings?.lastView;
+  const savedView = ['watch', 'pulse', 'lhb', 'data', 'etf'].includes(rawView) ? rawView : 'watch';
   // 指数去重（黄金重复、纳斯达克命名）写回一次
   if (Array.isArray(state.settings?.indices)) {
     const cleaned = uniqueIndices(state.settings.indices);

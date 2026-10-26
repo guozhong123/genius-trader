@@ -2550,3 +2550,112 @@ button.pick-card {
     font-size: 12px;
   }
 }
+
+/* 龙虎榜分析台 */
+.lhb-board {
+  max-height: min(42vh, 420px);
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--line) 85%, transparent);
+}
+
+.lhb-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.lhb-table th,
+.lhb-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid color-mix(in oklab, var(--line) 70%, transparent);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.lhb-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--panel-solid);
+}
+
+.lhb-table .lhb-name {
+  font-weight: 600;
+  max-width: 6.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lhb-table .lhb-reason {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.lhb-collab-host {
+  min-height: 280px;
+}
+
+.collab-table-wrap {
+  overflow: auto;
+  max-height: min(52vh, 520px);
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--line) 85%, transparent);
+}
+
+.collab-table {
+  width: max(100%, 720px);
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.collab-table th,
+.collab-table td {
+  border: 1px solid color-mix(in oklab, var(--line) 75%, transparent);
+  padding: 0;
+}
+
+.collab-table th {
+  background: color-mix(in oklab, var(--accent) 8%, var(--panel-solid));
+}
+
+.collab-table input {
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 8px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.collab-table th input {
+  font-weight: 700;
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.collab-table input:focus {
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+}
+
+@media (max-width: 640px) {
+  .lhb-board {
+    max-height: 36vh;
+  }
+
+  .lhb-table {
+    font-size: 11px;
+  }
+
+  .lhb-table .lhb-reason {
+    max-width: 8rem;
+  }
+}
