@@ -73,7 +73,6 @@ import { getTodayEvents, getUpcomingEvents, getMajorUpcomingEvents, marketCalend
 import { buildLevelMarkLines, calcAutoLevels } from './lib/levels.js';
 import { normalizeGroups, repairStockGroups } from './lib/stock-groups.js';
 import { analyzeMainForceIntent } from './lib/predict.js';
-import { mountCollabTable } from './lib/collab-table.js';
 import {
   askDeepseekReport,
   askLhbPick3,
@@ -265,8 +264,6 @@ const els = {
   lhbFilters: $('lhb-filters'),
   lhbAiMeta: $('lhb-ai-meta'),
   lhbAiPicks: $('lhb-ai-picks'),
-  lhbCollabStatus: $('lhb-collab-status'),
-  lhbCollabTable: $('lhb-collab-table'),
   simAiBtn: $('sim-ai-btn'),
   simMarkBtn: $('sim-mark-btn'),
   simResetBtn: $('sim-reset-btn'),
@@ -416,7 +413,6 @@ function scrollPageTop() {
 }
 
 const APP_VIEWS = ['watch', 'pulse', 'lhb', 'data', 'etf'];
-let lhbCollabHandle = null;
 let lhbBoardCache = null;
 let lhbBoardLoading = false;
 let lhbAdviceCache = null;
@@ -543,12 +539,7 @@ function setView(view) {
     refreshPulse();
     loadTrendSheet();
   }
-  if (state.view === 'lhb') {
-    void ensureLhbView();
-  } else if (lhbCollabHandle) {
-    lhbCollabHandle.destroy();
-    lhbCollabHandle = null;
-  }
+  if (state.view === 'lhb') void refreshLhbBoard(false);
   if (state.view === 'etf') ensureHeatmap();
   syncMarketAiBtn();
   requestAnimationFrame(() => resizeAllCharts());
@@ -1804,7 +1795,7 @@ function visibleLhbRows() {
 
 function lhbSortValue(row, key) {
   if (key === 'livePct') return Number(row.liveChangePct);
-  if (key === 'prevPct') return Number(row.changePct);
+  if (key === 'prevPct') return Number(row.prevChangePct);
   if (key === 'netYi') return Number(row.netYi);
   return NaN;
 }
@@ -1839,13 +1830,15 @@ function setLhbSort(key) {
   if (els.lhbMeta) els.lhbMeta.textContent = lhbMetaText(lhbBoardCache, true);
 }
 
-function lhbSortTh(key) {
-  const label = LHB_SORT_KEYS[key] || key;
+function lhbSortTh(key, labelOverride) {
+  const label = labelOverride || LHB_SORT_KEYS[key] || key;
   const active = lhbSort.key === key;
   const mark = active ? (lhbSort.dir === 'asc' ? '↑' : '↓') : '';
   const aria = active ? ` aria-sort="${lhbSort.dir === 'asc' ? 'ascending' : 'descending'}"` : '';
+  const title =
+    key === 'prevPct' ? '上一个交易日的涨跌，不是上榜当天' : `点击按${label}排序`;
   return `<th class="lhb-th-sort${active ? ' is-active' : ''}"${aria}>
-      <button type="button" class="lhb-sort-btn" data-lhb-sort="${escAttr(key)}" title="点击按${escAttr(label)}排序">
+      <button type="button" class="lhb-sort-btn" data-lhb-sort="${escAttr(key)}" title="${escAttr(title)}">
         ${esc(label)}${mark ? `<span class="lhb-sort-mark">${mark}</span>` : ''}
       </button>
     </th>`;
@@ -1881,31 +1874,6 @@ async function applyLhbLiveQuotes(pack) {
   return pack;
 }
 
-function lhbStockOptions() {
-  return (lhbBoardCache?.rows || []).map((r) => ({
-    code: r.code,
-    name: r.name,
-    market: marketOfCode(r.code),
-  }));
-}
-
-async function loadLhbDayChanges(stock) {
-  const code = String(stock?.code || '').replace(/\D/g, '').slice(-6);
-  if (!code) return {};
-  const market = stock.market || marketOfCode(code);
-  const secid = toSecid(market, code);
-  const k = await fetchKline(secid, 101, 40);
-  const map = {};
-  for (const p of k?.points || []) {
-    const day = String(p.date || '').slice(0, 10);
-    if (day && Number.isFinite(Number(p.changePct))) map[day] = Number(p.changePct);
-  }
-  const q = state.quotes[quoteKey({ kind: 'stock', market, code })];
-  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
-  if (Number.isFinite(Number(q?.changePct))) map[today] = Number(q.changePct);
-  return map;
-}
-
 function lhbBuyerHtml(row) {
   const tags = row.buyerTags?.length ? row.buyerTags : [];
   const chips = tags
@@ -1935,11 +1903,15 @@ function renderLhbBoard(pack) {
     return;
   }
   const sorted = sortedLhbRows(rows);
+  const today = marketClock().today;
+  const prevDay = sorted.map((row) => row.prevDate).find((day) => day && day < today);
+  const liveLabel = today ? `今日 ${today.slice(5)}` : '今日涨跌';
+  const prevLabel = prevDay ? `前一日 ${prevDay.slice(5)}` : '前一日涨跌';
   els.lhbBoard.innerHTML = `<table class="lhb-table">
     <thead>
       <tr>
         <th>代码</th><th>名称</th>
-        ${lhbSortTh('livePct')}${lhbSortTh('prevPct')}
+        ${lhbSortTh('livePct', liveLabel)}${lhbSortTh('prevPct', prevLabel)}
         <th>上榜收盘</th>
         ${lhbSortTh('netYi')}
         <th>谁在买</th><th>上榜原因</th>
@@ -1949,13 +1921,14 @@ function renderLhbBoard(pack) {
       ${sorted
         .map((r) => {
           const livePct = Number(r.liveChangePct);
-          const prevPct = Number(r.changePct);
+          const prevDate = String(r.prevDate || '');
+          const prevPct = prevDate && prevDate < today ? Number(r.prevChangePct) : NaN;
           const price = Number(r.close);
           return `<tr class="lhb-row" data-lhb-open="${escAttr(r.code)}" title="查看 ${escAttr(r.name || r.code)} 详情" role="button" tabindex="0">
             <td class="tabular-nums">${esc(r.code)}</td>
             <td class="lhb-name">${esc(r.name)}</td>
-            <td class="tabular-nums ${tone(livePct)}">${fmtPct(Number.isFinite(livePct) ? livePct : null)}</td>
-            <td class="tabular-nums ${tone(prevPct)}">${fmtPct(Number.isFinite(prevPct) ? prevPct : null)}</td>
+            <td class="tabular-nums ${tone(livePct)}" title="${escAttr(today)} 涨跌">${fmtPct(Number.isFinite(livePct) ? livePct : null)}</td>
+            <td class="tabular-nums ${tone(prevPct)}" title="${escAttr(prevDate || '前一日')} 涨跌">${fmtPct(Number.isFinite(prevPct) ? prevPct : null)}</td>
             <td class="tabular-nums">${Number.isFinite(price) ? price.toFixed(2) : '—'}</td>
             <td class="tabular-nums ${tone(r.netYi)}">${fmtYiBoard(r.netYi)}</td>
             <td>${lhbBuyerHtml(r)}</td>
@@ -2154,7 +2127,10 @@ function lhbMetaText(pack, live = false) {
       ? `刷新于 ${lhbClockHm()}`
       : '';
   const liveNote = live ? ' · 今日涨跌已更新' : '';
-  return `当前龙虎榜是${lhbDateLabel(pack.date)}的 · ${refreshNote} · 按${sortLabel}${sortDir} · 共 ${total} 只${filterNote}${liveNote}`;
+  const today = marketClock().today;
+  const prevDay = (pack.rows || []).map((row) => row.prevDate).find((day) => day && day < today);
+  const dayNote = prevDay ? ` · 前一日涨跌是 ${prevDay}，不是上榜当天` : '';
+  return `当前龙虎榜是${lhbDateLabel(pack.date)}的 · ${refreshNote} · 按${sortLabel}${sortDir} · 共 ${total} 只${filterNote}${liveNote}${dayNote}`;
 }
 
 async function refreshLhbBoard(force = false) {
@@ -2164,7 +2140,6 @@ async function refreshLhbBoard(force = false) {
     renderLhbBoard(lhbBoardCache);
     if (els.lhbMeta) els.lhbMeta.textContent = lhbMetaText(lhbBoardCache, true);
     syncLhbAsof(lhbBoardCache);
-    lhbCollabHandle?.setOptions?.(lhbStockOptions());
     void refreshLhbAdvice({ ...lhbBoardCache, rows: visibleLhbRows() }, false);
     return;
   }
@@ -2187,7 +2162,6 @@ async function refreshLhbBoard(force = false) {
     renderLhbBoard(pack);
     if (els.lhbMeta) els.lhbMeta.textContent = lhbMetaText(pack, true);
     syncLhbAsof(pack);
-    lhbCollabHandle?.setOptions?.(lhbStockOptions());
     void refreshLhbAdvice({ ...pack, rows: visibleLhbRows() }, force);
   } catch (e) {
     console.error(e);
@@ -2204,36 +2178,6 @@ async function refreshLhbBoard(force = false) {
       els.lhbRefreshBtn.textContent = '刷新榜单';
     }
   }
-}
-
-function ensureLhbCollab() {
-  if (!els.lhbCollabTable) return;
-  if (lhbCollabHandle) {
-    lhbCollabHandle.setOptions?.(lhbStockOptions());
-    return;
-  }
-  lhbCollabHandle = mountCollabTable(els.lhbCollabTable, {
-    getOptions: lhbStockOptions,
-    loadDayChanges: loadLhbDayChanges,
-    onStatus: ({ synced, peers, error }) => {
-      if (!els.lhbCollabStatus) return;
-      if (error) {
-        els.lhbCollabStatus.textContent = error;
-        return;
-      }
-      if (synced) {
-        els.lhbCollabStatus.textContent =
-          peers > 1 ? `已共享 · 当前 ${peers} 人在线` : '已连上共享房间 · 三只股票全员可见';
-      } else {
-        els.lhbCollabStatus.textContent = '正在连共享房间…（先可本机编辑）';
-      }
-    },
-  });
-}
-
-async function ensureLhbView() {
-  ensureLhbCollab();
-  await refreshLhbBoard(false);
 }
 
 function renderPredictView() {
@@ -3571,8 +3515,10 @@ async function refreshDetailCharts() {
         }
       }
     } else {
+      const label =
+        period === 'fiveday' ? '五日K' : period === 'week' ? '周K' : period === 'month' ? '月K' : '日K';
       els.chartMain.innerHTML =
-        `<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">${period === 'fiveday' ? '暂无五日K线' : '暂无K线'}</div>`;
+        `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>暂无${esc(label)}（闭盘也应显示历史K线）</span><span class="text-[11px]">请稍后重试，或切回分时再切回来</span></div>`;
     }
 
     els.chartStockFlow.innerHTML = '';

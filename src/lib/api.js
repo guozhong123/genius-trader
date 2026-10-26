@@ -1649,7 +1649,8 @@ function pointsFromOhlc(rows) {
   let prev = null;
   for (const row of rows) {
     const close = Number(row.close);
-    const changePct = prev > 0 ? ((close - prev) / prev) * 100 : Number(row.changePct);
+    const rawPct = row.changePct == null || row.changePct === '' ? NaN : Number(row.changePct);
+    const computed = prev > 0 ? ((close - prev) / prev) * 100 : NaN;
     points.push({
       date: row.date,
       open: Number(row.open),
@@ -1658,7 +1659,7 @@ function pointsFromOhlc(rows) {
       low: Number(row.low),
       volume: Number(row.volume) || 0,
       amount: Number(row.amount) || 0,
-      changePct: Number.isFinite(Number(row.changePct)) ? Number(row.changePct) : changePct,
+      changePct: Number.isFinite(rawPct) ? rawPct : Number.isFinite(computed) ? computed : null,
     });
     if (close > 0) prev = close;
   }
@@ -1720,6 +1721,12 @@ function yahooSymbol(secid) {
   if (mk === '101' && /^GC/i.test(c)) return 'GC=F';
   if (mk === '105' || mk === '106' || mk === '107') return c;
   if (mk === '116') return `${c.padStart(4, '0')}.HK`;
+  // A 股：周/月 K 在东财、腾讯挂掉时走 Yahoo
+  if ((mk === '1' || mk === '0') && /^\d{6}$/.test(c)) {
+    if (mk === '1' || c.startsWith('6') || c.startsWith('9')) return `${c}.SS`;
+    if (/^(92|8|4)/.test(c)) return `${c}.BJ`;
+    return `${c}.SZ`;
+  }
   return '';
 }
 
@@ -1860,8 +1867,8 @@ async function fetchEastKline(secid, klt, lmt) {
       const url =
         `${host}/api/qt/stock/kline/get?secid=${encodeURIComponent(secid)}` +
         `&klt=${klt}&fqt=1&lmt=${lmt}&end=20500101&iscca=1` +
-        `&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57,f59&forcect=1`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+        `&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59&forcect=1`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(4500) });
       if (!res.ok) continue;
       const json = await res.json();
       const lines = json?.data?.klines || [];
@@ -1870,6 +1877,7 @@ async function fetchEastKline(secid, klt, lmt) {
         name: json?.data?.name || '',
         points: lines.map((line) => {
           const p = String(line).split(',');
+          const changePct = Number(p[8] ?? p[7]);
           return {
             date: p[0],
             open: Number(p[1]),
@@ -1878,9 +1886,9 @@ async function fetchEastKline(secid, klt, lmt) {
             low: Number(p[4]),
             volume: Number(p[5]),
             amount: Number(p[6]),
-            changePct: Number(p[7]),
+            changePct: Number.isFinite(changePct) ? changePct : null,
           };
-        }),
+        }).filter((row) => row.date && row.close > 0),
       };
     } catch {
       /* next host */
@@ -1898,30 +1906,48 @@ async function fetchYahooKline(secid, klt, lmt) {
   return { name: pack.name || '', points: pack.points.slice(-lmt) };
 }
 
+function parseTencentKlineBag(json, sym, period) {
+  const bag = json?.data?.[sym] || json?.data?.[String(sym).toLowerCase()] || {};
+  const rows = bag[`qfq${period}`] || bag[period] || bag[`qfq${period}s`] || [];
+  if (!Array.isArray(rows) || !rows.length) return null;
+  const points = pointsFromOhlc(
+    rows.map((row) => ({
+      date: row[0],
+      open: row[1],
+      close: row[2],
+      high: row[3],
+      low: row[4],
+      volume: row[5],
+    })),
+  ).filter((row) => row.date && row.close > 0);
+  return points.length ? { name: '', points } : null;
+}
+
 async function fetchTencentKline(secid, klt, lmt) {
   const sym = tencentSymbol(secid);
   if (!sym) return null;
   const period = { 101: 'day', 102: 'week', 103: 'month', 106: 'year' }[klt] || 'day';
-  const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${sym},${period},,,${lmt},qfq`;
-  const res = await fetch(url);
-  if (!res.ok) return null;
-  const json = await res.json();
-  const bag = json?.data?.[sym] || {};
-  const rows = bag[`qfq${period}`] || bag[period] || [];
-  if (!rows.length) return null;
-  return {
-    name: '',
-    points: pointsFromOhlc(
-      rows.map((row) => ({
-        date: row[0],
-        open: row[1],
-        close: row[2],
-        high: row[3],
-        low: row[4],
-        volume: row[5],
-      })),
-    ),
-  };
+  const param = `${sym},${period},,,${lmt},qfq`;
+  const urls = [
+    `https://web.ifzq.gtimg.cn/appstock/app/newfqkline/get?param=${param}`,
+    `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${param}`,
+    `https://ifzq.gtimg.cn/appstock/app/fqkline/get?param=${param}`,
+    `https://proxy.finance.qq.com/ifzqgtimg/appstock/app/fqkline/get?param=${param}`,
+  ];
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(7000),
+        headers: { Referer: 'https://finance.qq.com/' },
+      });
+      if (!res.ok) continue;
+      const parsed = parseTencentKlineBag(await res.json(), sym, period);
+      if (parsed?.points?.length) return parsed;
+    } catch {
+      /* next mirror */
+    }
+  }
+  return null;
 }
 
 async function fetchSinaKline(secid, klt, lmt) {
@@ -1931,7 +1957,7 @@ async function fetchSinaKline(secid, klt, lmt) {
   const url =
     `https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData` +
     `?symbol=${sym}&scale=240&ma=no&datalen=${lmt}`;
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
   if (!res.ok) return null;
   const rows = await res.json();
   if (!Array.isArray(rows) || !rows.length) return null;
@@ -1946,20 +1972,72 @@ async function fetchSinaKline(secid, klt, lmt) {
         low: row.low,
         volume: row.volume,
       })),
-    ),
+    ).filter((row) => row.date && row.close > 0),
   };
 }
 
-/** 日/周/月/年 K：klt 101/102/103/106。东财不通时改走腾讯，再 Yahoo / 新浪。 */
+/** 用日 K 拼周/月，东财和腾讯周月接口都挂时还能画图。 */
+function aggregateDailyKline(points, klt) {
+  if (klt !== 102 && klt !== 103) return [];
+  const rows = (points || []).filter((p) => p?.date && Number(p.close) > 0);
+  if (!rows.length) return [];
+  const groups = new Map();
+  for (const row of rows) {
+    const day = String(row.date).slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+    let key = day.slice(0, 7);
+    if (klt === 102) {
+      const [y, m, d] = day.split('-').map(Number);
+      const dt = new Date(Date.UTC(y, m - 1, d));
+      const wd = dt.getUTCDay(); // 0日 … 5五
+      const toFri = wd === 0 ? -2 : 5 - wd;
+      dt.setUTCDate(dt.getUTCDate() + toFri);
+      key = dt.toISOString().slice(0, 10);
+    }
+    const bag = groups.get(key) || {
+      date: key,
+      open: Number(row.open),
+      close: Number(row.close),
+      high: Number(row.high),
+      low: Number(row.low),
+      volume: 0,
+      amount: 0,
+    };
+    bag.high = Math.max(bag.high, Number(row.high) || bag.high);
+    bag.low = Math.min(bag.low, Number(row.low) || bag.low);
+    bag.close = Number(row.close);
+    bag.volume += Number(row.volume) || 0;
+    bag.amount += Number(row.amount) || 0;
+    bag.date = day; // 显示该段最后交易日
+    groups.set(key, bag);
+  }
+  return pointsFromOhlc([...groups.values()]);
+}
+
+async function fetchDailyThenAggregate(secid, klt, lmt) {
+  if (klt !== 102 && klt !== 103) return null;
+  const need = klt === 103 ? Math.max(lmt * 22, 260) : Math.max(lmt * 5, 120);
+  const day =
+    (await fetchTencentKline(secid, 101, need).catch(() => null)) ||
+    (await fetchEastKline(secid, 101, need).catch(() => null)) ||
+    (await fetchSinaKline(secid, 101, need).catch(() => null)) ||
+    (await fetchYahooKline(secid, 101, need).catch(() => null));
+  const points = aggregateDailyKline(day?.points || [], klt).slice(-lmt);
+  return points.length ? { name: day?.name || '', points } : null;
+}
+
+/** 日/周/月/年 K。闭盘也要能画：腾讯优先，东财其次，再 Yahoo / 新浪，周月可从日 K 合成。 */
 export async function fetchKline(secid, klt = 101, lmt = 80) {
-  const east = await fetchEastKline(secid, klt, lmt);
-  if (east?.points?.length) return east;
   const tx = await fetchTencentKline(secid, klt, lmt).catch(() => null);
   if (tx?.points?.length) return tx;
+  const east = await fetchEastKline(secid, klt, lmt).catch(() => null);
+  if (east?.points?.length) return east;
   const yahoo = await fetchYahooKline(secid, klt, lmt).catch(() => null);
   if (yahoo?.points?.length) return yahoo;
   const sina = await fetchSinaKline(secid, klt, lmt).catch(() => null);
   if (sina?.points?.length) return sina;
+  const built = await fetchDailyThenAggregate(secid, klt, lmt).catch(() => null);
+  if (built?.points?.length) return built;
   return { name: '', points: [] };
 }
 
@@ -2380,9 +2458,95 @@ async function fetchBillboardSeats(date, pages = 2) {
   return out;
 }
 
+function ashareSecid(code) {
+  const c = String(code || '').replace(/\D/g, '').slice(-6);
+  if (!/^\d{6}$/.test(c)) return '';
+  if (/^(92|8|4|0|1|2|3)/.test(c)) return `0.${c}`;
+  return `1.${c}`;
+}
+
+/**
+ * 今日涨跌旁边的「前一日」：K 线里今天这根之前的那一根。
+ * 今天的日 K 还没出来时，最后一根就是上一个已收盘交易日。
+ */
+export function previousSessionChange(points, todayYmd) {
+  const rows = [];
+  for (const point of points || []) {
+    const date = String(point?.date || '').slice(0, 10);
+    const close = Number(point?.close);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !(close > 0)) continue;
+    const given = Number(point?.changePct);
+    rows.push({ date, close, changePct: Number.isFinite(given) ? given : null });
+  }
+  if (!rows.length) return null;
+  const today = String(todayYmd || '').slice(0, 10);
+  let idx = rows.length - 1;
+  // 今天这根不能当成前一日。涨跌用前一根收盘算，避免接口把当天涨跌填进每一根。
+  if (today && rows[idx].date >= today) idx -= 1;
+  if (idx < 0) return null;
+  const row = rows[idx];
+  const base = idx > 0 ? rows[idx - 1].close : 0;
+  const fromClose = base > 0 ? ((row.close - base) / base) * 100 : null;
+  const changePct = Number.isFinite(fromClose) ? fromClose : row.changePct;
+  if (!Number.isFinite(changePct)) return null;
+  if (today && row.date >= today) return null;
+  return { date: row.date, changePct: +Number(changePct).toFixed(2) };
+}
+
+async function fetchRecentDayPoints(secid) {
+  try {
+    const tx = await fetchTencentKline(secid, 101, 6);
+    if ((tx?.points?.length || 0) >= 2) return tx.points;
+  } catch {
+    /* next */
+  }
+  try {
+    const sina = await fetchSinaKline(secid, 101, 6);
+    if ((sina?.points?.length || 0) >= 2) return sina.points;
+  } catch {
+    /* next */
+  }
+  try {
+    const east = await fetchEastKline(secid, 101, 6);
+    if ((east?.points?.length || 0) >= 2) return east.points;
+  } catch {
+    /* next */
+  }
+  return [];
+}
+
+/** code -> { date, changePct }。前一日涨跌，不是龙虎榜上榜当天的 CHANGE_RATE。 */
+export async function fetchPreviousSessionChanges(codes, todayYmd) {
+  const list = [
+    ...new Set(
+      (codes || [])
+        .map((code) => String(code || '').replace(/\D/g, '').slice(-6))
+        .filter((code) => /^\d{6}$/.test(code)),
+    ),
+  ];
+  const today =
+    todayYmd || new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
+  const map = {};
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < list.length) {
+      const code = list[cursor];
+      cursor += 1;
+      const secid = ashareSecid(code);
+      if (!secid) continue;
+      const prev = previousSessionChange(await fetchRecentDayPoints(secid), today);
+      if (prev) map[code] = prev;
+    }
+  };
+  const width = Math.min(6, list.length);
+  if (width > 0) await Promise.all(Array.from({ length: width }, () => worker()));
+  return map;
+}
+
 /**
  * 最近一个已披露交易日的龙虎榜个股（按净买入排序，代码去重）。
  * 附带席位买家标签（北向 / 机构 / 游资 / 营业部）。
+ * prevChangePct 是上一个交易日的涨跌，不是上榜当天（上榜日若是今天，会和今日涨跌重复）。
  */
 export async function fetchDailyBillboard(limit = 60) {
   for (const date of shTradeDates(8)) {
@@ -2423,14 +2587,20 @@ export async function fetchDailyBillboard(limit = 60) {
           buyerTags: tagsFromExplain(`${row.EXPLAIN || ''} ${row.EXPLANATION || ''}`),
         });
       }
-      const seats = await fetchBillboardSeats(date).catch(() => []);
+      const ranked = [...byCode.values()]
+        .sort((a, b) => Number(b.netYi) - Number(a.netYi))
+        .slice(0, limit);
+      const [seats, prevByCode] = await Promise.all([
+        fetchBillboardSeats(date).catch(() => []),
+        fetchPreviousSessionChanges(ranked.map((row) => row.code)).catch(() => ({})),
+      ]);
       const seatsByCode = new Map();
       for (const seat of seats) {
         const list = seatsByCode.get(seat.code) || [];
         list.push(seat);
         seatsByCode.set(seat.code, list);
       }
-      const mapped = [...byCode.values()]
+      const mapped = ranked
         .map((row) => {
           const list = (seatsByCode.get(row.code) || [])
             .filter((s) => Number(s.netYi) > 0)
@@ -2440,10 +2610,15 @@ export async function fetchDailyBillboard(limit = 60) {
             ...row.buyerTags,
             ...list.map((s) => s.tag),
           ]);
-          return { ...row, buyers: list, buyerTags: tags.length ? tags : ['营业部'] };
-        })
-        .sort((a, b) => Number(b.netYi) - Number(a.netYi))
-        .slice(0, limit);
+          const prev = prevByCode[row.code];
+          return {
+            ...row,
+            buyers: list,
+            buyerTags: tags.length ? tags : ['营业部'],
+            prevChangePct: prev ? prev.changePct : null,
+            prevDate: prev?.date || '',
+          };
+        });
       return { date, rows: mapped };
     } catch {
       /* try older day */
