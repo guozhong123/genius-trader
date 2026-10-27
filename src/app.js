@@ -527,7 +527,11 @@ function setView(view) {
   }
   if (state.view === 'etf') ensureHeatmap();
   syncMarketAiBtn();
-  requestAnimationFrame(() => resizeAllCharts());
+  requestAnimationFrame(() => {
+    // 切到资金页后再画一次。隐藏时初始化的折线尺寸是 0，只 resize 有时补不回来。
+    if (state.view === 'data') repaintDataCharts();
+    else resizeAllCharts();
+  });
   rememberPlace();
 }
 
@@ -1560,37 +1564,66 @@ function renderPredictCard() {
     <p class="mt-1 text-[11px] tabular-nums" style="color:var(--muted)">全天主力 ${esc(mainYi)} 亿 · 小单 ${esc(smallYi)} 亿${esc(recentBit)}</p>`;
 }
 
-async function loadDataCenter() {
-  try {
-    const settled = await Promise.allSettled([
-      fetchMarketMoneyFlow(),
-      fetchUpDownDistribution(),
-      fetchNorthbound(),
-      fetchMarketOverview(),
-    ]);
-    const pick = (i) => (settled[i].status === 'fulfilled' ? settled[i].value : null);
-    const flow = pick(0);
-    const updown = pick(1);
-    const northbound = pick(2);
-    const overview = pick(3);
-    // 成功才覆盖对应字段，避免单接口失败时把主力意图打回「暂无」
-    state.center = {
-      ...(state.center || {}),
-      ...(flow ? { flow } : {}),
-      ...(updown ? { updown } : {}),
-      ...(northbound ? { northbound } : {}),
-      ...(overview ? { overview } : {}),
-    };
+function repaintDataCharts() {
+  const axisOpts = { axisMode: chartAxisMode(), legendNames: flowLegendNames() };
+  if (state.center?.flow) renderFlowChart($('chart-market-flow'), state.center.flow, axisOpts);
+  if (state.center?.updown) renderUpDownChart($('chart-updown'), state.center.updown);
+  if (state.center?.northbound) renderNorthboundChart($('chart-northbound'), state.center.northbound);
+  if (state.boards?.length && els.chartBoards) renderBoardBarChart(els.chartBoards, state.boards);
+  resizeAllCharts();
+}
+
+let dataCenterTask = null;
+
+function loadDataCenter() {
+  if (dataCenterTask) return dataCenterTask;
+  dataCenterTask = loadDataCenterNow().finally(() => {
+    dataCenterTask = null;
+  });
+  return dataCenterTask;
+}
+
+async function loadDataCenterNow() {
+  const apply = (patch) => {
+    const entries = Object.entries(patch || {}).filter(([, v]) => v != null);
+    if (!entries.length) return;
+    state.center = { ...(state.center || {}), ...Object.fromEntries(entries) };
     renderFlowSummary();
-    const axisOpts = { axisMode: chartAxisMode(), legendNames: flowLegendNames() };
-    if (state.center.flow) renderFlowChart($('chart-market-flow'), state.center.flow, axisOpts);
-    if (state.center.updown) renderUpDownChart($('chart-updown'), state.center.updown);
-    if (state.center.northbound) renderNorthboundChart($('chart-northbound'), state.center.northbound);
     renderPredictCard();
     if (state.briefOpen && state.briefTab === 'insight') renderBriefBody();
-  } catch (e) {
-    console.error(e);
-  }
+  };
+  const axisOpts = () => ({ axisMode: chartAxisMode(), legendNames: flowLegendNames() });
+  // 谁先回来谁先画，主力折线不必等涨跌分布和北向
+  await Promise.allSettled([
+    fetchMarketMoneyFlow()
+      .then((flow) => {
+        if (!flow?.times?.length) return;
+        apply({ flow });
+        renderFlowChart($('chart-market-flow'), flow, axisOpts());
+        requestAnimationFrame(() => resizeAllCharts());
+      })
+      .catch((e) => console.error(e)),
+    fetchUpDownDistribution()
+      .then((updown) => {
+        if (!updown) return;
+        apply({ updown });
+        renderUpDownChart($('chart-updown'), updown);
+      })
+      .catch((e) => console.error(e)),
+    fetchNorthbound()
+      .then((northbound) => {
+        if (!northbound) return;
+        apply({ northbound });
+        renderNorthboundChart($('chart-northbound'), northbound);
+      })
+      .catch((e) => console.error(e)),
+    fetchMarketOverview()
+      .then((overview) => {
+        if (!overview) return;
+        apply({ overview });
+      })
+      .catch((e) => console.error(e)),
+  ]);
 }
 
 async function loadBoards() {
@@ -2973,13 +3006,67 @@ function syncPeriodTabs() {
   if (axisWrap) axisWrap.classList.toggle('hidden', foreign);
 }
 
+let detailChartGen = 0;
+
+function paintStockFlow(flow, axisMode) {
+  if (!els.chartStockFlow) return;
+  if (flow?.times?.length) {
+    const s = flow.summary || {};
+    if ($('detail-flow-tip')) $('detail-flow-tip').textContent = `主力 ${fmtYi(s.main)} 亿`;
+    if (els.detailFlowCards) {
+      els.detailFlowCards.innerHTML = [
+        ['主力', s.main],
+        ['超大', s.huge],
+        ['大单', s.large],
+        ['中单', s.mid],
+        ['小单', s.small],
+      ]
+        .map(
+          ([label, v]) => `<div class="rounded-md px-1 py-1 text-center ring-soft">
+            <div class="text-[9px]" style="color:var(--muted)">${label}</div>
+            <div class="text-[11px] font-semibold tabular-nums ${tone(v)}">${fmtYi(v)}</div>
+          </div>`,
+        )
+        .join('');
+    }
+    els.chartStockFlow.innerHTML = '';
+    renderFlowChart(els.chartStockFlow, flow, {
+      axisMode,
+      legendNames: flowLegendNames(),
+    });
+    return;
+  }
+  if (els.detailFlowCards) els.detailFlowCards.innerHTML = '';
+  els.chartStockFlow.innerHTML =
+    '<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">暂无资金流</div>';
+}
+
 async function refreshDetailCharts() {
   const item = state.detail;
   if (!item || item.kind === 'fund') return;
   const secid = item.secid || toSecid(item.market, item.code, item.marketNo);
+  const gen = ++detailChartGen;
+  const alive = () => gen === detailChartGen && state.detail === item;
+  const period = state.period;
+  const foreign = isForeignDetail(item);
+  const axisMode = foreign ? 'live' : chartAxisMode();
+  syncPeriodTabs();
+  // 主力资金和分时分开画，分时源慢的时候资金图不用干等
+  const flowTask = (async () => {
+    if (foreign) {
+      if (alive()) paintStockFlow(null, axisMode);
+      return;
+    }
+    try {
+      const flow = await fetchStockMoneyFlow(secid);
+      if (!alive()) return;
+      paintStockFlow(flow, axisMode);
+      requestAnimationFrame(() => resizeAllCharts());
+    } catch (e) {
+      console.error(e);
+    }
+  })();
   try {
-    const period = state.period;
-    const foreign = isForeignDetail(item);
     // A 股五日：近 5 根日 K；海外五日：优先 5 日分钟分时（与日K区分开）
     const minute = period === 'intraday' || (foreign && period === 'fiveday');
     const kltMap = { fiveday: 101, day: 101, week: 102, month: 103 };
@@ -2995,19 +3082,19 @@ async function refreshDetailCharts() {
       }
       return intra;
     };
-    const [mainRes, flowRes] = await Promise.allSettled([
-      mainFetch(),
-      foreign ? Promise.resolve(null) : fetchStockMoneyFlow(secid),
-    ]);
-    let mainData = mainRes.status === 'fulfilled' ? mainRes.value : null;
-    const flow = flowRes.status === 'fulfilled' ? flowRes.value : null;
-    if (mainRes.status === 'rejected') console.error(mainRes.reason);
-    if (flowRes.status === 'rejected') console.error(flowRes.reason);
+    let mainData = null;
+    try {
+      mainData = await mainFetch();
+    } catch (e) {
+      console.error(e);
+    }
+    if (!alive()) {
+      await flowTask;
+      return;
+    }
     const useMinute =
       minute && mainData?._chart !== 'kline' && Array.isArray(mainData?.points) && mainData.points[0]?.price != null;
 
-    const axisMode = foreign ? 'live' : chartAxisMode();
-    syncPeriodTabs();
     const prices = mainData?.points?.map((p) => p.price ?? p.high) || [];
     const intraHi = prices.reduce((m, v) => (Number(v) > m ? Number(v) : m), -Infinity);
     const intraLo = prices.reduce((m, v) => (Number(v) > 0 && Number(v) < m ? Number(v) : m), Infinity);
@@ -3029,6 +3116,10 @@ async function refreshDetailCharts() {
     // 清空占位后再渲染，保证容器已有尺寸
     els.chartMain.innerHTML = '';
     await waitFrames(1);
+    if (!alive()) {
+      await flowTask;
+      return;
+    }
 
     if (useMinute) {
       const intra = mainData;
@@ -3080,40 +3171,15 @@ async function refreshDetailCharts() {
         `<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">${period === 'fiveday' ? '暂无五日K线' : '暂无K线'}</div>`;
     }
 
-    els.chartStockFlow.innerHTML = '';
-    await waitFrames(1);
-    if (flow?.times?.length) {
-      const s = flow.summary;
-      $('detail-flow-tip').textContent = `主力 ${fmtYi(s.main)} 亿`;
-      els.detailFlowCards.innerHTML = [
-        ['主力', s.main],
-        ['超大', s.huge],
-        ['大单', s.large],
-        ['中单', s.mid],
-        ['小单', s.small],
-      ]
-        .map(
-          ([label, v]) => `<div class="rounded-md px-1 py-1 text-center ring-soft">
-            <div class="text-[9px]" style="color:var(--muted)">${label}</div>
-            <div class="text-[11px] font-semibold tabular-nums ${tone(v)}">${fmtYi(v)}</div>
-          </div>`,
-        )
-        .join('');
-      renderFlowChart(els.chartStockFlow, flow, {
-        axisMode,
-        legendNames: flowLegendNames(),
-      });
-    } else {
-      els.detailFlowCards.innerHTML = '';
-      els.chartStockFlow.innerHTML =
-        '<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">暂无资金流</div>';
-    }
     resizeAllCharts();
   } catch (e) {
     console.error(e);
-    els.chartMain.innerHTML =
-      '<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">加载失败，请重试</div>';
+    if (alive()) {
+      els.chartMain.innerHTML =
+        '<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">加载失败，请重试</div>';
+    }
   }
+  await flowTask;
 }
 
 /** 上证 / 韩国急涨急跌：短时涨跌幅突变时 toast + 简讯 */
@@ -3175,7 +3241,27 @@ function pushSpikeAlert(alert) {
 }
 
 async function refreshIndices() {
-  state.indices = await fetchIndices(state.settings.indices || []);
+  let next = [];
+  try {
+    next = await fetchIndices(state.settings.indices || []);
+  } catch (e) {
+    console.error(e);
+    return;
+  }
+  const prevBy = new Map((state.indices || []).map((row) => [row.secid, row]));
+  state.indices = next.map((row) => {
+    if (Number(row?.price) > 0) return row;
+    const prev = prevBy.get(row.secid);
+    if (!(Number(prev?.price) > 0)) return row;
+    return {
+      ...row,
+      name: row.name || prev.name,
+      price: prev.price,
+      changePct: Number.isFinite(Number(row.changePct)) ? row.changePct : prev.changePct,
+      change: row.change ?? prev.change,
+      prevClose: row.prevClose ?? prev.prevClose,
+    };
+  });
   for (const row of state.indices || []) {
     pushSpikeAlert(noteIndexSpike(row));
   }
@@ -4001,12 +4087,12 @@ async function refreshAll() {
   renderStatus();
   els.refreshBtn.classList.add('animate-spin');
   try {
-    const tasks = [refreshIndices(), refreshQuotes(), loadTrendSheet()];
+    // 盘况要拉很多日K，不挡指数、自选和资金图
+    const tasks = [refreshIndices(), refreshQuotes()];
     if (state.view === 'pulse') tasks.push(refreshPulse());
+    if (state.view === 'data') tasks.push(loadDataCenter(), loadBoards(), loadRank());
     await Promise.all(tasks);
-    if (state.view === 'data') {
-      await Promise.all([loadDataCenter(), loadBoards(), loadRank()]);
-    }
+    void loadTrendSheet();
     if (state.detail && state.period !== 'week' && state.period !== 'month') {
       if (state.detail.kind === 'fund') await openDetail(state.detail);
       else await refreshDetailCharts();
