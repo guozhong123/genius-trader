@@ -1560,37 +1560,63 @@ function renderPredictCard() {
     <p class="mt-1 text-[11px] tabular-nums" style="color:var(--muted)">全天主力 ${esc(mainYi)} 亿 · 小单 ${esc(smallYi)} 亿${esc(recentBit)}</p>`;
 }
 
-async function loadDataCenter() {
-  try {
-    const settled = await Promise.allSettled([
-      fetchMarketMoneyFlow(),
-      fetchUpDownDistribution(),
-      fetchNorthbound(),
-      fetchMarketOverview(),
-    ]);
-    const pick = (i) => (settled[i].status === 'fulfilled' ? settled[i].value : null);
-    const flow = pick(0);
-    const updown = pick(1);
-    const northbound = pick(2);
-    const overview = pick(3);
-    // 成功才覆盖对应字段，避免单接口失败时把主力意图打回「暂无」
-    state.center = {
-      ...(state.center || {}),
-      ...(flow ? { flow } : {}),
-      ...(updown ? { updown } : {}),
-      ...(northbound ? { northbound } : {}),
-      ...(overview ? { overview } : {}),
-    };
-    renderFlowSummary();
-    const axisOpts = { axisMode: chartAxisMode(), legendNames: flowLegendNames() };
-    if (state.center.flow) renderFlowChart($('chart-market-flow'), state.center.flow, axisOpts);
-    if (state.center.updown) renderUpDownChart($('chart-updown'), state.center.updown);
-    if (state.center.northbound) renderNorthboundChart($('chart-northbound'), state.center.northbound);
-    renderPredictCard();
-    if (state.briefOpen && state.briefTab === 'insight') renderBriefBody();
-  } catch (e) {
-    console.error(e);
+function paintDataCenter() {
+  renderFlowSummary();
+  const axisOpts = { axisMode: chartAxisMode(), legendNames: flowLegendNames() };
+  if (state.center?.flow) renderFlowChart($('chart-market-flow'), state.center.flow, axisOpts);
+  if (state.center?.updown) renderUpDownChart($('chart-updown'), state.center.updown);
+  if (state.center?.northbound) renderNorthboundChart($('chart-northbound'), state.center.northbound);
+  renderPredictCard();
+  if (state.briefOpen && state.briefTab === 'insight') renderBriefBody();
+}
+
+function flowChartNeedsPaint() {
+  const el = $('chart-market-flow');
+  if (!el || el.clientWidth < 8) return false;
+  const canvas = el.querySelector('canvas');
+  return !canvas || (canvas.width || 0) < 20;
+}
+
+let dataCenterInflight = null;
+let dataCenterAt = 0;
+
+async function loadDataCenter({ force = false } = {}) {
+  if (dataCenterInflight && !force) return dataCenterInflight;
+  if (!force && state.center?.flow && Date.now() - dataCenterAt < 30_000) {
+    if (flowChartNeedsPaint()) paintDataCenter();
+    return;
   }
+  if (state.center?.flow && flowChartNeedsPaint()) paintDataCenter();
+  const run = (async () => {
+    try {
+      const apply = (patch) => {
+        state.center = { ...(state.center || {}), ...patch };
+        paintDataCenter();
+      };
+      dataCenterAt = Date.now();
+      await Promise.allSettled([
+        fetchMarketMoneyFlow({ force }).then((flow) => {
+          if (!flow) return;
+          if (force || flow !== state.center?.flow || flowChartNeedsPaint()) apply({ flow });
+        }),
+        fetchUpDownDistribution().then((updown) => {
+          if (updown && (force || updown !== state.center?.updown)) apply({ updown });
+        }),
+        fetchNorthbound().then((northbound) => {
+          if (northbound && (force || northbound !== state.center?.northbound)) apply({ northbound });
+        }),
+        fetchMarketOverview().then((overview) => {
+          if (overview) apply({ overview });
+        }),
+      ]);
+    } catch (e) {
+      console.error(e);
+    }
+  })();
+  dataCenterInflight = run.finally(() => {
+    if (dataCenterInflight === run) dataCenterInflight = null;
+  });
+  return dataCenterInflight;
 }
 
 async function loadBoards() {
@@ -3804,12 +3830,9 @@ async function loadTrendSheet(force = false) {
     }
     const codeList = [...codes.keys()].slice(0, 16);
     const klines = new Map();
-    const bars = await mapPool(codeList, 2, async (code) => {
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        const data = await fetchKline(`90.${code}`, 101, 6).catch(() => null);
-        if (data?.points?.length) return [code, data.points];
-        await new Promise((resolve) => setTimeout(resolve, 350));
-      }
+    const bars = await mapPool(codeList, 6, async (code) => {
+      const data = await fetchKline(`90.${code}`, 101, 6).catch(() => null);
+      if (data?.points?.length) return [code, data.points];
       return [code, []];
     });
     for (const pair of bars) {
@@ -3996,7 +4019,7 @@ function renderEventPanel() {
   });
 }
 
-async function refreshAll() {
+async function refreshAll({ force = false } = {}) {
   state.loading = true;
   renderStatus();
   els.refreshBtn.classList.add('animate-spin');
@@ -4005,7 +4028,12 @@ async function refreshAll() {
     if (state.view === 'pulse') tasks.push(refreshPulse());
     await Promise.all(tasks);
     if (state.view === 'data') {
-      await Promise.all([loadDataCenter(), loadBoards(), loadRank()]);
+      // 资金分钟线走缓存；板块/涨跌榜只在进页或手动刷新时打
+      void loadDataCenter({ force });
+      if (force) {
+        void loadBoards();
+        void loadRank();
+      }
     }
     if (state.detail && state.period !== 'week' && state.period !== 'month') {
       if (state.detail.kind === 'fund') await openDetail(state.detail);
@@ -4654,7 +4682,7 @@ els.funNamesBtn?.addEventListener('click', async () => {
     els.funNamesBtn.classList.toggle('bg-accent', next);
     els.funNamesBtn.classList.toggle('text-white', next);
   }
-  if (state.view === 'data') await loadDataCenter();
+  if (state.view === 'data') paintDataCenter();
   if (state.detail?.kind === 'stock') await refreshDetailCharts();
 });
 
@@ -4662,7 +4690,7 @@ document.querySelectorAll('.axis-mode-btn').forEach((btn) => {
   btn.addEventListener('click', async () => {
     state.settings = await saveSettings({ chartAxisMode: btn.dataset.axisMode || 'full' });
     syncAxisModeButtons();
-    if (state.view === 'data') await loadDataCenter();
+    if (state.view === 'data') paintDataCenter();
     if (state.detail?.kind === 'stock') await refreshDetailCharts();
   });
 });
@@ -4671,7 +4699,7 @@ document.querySelectorAll('.detail-axis-btn').forEach((btn) => {
   btn.addEventListener('click', async () => {
     state.settings = await saveSettings({ chartAxisMode: btn.dataset.detailAxis || 'full' });
     syncAxisModeButtons();
-    if (state.view === 'data') await loadDataCenter();
+    if (state.view === 'data') paintDataCenter();
     if (state.detail?.kind === 'stock') await refreshDetailCharts();
   });
 });
@@ -4770,7 +4798,7 @@ document.addEventListener('click', (e) => {
 
 els.refreshBtn.addEventListener('click', () => {
   state.trendAt = 0;
-  refreshAll();
+  refreshAll({ force: true });
 });
 $('detail-close').addEventListener('click', closeDetail);
 els.detailMask.addEventListener('click', closeDetail);
