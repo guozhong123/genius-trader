@@ -513,6 +513,7 @@ function setView(view) {
     tab.style.color = on ? '#fff' : 'var(--muted)';
   });
   if (state.view === 'data') {
+    paintDataCenter();
     loadDataCenter();
     loadBoards();
     loadRank();
@@ -1560,37 +1561,48 @@ function renderPredictCard() {
     <p class="mt-1 text-[11px] tabular-nums" style="color:var(--muted)">全天主力 ${esc(mainYi)} 亿 · 小单 ${esc(smallYi)} 亿${esc(recentBit)}</p>`;
 }
 
+function paintDataCenter() {
+  renderFlowSummary();
+  const axisOpts = { axisMode: chartAxisMode(), legendNames: flowLegendNames() };
+  if (state.center?.flow) renderFlowChart($('chart-market-flow'), state.center.flow, axisOpts);
+  if (state.center?.updown) renderUpDownChart($('chart-updown'), state.center.updown);
+  if (state.center?.northbound) renderNorthboundChart($('chart-northbound'), state.center.northbound);
+  renderPredictCard();
+  if (state.briefOpen && state.briefTab === 'insight') renderBriefBody();
+}
+
+let dataCenterInflight = null;
+
 async function loadDataCenter() {
-  try {
-    const settled = await Promise.allSettled([
-      fetchMarketMoneyFlow(),
-      fetchUpDownDistribution(),
-      fetchNorthbound(),
-      fetchMarketOverview(),
-    ]);
-    const pick = (i) => (settled[i].status === 'fulfilled' ? settled[i].value : null);
-    const flow = pick(0);
-    const updown = pick(1);
-    const northbound = pick(2);
-    const overview = pick(3);
-    // 成功才覆盖对应字段，避免单接口失败时把主力意图打回「暂无」
-    state.center = {
-      ...(state.center || {}),
-      ...(flow ? { flow } : {}),
-      ...(updown ? { updown } : {}),
-      ...(northbound ? { northbound } : {}),
-      ...(overview ? { overview } : {}),
-    };
-    renderFlowSummary();
-    const axisOpts = { axisMode: chartAxisMode(), legendNames: flowLegendNames() };
-    if (state.center.flow) renderFlowChart($('chart-market-flow'), state.center.flow, axisOpts);
-    if (state.center.updown) renderUpDownChart($('chart-updown'), state.center.updown);
-    if (state.center.northbound) renderNorthboundChart($('chart-northbound'), state.center.northbound);
-    renderPredictCard();
-    if (state.briefOpen && state.briefTab === 'insight') renderBriefBody();
-  } catch (e) {
-    console.error(e);
-  }
+  if (dataCenterInflight) return dataCenterInflight;
+  dataCenterInflight = (async () => {
+    try {
+      paintDataCenter();
+      const apply = (patch) => {
+        state.center = { ...(state.center || {}), ...patch };
+        paintDataCenter();
+      };
+      await Promise.allSettled([
+        fetchMarketMoneyFlow().then((flow) => {
+          if (flow) apply({ flow });
+        }),
+        fetchUpDownDistribution().then((updown) => {
+          if (updown) apply({ updown });
+        }),
+        fetchNorthbound().then((northbound) => {
+          if (northbound) apply({ northbound });
+        }),
+        fetchMarketOverview().then((overview) => {
+          if (overview) apply({ overview });
+        }),
+      ]);
+    } catch (e) {
+      console.error(e);
+    }
+  })().finally(() => {
+    dataCenterInflight = null;
+  });
+  return dataCenterInflight;
 }
 
 async function loadBoards() {
@@ -1716,11 +1728,13 @@ async function loadPredictFlow() {
     if (flow?.times?.length || forecast.length) {
       renderPredictFlowChart(el, { times: flow?.times || [], main: flow?.main || [] }, forecast);
     } else {
+      disposeChart(el);
       el.innerHTML =
         '<div class="flex h-full items-center justify-center text-[12px]" style="color:var(--muted)">暂无主力资金。点「AI 预测」可生成推演折线。</div>';
     }
   } catch (e) {
     console.error(e);
+    disposeChart(el);
     el.innerHTML =
       '<div class="flex h-full items-center justify-center text-[12px]" style="color:var(--muted)">主力资金加载失败</div>';
   }
@@ -2917,6 +2931,8 @@ async function openDetail(item) {
 
   els.fundStats.classList.add('hidden');
   els.stockChartWrap.classList.remove('hidden');
+  disposeChart(els.chartMain);
+  disposeChart(els.chartStockFlow);
   els.chartMain.innerHTML =
     '<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">加载中…</div>';
   els.chartStockFlow.innerHTML =
@@ -3026,10 +3042,6 @@ async function refreshDetailCharts() {
       supportName: useMinute ? `最低涨幅 ${pctOf(intraLo)}` : '支撑',
     });
 
-    // 清空占位后再渲染，保证容器已有尺寸
-    els.chartMain.innerHTML = '';
-    await waitFrames(1);
-
     if (useMinute) {
       const intra = mainData;
       if (intra?.points?.length) {
@@ -3056,6 +3068,7 @@ async function refreshDetailCharts() {
           $('detail-price').className = `text-lg font-semibold tabular-nums ${tone(pct)}`;
         }
       } else {
+        disposeChart(els.chartMain);
         els.chartMain.innerHTML =
           `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>暂无分时（闭盘也会显示当日走势）</span><span class="text-[11px]">可切换日K，或稍后重试</span></div>`;
       }
@@ -3076,12 +3089,11 @@ async function refreshDetailCharts() {
         }
       }
     } else {
+      disposeChart(els.chartMain);
       els.chartMain.innerHTML =
         `<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">${period === 'fiveday' ? '暂无五日K线' : '暂无K线'}</div>`;
     }
 
-    els.chartStockFlow.innerHTML = '';
-    await waitFrames(1);
     if (flow?.times?.length) {
       const s = flow.summary;
       $('detail-flow-tip').textContent = `主力 ${fmtYi(s.main)} 亿`;
@@ -3105,12 +3117,14 @@ async function refreshDetailCharts() {
       });
     } else {
       els.detailFlowCards.innerHTML = '';
+      disposeChart(els.chartStockFlow);
       els.chartStockFlow.innerHTML =
         '<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">暂无资金流</div>';
     }
     resizeAllCharts();
   } catch (e) {
     console.error(e);
+    disposeChart(els.chartMain);
     els.chartMain.innerHTML =
       '<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">加载失败，请重试</div>';
   }
@@ -4654,7 +4668,10 @@ els.funNamesBtn?.addEventListener('click', async () => {
     els.funNamesBtn.classList.toggle('bg-accent', next);
     els.funNamesBtn.classList.toggle('text-white', next);
   }
-  if (state.view === 'data') await loadDataCenter();
+  if (state.view === 'data') {
+    paintDataCenter();
+    await loadDataCenter();
+  }
   if (state.detail?.kind === 'stock') await refreshDetailCharts();
 });
 
@@ -4662,7 +4679,7 @@ document.querySelectorAll('.axis-mode-btn').forEach((btn) => {
   btn.addEventListener('click', async () => {
     state.settings = await saveSettings({ chartAxisMode: btn.dataset.axisMode || 'full' });
     syncAxisModeButtons();
-    if (state.view === 'data') await loadDataCenter();
+    if (state.view === 'data') paintDataCenter();
     if (state.detail?.kind === 'stock') await refreshDetailCharts();
   });
 });
@@ -4671,7 +4688,7 @@ document.querySelectorAll('.detail-axis-btn').forEach((btn) => {
   btn.addEventListener('click', async () => {
     state.settings = await saveSettings({ chartAxisMode: btn.dataset.detailAxis || 'full' });
     syncAxisModeButtons();
-    if (state.view === 'data') await loadDataCenter();
+    if (state.view === 'data') paintDataCenter();
     if (state.detail?.kind === 'stock') await refreshDetailCharts();
   });
 });

@@ -21,6 +21,41 @@ const MARKET_BY_CODE = {
   177: 'KR',
 };
 
+/** 并行跑多个请求，谁先给出非空结果用谁。避免东财主备域名串行等到超时。 */
+export async function raceFirst(factories) {
+  if (!factories.length) return null;
+  return new Promise((resolve) => {
+    let left = factories.length;
+    let settled = false;
+    for (const factory of factories) {
+      Promise.resolve()
+        .then(factory)
+        .then((value) => {
+          if (!settled && value != null) {
+            settled = true;
+            resolve(value);
+            return;
+          }
+          left -= 1;
+          if (!settled && left <= 0) resolve(null);
+        })
+        .catch(() => {
+          left -= 1;
+          if (!settled && left <= 0) resolve(null);
+        });
+    }
+  });
+}
+
+async function fetchJson(url, timeout = 4500) {
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(timeout),
+    cache: 'no-store',
+  });
+  if (!res.ok) throw new Error(`http ${res.status}`);
+  return res.json();
+}
+
 /** 腾讯行情多为 GBK；按 UTF-8 读会乱码 */
 async function fetchTextGbk(url) {
   const res = await fetch(url);
@@ -1147,28 +1182,37 @@ export async function fetchIntraday(secid, ndays = 1) {
       ? ['https://push2his.eastmoney.com', 'https://push2.eastmoney.com']
       : ['https://push2.eastmoney.com', 'https://push2his.eastmoney.com'];
 
-  let best = null;
-  for (const host of hosts) {
-    try {
-      const res = await fetch(`${host}/api/qt/stock/trends2/get?${q}`, {
-        signal: AbortSignal.timeout(8000),
-      });
-      if (!res.ok) continue;
-      const json = await res.json();
-      const parsed = parseTrendsPayload(json?.data, days);
-      if (!parsed?.points?.length) continue;
-      if (days <= 1) return parsed;
-      const daySet = new Set(
-        parsed.points.map((p) => String(p.time || '').slice(0, 5)).filter(Boolean),
-      );
-      // 至少 2 个交易日才算真正的五日；否则继续试下一个源
-      if (daySet.size >= 2 || parsed.points.length > 300) return parsed;
-      if (!best || parsed.points.length > best.points.length) best = parsed;
-    } catch {
-      /* try next */
+  const tryHost = async (host) => {
+    const json = await fetchJson(`${host}/api/qt/stock/trends2/get?${q}`);
+    return parseTrendsPayload(json?.data, days);
+  };
+  const isQualityFiveDay = (parsed) => {
+    if (!parsed?.points?.length) return false;
+    const daySet = new Set(
+      parsed.points.map((p) => String(p.time || '').slice(0, 5)).filter(Boolean),
+    );
+    return daySet.size >= 2 || parsed.points.length > 300;
+  };
+
+  if (days <= 1) {
+    const parsed = await raceFirst(
+      hosts.map((host) => async () => {
+        const p = await tryHost(host);
+        return p?.points?.length ? p : null;
+      }),
+    );
+    if (parsed) return parsed;
+  } else {
+    const settled = await Promise.allSettled(hosts.map((host) => tryHost(host)));
+    let best = null;
+    for (const s of settled) {
+      const p = s.status === 'fulfilled' ? s.value : null;
+      if (!p?.points?.length) continue;
+      if (isQualityFiveDay(p)) return p;
+      if (!best || p.points.length > best.points.length) best = p;
     }
+    if (best?.points?.length) return best;
   }
-  if (best?.points?.length) return best;
 
   if (days <= 1) {
     const tx = await fetchTencentUsMinute(secid).catch(() => null);
@@ -1179,7 +1223,7 @@ export async function fetchIntraday(secid, ndays = 1) {
     range: days > 1 ? '5d' : '1d',
   }).catch(() => null);
   if (yahoo?.points?.length) return yahoo;
-  return best;
+  return null;
 }
 
 function flowClockMinutes(label) {
@@ -1198,7 +1242,7 @@ function isAshareSessionMinute(label) {
   return (mins >= 9 * 60 + 30 && mins <= 11 * 60 + 30) || (mins >= 13 * 60 && mins <= 15 * 60);
 }
 
-function parseFlowKlines(klines) {
+export function parseFlowKlines(klines) {
   const yi = 1e8;
   const times = [];
   const main = [];
@@ -1250,31 +1294,39 @@ function parseFlowKlines(klines) {
   };
 }
 
+const MARKET_FLOW_TTL_MS = 8000;
+let marketFlowCache = { at: 0, data: null };
+let marketFlowInflight = null;
+
 /** 沪深大盘主力资金分时 */
 export async function fetchMarketMoneyFlow() {
-  const bust = `_=${Date.now()}`;
-  const q =
-    'lmt=0&klt=1&secid=1.000001&secid2=0.399001' +
-    '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63';
-  const urls = [
-    `https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?${q}&${bust}`,
-    `https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get?${q}&${bust}`,
-  ];
-  for (const url of urls) {
-    try {
-      const res = await fetch(url, {
-        signal: AbortSignal.timeout(7000),
-        cache: 'no-store',
-      });
-      if (!res.ok) continue;
-      const json = await res.json();
-      const parsed = parseFlowKlines(json?.data?.klines);
-      if (parsed?.times?.length) return parsed;
-    } catch {
-      /* next host */
-    }
+  const now = Date.now();
+  if (marketFlowCache.data?.times?.length && now - marketFlowCache.at < MARKET_FLOW_TTL_MS) {
+    return marketFlowCache.data;
   }
-  return null;
+  if (marketFlowInflight) return marketFlowInflight;
+  marketFlowInflight = (async () => {
+    const bust = `_=${Date.now()}`;
+    const q =
+      'lmt=0&klt=1&secid=1.000001&secid2=0.399001' +
+      '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63';
+    const urls = [
+      `https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?${q}&${bust}`,
+      `https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get?${q}&${bust}`,
+    ];
+    const parsed = await raceFirst(
+      urls.map((url) => async () => {
+        const json = await fetchJson(url);
+        const data = parseFlowKlines(json?.data?.klines);
+        return data?.times?.length ? data : null;
+      }),
+    );
+    if (parsed?.times?.length) marketFlowCache = { at: Date.now(), data: parsed };
+    return parsed;
+  })().finally(() => {
+    marketFlowInflight = null;
+  });
+  return marketFlowInflight;
 }
 
 /**
@@ -1513,26 +1565,21 @@ export async function fetchStockMoneyFlow(secid) {
     `https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?${q}`,
     `https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get?${q}`,
   ];
-  for (const url of urls) {
-    try {
-      const res = await fetch(url);
-      if (!res.ok) continue;
-      const json = await res.json();
-      const parsed = parseFlowKlines(json?.data?.klines);
-      if (parsed?.times?.length) return parsed;
-    } catch {
-      /* try next */
-    }
-  }
-  return parseFlowKlines([]);
+  const parsed = await raceFirst(
+    urls.map((url) => async () => {
+      const json = await fetchJson(url);
+      const data = parseFlowKlines(json?.data?.klines);
+      return data?.times?.length ? data : null;
+    }),
+  );
+  return parsed || parseFlowKlines([]);
 }
 
 /** 涨跌家数分布 */
 export async function fetchUpDownDistribution() {
   const url =
     'https://push2ex.eastmoney.com/getTopicZDFenBu?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt';
-  const res = await fetch(url);
-  const json = await res.json();
+  const json = await fetchJson(url);
   const fenbu = json?.data?.fenbu || [];
   const map = {};
   for (const obj of fenbu) {
@@ -1565,8 +1612,7 @@ export async function fetchUpDownDistribution() {
 export async function fetchNorthbound() {
   const url =
     'https://push2.eastmoney.com/api/qt/kamt.rtmin/get?fields1=f1,f2,f3,f4&fields2=f51,f52,f53,f54,f55,f56';
-  const res = await fetch(url);
-  const json = await res.json();
+  const json = await fetchJson(url);
   const s2n = json?.data?.s2n || [];
   const times = [];
   const net = [];
@@ -2006,9 +2052,7 @@ async function fetchEastBoards(type) {
     `https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=80&po=1&np=1` +
     `&ut=bd1d9ddb04089700cf9c27f6f7426281&fltt=2&invt=2&fid=f3&fs=${fs}` +
     `&fields=f12,f14,f2,f3,f62,f66,f184`;
-  const res = await fetch(url);
-  if (!res.ok) return [];
-  const json = await res.json();
+  const json = await fetchJson(url);
   return mapBoardRows(json?.data?.diff || []);
 }
 

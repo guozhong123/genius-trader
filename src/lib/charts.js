@@ -35,8 +35,24 @@ export function disposeChart(el) {
 }
 
 function getChart(el) {
-  disposeChart(el);
+  const existing = charts.get(el);
+  if (existing && typeof existing.isDisposed === 'function' && !existing.isDisposed()) return existing;
+  if (existing) {
+    try {
+      existing.dispose();
+    } catch {
+      /* already gone */
+    }
+    charts.delete(el);
+  }
+  // 占位文案会挡住 canvas，只在尚未初始化时清掉
+  if (el && !el.querySelector('canvas')) el.innerHTML = '';
   const chart = echarts.init(el, null, { renderer: 'canvas' });
+  const rawSet = chart.setOption.bind(chart);
+  chart.setOption = (option, opts) => {
+    if (opts === true || opts === false) return rawSet(option, opts);
+    return rawSet(option, { notMerge: true, ...opts });
+  };
   charts.set(el, chart);
   return chart;
 }
