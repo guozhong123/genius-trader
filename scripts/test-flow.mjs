@@ -1,30 +1,17 @@
 /**
- * 资金折线加载：竞速/解析单测 + 东财接口耗时对照。
+ * 资金折线：稳定源优先 + 解析单测 + 东财接口耗时对照。
  * 运行：node scripts/test-flow.mjs
  */
-function raceFirst(factories) {
-  if (!factories.length) return Promise.resolve(null);
-  return new Promise((resolve) => {
-    let left = factories.length;
-    let settled = false;
-    for (const factory of factories) {
-      Promise.resolve()
-        .then(factory)
-        .then((value) => {
-          if (!settled && value != null) {
-            settled = true;
-            resolve(value);
-            return;
-          }
-          left -= 1;
-          if (!settled && left <= 0) resolve(null);
-        })
-        .catch(() => {
-          left -= 1;
-          if (!settled && left <= 0) resolve(null);
-        });
+async function firstOk(factories) {
+  for (const factory of factories) {
+    try {
+      const value = await factory();
+      if (value != null) return value;
+    } catch {
+      /* next */
     }
-  });
+  }
+  return null;
 }
 
 function flowClockMinutes(label) {
@@ -48,7 +35,8 @@ function parseFlowKlines(klines) {
   const main = [];
   const small = [];
   let date = '';
-  for (const line of klines || []) {
+  const rows = Array.isArray(klines) ? klines : [];
+  for (const line of rows) {
     const p = String(line).split(',');
     const raw = p[0] || '';
     if (!date) date = raw.split(' ')[0] || '';
@@ -67,20 +55,31 @@ function assert(cond, msg) {
   if (!cond) throw new Error(msg);
 }
 
-async function testRaceFirst() {
-  const t0 = Date.now();
-  const won = await raceFirst([
-    () => new Promise((_, reject) => setTimeout(() => reject(new Error('slow fail')), 80)),
-    () => new Promise((resolve) => setTimeout(() => resolve({ ok: 1 }), 15)),
-    () => new Promise((resolve) => setTimeout(() => resolve({ ok: 2 }), 60)),
+async function testFirstOk() {
+  const order = [];
+  const won = await firstOk([
+    async () => {
+      order.push('fail');
+      throw new Error('unstable');
+    },
+    async () => {
+      order.push('empty');
+      return null;
+    },
+    async () => {
+      order.push('ok');
+      return { host: 'his' };
+    },
+    async () => {
+      order.push('skip');
+      return { host: 'never' };
+    },
   ]);
-  const elapsed = Date.now() - t0;
-  assert(won?.ok === 1, `raceFirst should take first non-null, got ${JSON.stringify(won)}`);
-  assert(elapsed < 50, `raceFirst should finish near the winner, took ${elapsed}ms`);
-
-  const empty = await raceFirst([() => Promise.resolve(null), () => Promise.reject(new Error('x'))]);
-  assert(empty == null, 'raceFirst all-empty should be null');
-  console.log('ok  raceFirst');
+  assert(won?.host === 'his', `firstOk should take first non-null, got ${JSON.stringify(won)}`);
+  assert(order.join(',') === 'fail,empty,ok', `stable-then-fallback order ${order}`);
+  const empty = await firstOk([() => Promise.resolve(null), () => Promise.reject(new Error('x'))]);
+  assert(empty == null, 'firstOk all-empty should be null');
+  console.log('ok  firstOk stable-then-fallback');
 }
 
 function testParseFlow() {
@@ -94,7 +93,7 @@ function testParseFlow() {
   assert(parsed.date === '2026-10-27', `date ${parsed.date}`);
   assert(parsed.times.join(',') === '09:31,13:01', `times ${parsed.times}`);
   assert(parsed.main[0] === 2 && parsed.main[1] === 2.5, `main ${parsed.main}`);
-  assert(parsed.times.length === 2, 'lunch / auction / after-hours dropped');
+  assert(parseFlowKlines('not-array').times.length === 0, 'non-array klines ignored');
   console.log('ok  parseFlowKlines filters session minutes');
 }
 
@@ -117,37 +116,25 @@ async function timeLiveApis() {
   const a = `https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?${q}&_=${Date.now()}`;
   const b = `https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get?${q}&_=${Date.now()}`;
 
-  const seqStart = Date.now();
-  const seqA = await timeUrl(a);
-  const seqB = seqA.ok && seqA.n ? seqA : await timeUrl(b);
-  const seqMs = Date.now() - seqStart;
-
-  const raceStart = Date.now();
-  const raced = await raceFirst([
+  const seq = await firstOk([
     async () => {
       const r = await timeUrl(a);
-      return r.ok && r.n ? r : null;
+      return r.ok && r.n ? { host: 'push2', ...r } : null;
     },
     async () => {
       const r = await timeUrl(b);
-      return r.ok && r.n ? r : null;
+      return r.ok && r.n ? { host: 'push2his', ...r } : null;
     },
   ]);
-  const raceMs = Date.now() - raceStart;
-
-  console.log(`live sequential ${seqMs}ms  first=${JSON.stringify(seqA)} used=${JSON.stringify(seqB)}`);
-  console.log(`live race       ${raceMs}ms  won=${JSON.stringify(raced)}`);
-  if (raced && raceMs > seqMs + 200) {
-    console.warn('warn race slower than sequential in this environment (variance ok)');
-  }
+  console.log(`live firstOk ${JSON.stringify(seq)}`);
 }
 
 const failed = [];
 try {
-  await testRaceFirst();
+  await testFirstOk();
 } catch (e) {
   failed.push(e);
-  console.error('fail raceFirst', e.message);
+  console.error('fail firstOk', e.message);
 }
 try {
   testParseFlow();

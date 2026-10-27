@@ -34,9 +34,16 @@ export function disposeChart(el) {
   }
 }
 
+function containerReady(el) {
+  return !!(el && el.clientWidth > 8 && el.clientHeight > 8);
+}
+
 function getChart(el) {
   const existing = charts.get(el);
-  if (existing && typeof existing.isDisposed === 'function' && !existing.isDisposed()) return existing;
+  if (existing && typeof existing.isDisposed === 'function' && !existing.isDisposed()) {
+    if (containerReady(el)) existing.resize();
+    return existing;
+  }
   if (existing) {
     try {
       existing.dispose();
@@ -45,6 +52,7 @@ function getChart(el) {
     }
     charts.delete(el);
   }
+  if (!containerReady(el)) return null;
   // 占位文案会挡住 canvas，只在尚未初始化时清掉
   if (el && !el.querySelector('canvas')) el.innerHTML = '';
   const chart = echarts.init(el, null, { renderer: 'canvas' });
@@ -187,6 +195,7 @@ export function renderIntradayChart(
     chartAvgs = forwardFillUntilLast(chartAvgs);
   }
   const chart = getChart(el);
+  if (!chart) return;
   const up = '#e11d48';
   const down = '#059669';
   const base = Number(preClose) || 0;
@@ -430,6 +439,7 @@ function ohlcTuple(raw) {
 export function renderKlineChart(el, points, { markLine, title = '日K' } = {}) {
   if (!el || !points?.length) return;
   const chart = getChart(el);
+  if (!chart) return;
   const mute = axisMute();
   const dates = points.map((p) => p.date);
   const ohlc = points.map((p) => [p.open, p.close, p.low, p.high]);
@@ -523,6 +533,7 @@ export function renderForecastKline(el, history, forecast, { title = '日K+预�
   const hist = focusTomorrow ? histAll.slice(-8) : histAll;
   if (!hist.length && !fut.length) return;
   const chart = getChart(el);
+  if (!chart) return;
   const mute = axisMute();
   const splitAt = hist.length ? hist.length - 1 : -1;
   const dates = [
@@ -675,6 +686,7 @@ export function renderPredictFlowChart(el, real, forecast) {
   if (!hasReal && !hasPred && !futAll.length) return;
 
   const chart = getChart(el);
+  if (!chart) return;
   const mute = axisMute();
   const legend = [];
   if (hasReal) legend.push('今日主力');
@@ -742,6 +754,7 @@ export function renderPredictFlowChart(el, real, forecast) {
 export function renderSparkline(el, prices, preClose) {
   if (!el || !prices?.length) return;
   const chart = getChart(el);
+  if (!chart) return;
   const last = prices[prices.length - 1];
   const color = last >= (preClose || last) ? '#e11d48' : '#059669';
   chart.setOption({
@@ -819,6 +832,7 @@ export function renderFlowChart(el, flow, { axisMode = 'full', legendNames } = {
   const widths = [2.2, 1.2, 1.2, 1.2, 1.2];
   const seriesData = [main, huge, large, mid, small];
   const chart = getChart(el);
+  if (!chart) return;
   const mute = axisMute();
   chart.setOption({
     animationDuration: 280,
@@ -870,6 +884,7 @@ export function renderFlowChart(el, flow, { axisMode = 'full', legendNames } = {
 export function renderUpDownChart(el, dist) {
   if (!el || !dist?.labels?.length) return;
   const chart = getChart(el);
+  if (!chart) return;
   const mute = axisMute();
   chart.setOption({
     animationDuration: 280,
@@ -906,6 +921,7 @@ export function renderUpDownChart(el, dist) {
 export function renderNorthboundChart(el, nb) {
   if (!el || !nb?.times?.length) return;
   const chart = getChart(el);
+  if (!chart) return;
   const mute = axisMute();
   const last = nb.last;
   const color = last >= 0 ? '#e11d48' : '#059669';
@@ -952,6 +968,7 @@ export function renderNorthboundChart(el, nb) {
 export function renderBoardBarChart(el, boards) {
   if (!el || !boards?.length) return;
   const chart = getChart(el);
+  if (!chart) return;
   const mute = axisMute();
   const top = boards.slice(0, 30);
   const names = top.map((b) => b.name).reverse();
@@ -1001,5 +1018,12 @@ export function renderBoardBarChart(el, boards) {
 }
 
 export function resizeAllCharts() {
-  for (const chart of charts.values()) chart.resize();
+  for (const [el, chart] of charts.entries()) {
+    if (!el?.isConnected || !containerReady(el)) continue;
+    try {
+      chart.resize();
+    } catch {
+      /* disposed */
+    }
+  }
 }

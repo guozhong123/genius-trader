@@ -513,10 +513,7 @@ function setView(view) {
     tab.style.color = on ? '#fff' : 'var(--muted)';
   });
   if (state.view === 'data') {
-    paintDataCenter();
-    loadDataCenter();
-    loadBoards();
-    loadRank();
+    void revealDataView();
   }
   if (state.view === 'pulse') {
     refreshPulse();
@@ -524,12 +521,35 @@ function setView(view) {
   }
   if (state.view === 'predict') {
     renderPredictView();
-    void loadPredictFlow();
+    void (async () => {
+      await waitFrames(2);
+      await loadPredictFlow();
+      resizeAllCharts();
+    })();
   }
   if (state.view === 'etf') ensureHeatmap();
   syncMarketAiBtn();
   requestAnimationFrame(() => resizeAllCharts());
   rememberPlace();
+}
+
+function dataViewVisible() {
+  const pane = $('view-data');
+  return !!(pane && !pane.classList.contains('hidden'));
+}
+
+async function revealDataView() {
+  paintDataCenter();
+  await waitFrames(2);
+  paintDataCenter();
+  if (state.center?.flow && !$('chart-market-flow')?.querySelector('canvas')) {
+    await waitFrames(2);
+    paintDataCenter();
+  }
+  resizeAllCharts();
+  await Promise.all([loadDataCenter(), loadBoards(), loadRank()]);
+  paintDataCenter();
+  resizeAllCharts();
 }
 
 function rememberPlace() {
@@ -1563,12 +1583,19 @@ function renderPredictCard() {
 
 function paintDataCenter() {
   renderFlowSummary();
-  const axisOpts = { axisMode: chartAxisMode(), legendNames: flowLegendNames() };
-  if (state.center?.flow) renderFlowChart($('chart-market-flow'), state.center.flow, axisOpts);
-  if (state.center?.updown) renderUpDownChart($('chart-updown'), state.center.updown);
-  if (state.center?.northbound) renderNorthboundChart($('chart-northbound'), state.center.northbound);
   renderPredictCard();
   if (state.briefOpen && state.briefTab === 'insight') renderBriefBody();
+  if (!dataViewVisible()) return;
+  const axisOpts = { axisMode: chartAxisMode(), legendNames: flowLegendNames() };
+  const flowEl = $('chart-market-flow');
+  if (state.center?.flow?.times?.length) {
+    renderFlowChart(flowEl, state.center.flow, axisOpts);
+  } else if (flowEl && !flowEl.querySelector('canvas')) {
+    flowEl.innerHTML =
+      '<div class="flex h-full items-center justify-center text-[12px]" style="color:var(--muted)">主力资金加载中…</div>';
+  }
+  if (state.center?.updown) renderUpDownChart($('chart-updown'), state.center.updown);
+  if (state.center?.northbound) renderNorthboundChart($('chart-northbound'), state.center.northbound);
 }
 
 let dataCenterInflight = null;
@@ -1581,6 +1608,7 @@ async function loadDataCenter() {
       const apply = (patch) => {
         state.center = { ...(state.center || {}), ...patch };
         paintDataCenter();
+        if (dataViewVisible()) resizeAllCharts();
       };
       await Promise.allSettled([
         fetchMarketMoneyFlow().then((flow) => {
@@ -1608,7 +1636,7 @@ async function loadDataCenter() {
 async function loadBoards() {
   try {
     state.boards = await fetchBoards(state.boardType);
-    renderBoardBarChart(els.chartBoards, state.boards);
+    if (dataViewVisible()) renderBoardBarChart(els.chartBoards, state.boards);
   } catch (e) {
     console.error(e);
   }
