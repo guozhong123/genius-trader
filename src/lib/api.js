@@ -21,6 +21,100 @@ const MARKET_BY_CODE = {
   177: 'KR',
 };
 
+/** Pages 上 push2 常 302 到 delay；his 易空包/断连。先并发 delay+push2，his 兜底。 */
+const EAST_HOSTS_LIVE = ['https://push2delay.eastmoney.com', 'https://push2.eastmoney.com'];
+const EAST_HOST_HIS = 'https://push2his.eastmoney.com';
+const EAST_HOSTS_FAST = [...EAST_HOSTS_LIVE, EAST_HOST_HIS];
+
+function fetchEastJsonp(url, timeout = 3500) {
+  return new Promise((resolve, reject) => {
+    if (typeof document === 'undefined') {
+      reject(new Error('no document'));
+      return;
+    }
+    const cb = `__gtEm${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+    const script = document.createElement('script');
+    let settled = false;
+    const finish = (err, data) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        delete window[cb];
+      } catch {
+        window[cb] = undefined;
+      }
+      try {
+        script.remove();
+      } catch {
+        /* ignore */
+      }
+      if (err) reject(err);
+      else resolve(data);
+    };
+    const timer = setTimeout(() => finish(new Error('jsonp timeout')), timeout);
+    window[cb] = (data) => finish(null, data);
+    script.onerror = () => finish(new Error('jsonp error'));
+    script.src = `${url}${url.includes('?') ? '&' : '?'}cb=${cb}`;
+    document.head.appendChild(script);
+  });
+}
+
+async function fetchEastOnce(url, timeout = 2800) {
+  const res = await fetch(url, { signal: AbortSignal.timeout(timeout) });
+  if (!res.ok) {
+    const err = new Error(`http ${res.status}`);
+    err.http = true;
+    throw err;
+  }
+  const text = await res.text();
+  if (!text || text[0] !== '{') throw new Error('not-json');
+  const json = JSON.parse(text);
+  if (!json?.data) throw new Error('empty');
+  return json;
+}
+
+async function fetchEastJsonpData(url, timeout = 3500) {
+  const json = await fetchEastJsonp(url, timeout);
+  if (!json?.data) throw new Error('empty');
+  return json;
+}
+
+async function firstEastData(urls, runner, timeout) {
+  if (!urls.length) return null;
+  try {
+    return await Promise.any(urls.map((url) => runner(url, timeout)));
+  } catch {
+    return null;
+  }
+}
+
+/** 同组主机并发，谁先返回有效 data 用谁；仅 CORS/网络失败才 JSONP，502 不空等。 */
+async function fetchEastFromHosts(pathQuery, hosts = EAST_HOSTS_FAST) {
+  const live = [];
+  const his = [];
+  for (const host of hosts) {
+    const url = `${host}${pathQuery}`;
+    if (host.includes('push2his.')) his.push(url);
+    else live.push(url);
+  }
+  for (const group of [live, his]) {
+    if (!group.length) continue;
+    const outcomes = await Promise.allSettled(group.map((url) => fetchEastOnce(url, 2800)));
+    for (const row of outcomes) {
+      if (row.status === 'fulfilled' && row.value?.data) return row.value;
+    }
+    const corsLike =
+      typeof document !== 'undefined' &&
+      outcomes.some((row) => row.status === 'rejected' && !row.reason?.http);
+    if (corsLike) {
+      const jp = await firstEastData(group, fetchEastJsonpData, 3500);
+      if (jp?.data) return jp;
+    }
+  }
+  return null;
+}
+
 /** 腾讯行情多为 GBK；按 UTF-8 读会乱码 */
 async function fetchTextGbk(url) {
   const res = await fetch(url);
@@ -1136,36 +1230,33 @@ export async function fetchIntraday(secid, ndays = 1) {
     `&fields2=f51,f52,f53,f54,f55,f56,f57,f58&mpi=${mpi}&ut=fa5fd1943c7b386f172d6893dbfba10b` +
     `&secid=${encodeURIComponent(secid)}&ndays=${days}&iscr=0&iscca=0`;
 
-  // 海外指数：push2 常 502，优先 delay / 腾讯分钟 / Yahoo
-  const hosts = isForeignSecid(secid)
-    ? [
-        'https://push2delay.eastmoney.com',
-        'https://push2.eastmoney.com',
-        'https://push2his.eastmoney.com',
-      ]
-    : days > 1
-      ? ['https://push2his.eastmoney.com', 'https://push2.eastmoney.com']
-      : ['https://push2.eastmoney.com', 'https://push2his.eastmoney.com'];
-
+  const path = `/api/qt/stock/trends2/get?${q}`;
   let best = null;
-  for (const host of hosts) {
-    try {
-      const res = await fetch(`${host}/api/qt/stock/trends2/get?${q}`, {
-        signal: AbortSignal.timeout(8000),
-      });
-      if (!res.ok) continue;
-      const json = await res.json();
-      const parsed = parseTrendsPayload(json?.data, days);
-      if (!parsed?.points?.length) continue;
-      if (days <= 1) return parsed;
-      const daySet = new Set(
-        parsed.points.map((p) => String(p.time || '').slice(0, 5)).filter(Boolean),
-      );
-      // 至少 2 个交易日才算真正的五日；否则继续试下一个源
-      if (daySet.size >= 2 || parsed.points.length > 300) return parsed;
-      if (!best || parsed.points.length > best.points.length) best = parsed;
-    } catch {
-      /* try next */
+
+  // 当日 / 海外：delay+push2 并发，his 兜底。五日先 his（live 常只有当天）
+  if (days <= 1 || isForeignSecid(secid)) {
+    const json = await fetchEastFromHosts(path);
+    const parsed = parseTrendsPayload(json?.data, days);
+    if (parsed?.points?.length) return parsed;
+  } else {
+    const hosts = [EAST_HOST_HIS, ...EAST_HOSTS_LIVE];
+    for (const host of hosts) {
+      try {
+        const json = await fetchEastOnce(`${host}${path}`, 3500);
+        const parsed = parseTrendsPayload(json?.data, days);
+        if (!parsed?.points?.length) continue;
+        const daySet = new Set(
+          parsed.points.map((p) => String(p.time || '').slice(0, 5)).filter(Boolean),
+        );
+        if (daySet.size >= 2 || parsed.points.length > 300) return parsed;
+        if (!best || parsed.points.length > best.points.length) best = parsed;
+      } catch {
+        /* try next */
+      }
+    }
+    if (!best?.points?.length) {
+      const json = await fetchEastFromHosts(path, hosts);
+      best = parseTrendsPayload(json?.data, days);
     }
   }
   if (best?.points?.length) return best;
@@ -1267,25 +1358,13 @@ export async function fetchMarketMoneyFlow({ force = false } = {}) {
   if (marketFlowInflight) return marketFlowInflight;
   marketFlowInflight = (async () => {
     const q =
-      'lmt=0&klt=1&secid=1.000001&secid2=0.399001' +
+      '/api/qt/stock/fflow/kline/get?lmt=0&klt=1&secid=1.000001&secid2=0.399001' +
       '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63';
-    const urls = [
-      `https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?${q}`,
-      `https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get?${q}`,
-    ];
-    for (const url of urls) {
-      try {
-        const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-        if (!res.ok) continue;
-        const json = await res.json();
-        const parsed = parseFlowKlines(json?.data?.klines);
-        if (parsed?.times?.length) {
-          marketFlowCache = { at: Date.now(), data: parsed };
-          return parsed;
-        }
-      } catch {
-        /* next host */
-      }
+    const json = await fetchEastFromHosts(q);
+    const parsed = parseFlowKlines(json?.data?.klines);
+    if (parsed?.times?.length) {
+      marketFlowCache = { at: Date.now(), data: parsed };
+      return parsed;
     }
     return marketFlowCache.data || null;
   })().finally(() => {
@@ -1344,35 +1423,23 @@ export async function fetchStockFlowDays(secid, limit = 8) {
   const q =
     `lmt=${limit}&klt=101&secid=${encodeURIComponent(secid)}` +
     '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63';
-  const urls = [
-    `https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?${q}`,
-    `https://push2.eastmoney.com/api/qt/stock/fflow/daykline/get?${q}`,
-  ];
+  const json = await fetchEastFromHosts(`/api/qt/stock/fflow/daykline/get?${q}`);
+  const lines = json?.data?.klines || [];
+  if (!lines.length) return [];
   const yi = 1e8;
-  for (const url of urls) {
-    try {
-      const res = await fetch(url);
-      if (!res.ok) continue;
-      const lines = (await res.json())?.data?.klines || [];
-      if (!lines.length) continue;
-      return lines.map((line) => {
-        const p = String(line).split(',');
-        const yuan = (i) => +(Number(p[i] || 0) / yi).toFixed(2);
-        return {
-          date: p[0],
-          main: yuan(1),
-          small: yuan(2),
-          mid: yuan(3),
-          large: yuan(4),
-          huge: yuan(5),
-          changePct: Number(p[12]),
-        };
-      });
-    } catch {
-      /* try next */
-    }
-  }
-  return [];
+  return lines.map((line) => {
+    const p = String(line).split(',');
+    const yuan = (i) => +(Number(p[i] || 0) / yi).toFixed(2);
+    return {
+      date: p[0],
+      main: yuan(1),
+      small: yuan(2),
+      mid: yuan(3),
+      large: yuan(4),
+      huge: yuan(5),
+      changePct: Number(p[12]),
+    };
+  });
 }
 
 /**
@@ -1524,24 +1591,11 @@ export async function fetchDragonTiger(code) {
 /** 个股主力资金分时 */
 export async function fetchStockMoneyFlow(secid) {
   const q =
-    `lmt=0&klt=1&secid=${encodeURIComponent(secid)}` +
+    `/api/qt/stock/fflow/kline/get?lmt=0&klt=1&secid=${encodeURIComponent(secid)}` +
     '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63';
-  const urls = [
-    `https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?${q}`,
-    `https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get?${q}`,
-  ];
-  for (const url of urls) {
-    try {
-      const res = await fetch(url);
-      if (!res.ok) continue;
-      const json = await res.json();
-      const parsed = parseFlowKlines(json?.data?.klines);
-      if (parsed?.times?.length) return parsed;
-    } catch {
-      /* try next */
-    }
-  }
-  return parseFlowKlines([]);
+  const json = await fetchEastFromHosts(q);
+  const parsed = parseFlowKlines(json?.data?.klines);
+  return parsed?.times?.length ? parsed : parseFlowKlines([]);
 }
 
 /** 涨跌家数分布 */
@@ -1779,46 +1833,38 @@ async function fetchTencentSnapshots(list) {
   });
 }
 
+const KLINE_TTL_MS = 30_000;
+const eastKlineCache = new Map();
+
 async function fetchEastKline(secid, klt, lmt) {
-  const hosts = isForeignSecid(secid)
-    ? [
-        'https://push2delay.eastmoney.com',
-        'https://push2his.eastmoney.com',
-        'https://push2.eastmoney.com',
-      ]
-    : ['https://push2his.eastmoney.com', 'https://push2.eastmoney.com'];
-  for (const host of hosts) {
-    try {
-      const url =
-        `${host}/api/qt/stock/kline/get?secid=${encodeURIComponent(secid)}` +
-        `&klt=${klt}&fqt=1&lmt=${lmt}&end=20500101&iscca=1` +
-        `&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57,f59&forcect=1`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-      if (!res.ok) continue;
-      const json = await res.json();
-      const lines = json?.data?.klines || [];
-      if (!lines.length) continue;
+  const key = `${secid}|${klt}|${lmt}`;
+  const hit = eastKlineCache.get(key);
+  if (hit && Date.now() - hit.at < KLINE_TTL_MS) return hit.data;
+  const path =
+    `/api/qt/stock/kline/get?secid=${encodeURIComponent(secid)}` +
+    `&klt=${klt}&fqt=1&lmt=${lmt}&end=20500101&iscca=1` +
+    `&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57,f59&forcect=1`;
+  const json = await fetchEastFromHosts(path);
+  const lines = json?.data?.klines || [];
+  if (!lines.length) return null;
+  const data = {
+    name: json?.data?.name || '',
+    points: lines.map((line) => {
+      const p = String(line).split(',');
       return {
-        name: json?.data?.name || '',
-        points: lines.map((line) => {
-          const p = String(line).split(',');
-          return {
-            date: p[0],
-            open: Number(p[1]),
-            close: Number(p[2]),
-            high: Number(p[3]),
-            low: Number(p[4]),
-            volume: Number(p[5]),
-            amount: Number(p[6]),
-            changePct: Number(p[7]),
-          };
-        }),
+        date: p[0],
+        open: Number(p[1]),
+        close: Number(p[2]),
+        high: Number(p[3]),
+        low: Number(p[4]),
+        volume: Number(p[5]),
+        amount: Number(p[6]),
+        changePct: Number(p[7]),
       };
-    } catch {
-      /* next host */
-    }
-  }
-  return null;
+    }),
+  };
+  eastKlineCache.set(key, { at: Date.now(), data });
+  return data;
 }
 
 async function fetchYahooKline(secid, klt, lmt) {
@@ -1886,6 +1932,8 @@ async function fetchSinaKline(secid, klt, lmt) {
 export async function fetchKline(secid, klt = 101, lmt = 80) {
   const east = await fetchEastKline(secid, klt, lmt);
   if (east?.points?.length) return east;
+  // 板块（90.BK****）腾讯/雅虎/新浪没有对应日 K，空等只会拖慢盘感页
+  if (String(secid || '').startsWith('90.')) return { name: '', points: [] };
   const tx = await fetchTencentKline(secid, klt, lmt).catch(() => null);
   if (tx?.points?.length) return tx;
   const yahoo = await fetchYahooKline(secid, klt, lmt).catch(() => null);
