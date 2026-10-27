@@ -22,8 +22,11 @@ const MARKET_BY_CODE = {
 };
 
 /** 腾讯行情多为 GBK；按 UTF-8 读会乱码 */
-async function fetchTextGbk(url) {
-  const res = await fetch(url);
+async function fetchTextGbk(url, timeoutMs = 8000) {
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(timeoutMs),
+    cache: 'no-store',
+  });
   const buf = await res.arrayBuffer();
   try {
     return new TextDecoder('gbk').decode(buf);
@@ -340,10 +343,11 @@ async function fetchEastStockQuotes(stocks) {
   const secids = stocks
     .map((s) => s.secid || toSecid(s.market, s.code, s.marketNo))
     .join(',');
-  const url = `https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&fields=${STOCK_FIELDS}&secids=${encodeURIComponent(secids)}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(7000) });
-  if (!res.ok) throw new Error('ulist');
-  const json = await res.json();
+  const json = await eastGetJson(
+    `/api/qt/ulist.np/get?fltt=2&fields=${STOCK_FIELDS}&secids=${encodeURIComponent(secids)}`,
+    { timeout: 4000, accept: (j) => j?.data?.diff?.length },
+  );
+  if (!json) throw new Error('ulist');
   const diff = json?.data?.diff || [];
   const map = {};
 
@@ -916,36 +920,104 @@ export async function fetchMembersQuotes(members) {
   return out;
 }
 
+/** 东财 push2 主域经常 502，延迟域和编号节点要一起抢，谁先返回可用 JSON 用谁。 */
+function eastHosts(numbered = 2) {
+  const used = new Set();
+  const extra = [];
+  const want = Math.max(0, numbered);
+  while (extra.length < want && used.size < 99) {
+    const n = 1 + Math.floor(Math.random() * 99);
+    if (used.has(n)) continue;
+    used.add(n);
+    extra.push(`https://${n}.push2.eastmoney.com`);
+  }
+  return [
+    'https://push2delay.eastmoney.com',
+    'https://push2.eastmoney.com',
+    'https://push2his.eastmoney.com',
+    ...extra,
+  ];
+}
+
+async function eastGetJson(path, { timeout = 4000, accept, hosts } = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeout);
+  const stamp = Date.now();
+  const urls = (hosts || eastHosts()).map((host) => `${host}${path}${path.includes('?') ? '&' : '?'}_=${stamp}`);
+  try {
+    return await Promise.any(
+      urls.map(async (url) => {
+        const res = await fetch(url, { signal: ctrl.signal, cache: 'no-store' });
+        if (!res.ok) throw new Error(String(res.status));
+        const json = await res.json();
+        if (accept && !accept(json)) throw new Error('empty');
+        return json;
+      }),
+    );
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+    ctrl.abort();
+  }
+}
+
+function indexSecid(meta) {
+  return meta.secid || toSecid(meta.market, meta.code, meta.marketNo);
+}
+
+function indexReady(row) {
+  return Number(row?.price) > 0 && Number.isFinite(Number(row.changePct));
+}
+
+function mergeIndexRows(list, eastRows, txRows) {
+  const east = new Map((eastRows || []).map((row) => [row.secid, row]));
+  const tx = new Map((txRows || []).map((row) => [row.secid, row]));
+  return list.map((meta) => {
+    const secid = indexSecid(meta);
+    const primary = east.get(secid);
+    const backup = tx.get(secid);
+    const pick = indexReady(primary) ? primary : indexReady(backup) ? backup : primary || backup;
+    if (!pick) return { ...meta, secid, price: null, changePct: null };
+    return { ...meta, ...pick, secid, name: pick.name || meta.name };
+  });
+}
+
 async function fetchEastIndices(list) {
-  const secids = list.map((x) => x.secid || toSecid(x.market, x.code, x.marketNo)).join(',');
-  const url = `https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&fields=${STOCK_FIELDS}&secids=${encodeURIComponent(secids)}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(7000) });
-  if (!res.ok) throw new Error('ulist');
-  const json = await res.json();
+  const secids = list.map((x) => indexSecid(x)).join(',');
+  const json = await eastGetJson(
+    `/api/qt/ulist.np/get?fltt=2&fields=${STOCK_FIELDS}&secids=${encodeURIComponent(secids)}`,
+    { timeout: 4000, accept: (j) => j?.data?.diff?.length },
+  );
+  if (!json) throw new Error('ulist');
   const diff = json?.data?.diff || [];
-  return list.map((meta, i) => {
-    const secid = meta.secid || toSecid(meta.market, meta.code, meta.marketNo);
-    const row =
-      diff.find((d) => String(d.f12).toUpperCase() === String(meta.code).toUpperCase()) ||
-      diff[i] ||
-      {};
+  return list.map((meta) => {
+    const secid = indexSecid(meta);
+    // 只按代码对齐。按序号回退会把别的指数套到日经上，或者把缺行当成已有价格。
+    const row = diff.find((d) => String(d.f12).toUpperCase() === String(meta.code).toUpperCase());
+    if (!row) return { ...meta, secid, price: null, changePct: null };
     let price = Number(row.f2);
     const prev = Number(row.f18);
-    if (!price && prev) price = prev;
+    if (!(price > 0) && prev > 0) price = prev;
+    const changePct = Number(row.f3);
     return {
       ...meta,
       secid,
       name: row.f14 || meta.name,
-      price,
-      changePct: Number(row.f3),
+      price: price > 0 ? price : null,
+      changePct: Number.isFinite(changePct) ? changePct : null,
       change: Number(row.f4),
-      prevClose: prev,
+      prevClose: Number.isFinite(prev) ? prev : null,
     };
   });
 }
 
 export async function fetchIndices(list) {
   if (!list?.length) return [];
+  // 腾讯一次能带回日经（gzN225）。东财列表只要补腾讯没有的，避免每次刷新先干等 502。
+  const tx = await fetchTencentSnapshots(list);
+  const fromTx = mergeIndexRows(list, [], tx);
+  if (fromTx.every((row) => indexReady(row))) return fromTx;
   let east = [];
   if (!quoteListLikelyDown()) {
     try {
@@ -955,18 +1027,8 @@ export async function fetchIndices(list) {
       east = [];
     }
   }
-  const priced = east.filter((row) => Number(row.price) > 0).length;
-  if (!priced) noteQuoteListDown();
-  if (east.length === list.length && priced >= Math.ceil(list.length * 0.6)) return east;
-  const tx = await fetchTencentSnapshots(list);
-  const bySecid = new Map(tx.map((row) => [row.secid, row]));
-  const base = east.length === list.length ? east : list.map((meta) => ({ ...meta, secid: meta.secid || toSecid(meta.market, meta.code, meta.marketNo) }));
-  return base.map((row) => {
-    if (Number(row.price) > 0 && Number.isFinite(Number(row.changePct))) return row;
-    const alt = bySecid.get(row.secid);
-    if (!(Number(alt?.price) > 0)) return row;
-    return { ...row, ...alt, name: alt.name || row.name };
-  });
+  if (!east.some((row) => indexReady(row))) noteQuoteListDown();
+  return mergeIndexRows(list, east, tx);
 }
 
 function formatTrendTime(rawTime, ndays = 1) {
@@ -1136,39 +1198,47 @@ export async function fetchIntraday(secid, ndays = 1) {
     `&fields2=f51,f52,f53,f54,f55,f56,f57,f58&mpi=${mpi}&ut=fa5fd1943c7b386f172d6893dbfba10b` +
     `&secid=${encodeURIComponent(secid)}&ndays=${days}&iscr=0&iscca=0`;
 
-  // 海外指数：push2 常 502，优先 delay / 腾讯分钟 / Yahoo
-  const hosts = isForeignSecid(secid)
-    ? [
-        'https://push2delay.eastmoney.com',
-        'https://push2.eastmoney.com',
-        'https://push2his.eastmoney.com',
-      ]
-    : days > 1
-      ? ['https://push2his.eastmoney.com', 'https://push2.eastmoney.com']
-      : ['https://push2.eastmoney.com', 'https://push2his.eastmoney.com'];
+  const trendPath = `/api/qt/stock/trends2/get?${q}`;
+  const trendGood = (parsed) => {
+    if (!parsed?.points?.length) return false;
+    if (days <= 1) return true;
+    const daySet = new Set(
+      parsed.points.map((p) => String(p.time || '').slice(0, 5)).filter(Boolean),
+    );
+    return daySet.size >= 2 || parsed.points.length > 300;
+  };
 
   let best = null;
-  for (const host of hosts) {
-    try {
-      const res = await fetch(`${host}/api/qt/stock/trends2/get?${q}`, {
-        signal: AbortSignal.timeout(8000),
-      });
-      if (!res.ok) continue;
-      const json = await res.json();
-      const parsed = parseTrendsPayload(json?.data, days);
+  if (days <= 1) {
+    const json = await eastGetJson(trendPath, {
+      timeout: 4500,
+      accept: (j) => parseTrendsPayload(j?.data, days)?.points?.length,
+    });
+    const parsed = json ? parseTrendsPayload(json.data, days) : null;
+    if (parsed?.points?.length) return parsed;
+  } else {
+    // 五日要挑点最多的源，但各节点并行，不再一个超时再试下一个
+    const parsedList = await Promise.all(
+      eastHosts().map(async (host) => {
+        try {
+          const res = await fetch(`${host}${trendPath}&_=${Date.now()}`, {
+            signal: AbortSignal.timeout(4500),
+            cache: 'no-store',
+          });
+          if (!res.ok) return null;
+          return parseTrendsPayload((await res.json())?.data, days);
+        } catch {
+          return null;
+        }
+      }),
+    );
+    for (const parsed of parsedList) {
       if (!parsed?.points?.length) continue;
-      if (days <= 1) return parsed;
-      const daySet = new Set(
-        parsed.points.map((p) => String(p.time || '').slice(0, 5)).filter(Boolean),
-      );
-      // 至少 2 个交易日才算真正的五日；否则继续试下一个源
-      if (daySet.size >= 2 || parsed.points.length > 300) return parsed;
+      if (trendGood(parsed)) return parsed;
       if (!best || parsed.points.length > best.points.length) best = parsed;
-    } catch {
-      /* try next */
     }
   }
-  if (best?.points?.length) return best;
+  if (best?.points?.length && days <= 1) return best;
 
   if (days <= 1) {
     const tx = await fetchTencentUsMinute(secid).catch(() => null);
@@ -1250,31 +1320,32 @@ function parseFlowKlines(klines) {
   };
 }
 
+const flowCache = new Map();
+
+const FLOW_FIELDS =
+  'fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63';
+
+async function fetchFlowParsed(path) {
+  // 资金分时比行情列表更容易空，多抢几个编号节点，先成功的那个就停
+  const json = await eastGetJson(path, {
+    timeout: 4000,
+    hosts: eastHosts(6),
+    accept: (j) => parseFlowKlines(j?.data?.klines)?.times?.length,
+  });
+  if (!json) return null;
+  return parseFlowKlines(json.data.klines);
+}
+
 /** 沪深大盘主力资金分时 */
 export async function fetchMarketMoneyFlow() {
-  const bust = `_=${Date.now()}`;
-  const q =
-    'lmt=0&klt=1&secid=1.000001&secid2=0.399001' +
-    '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63';
-  const urls = [
-    `https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?${q}&${bust}`,
-    `https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get?${q}&${bust}`,
-  ];
-  for (const url of urls) {
-    try {
-      const res = await fetch(url, {
-        signal: AbortSignal.timeout(7000),
-        cache: 'no-store',
-      });
-      if (!res.ok) continue;
-      const json = await res.json();
-      const parsed = parseFlowKlines(json?.data?.klines);
-      if (parsed?.times?.length) return parsed;
-    } catch {
-      /* next host */
-    }
+  const path =
+    `/api/qt/stock/fflow/kline/get?lmt=0&klt=1&secid=1.000001&secid2=0.399001&${FLOW_FIELDS}`;
+  const parsed = await fetchFlowParsed(path);
+  if (parsed?.times?.length) {
+    flowCache.set('market', parsed);
+    return parsed;
   }
-  return null;
+  return flowCache.get('market') || null;
 }
 
 /**
@@ -1327,18 +1398,14 @@ export async function fetchStockFlowDays(secid, limit = 8) {
   const q =
     `lmt=${limit}&klt=101&secid=${encodeURIComponent(secid)}` +
     '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63';
-  const urls = [
-    `https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?${q}`,
-    `https://push2.eastmoney.com/api/qt/stock/fflow/daykline/get?${q}`,
-  ];
   const yi = 1e8;
-  for (const url of urls) {
-    try {
-      const res = await fetch(url);
-      if (!res.ok) continue;
-      const lines = (await res.json())?.data?.klines || [];
-      if (!lines.length) continue;
-      return lines.map((line) => {
+  const json = await eastGetJson(`/api/qt/stock/fflow/daykline/get?${q}`, {
+    timeout: 4500,
+    accept: (j) => j?.data?.klines?.length,
+  });
+  const lines = json?.data?.klines || [];
+  if (lines.length) {
+    return lines.map((line) => {
         const p = String(line).split(',');
         const yuan = (i) => +(Number(p[i] || 0) / yi).toFixed(2);
         return {
@@ -1351,9 +1418,6 @@ export async function fetchStockFlowDays(secid, limit = 8) {
           changePct: Number(p[12]),
         };
       });
-    } catch {
-      /* try next */
-    }
   }
   return [];
 }
@@ -1504,34 +1568,25 @@ export async function fetchDragonTiger(code) {
   return { recent: [], note: '没有龙虎榜记录' };
 }
 
-/** 个股主力资金分时 */
+/** 个股主力资金分时。节点失败时退回本会话里上一次成功的分时，避免刷新把图清空。 */
 export async function fetchStockMoneyFlow(secid) {
-  const q =
-    `lmt=0&klt=1&secid=${encodeURIComponent(secid)}` +
-    '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63';
-  const urls = [
-    `https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?${q}`,
-    `https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get?${q}`,
-  ];
-  for (const url of urls) {
-    try {
-      const res = await fetch(url);
-      if (!res.ok) continue;
-      const json = await res.json();
-      const parsed = parseFlowKlines(json?.data?.klines);
-      if (parsed?.times?.length) return parsed;
-    } catch {
-      /* try next */
-    }
+  const key = `stock:${secid}`;
+  const path =
+    `/api/qt/stock/fflow/kline/get?lmt=0&klt=1&secid=${encodeURIComponent(secid)}&${FLOW_FIELDS}`;
+  const parsed = await fetchFlowParsed(path);
+  if (parsed?.times?.length) {
+    flowCache.set(key, parsed);
+    return parsed;
   }
-  return parseFlowKlines([]);
+  return flowCache.get(key) || null;
 }
 
 /** 涨跌家数分布 */
 export async function fetchUpDownDistribution() {
   const url =
     'https://push2ex.eastmoney.com/getTopicZDFenBu?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt';
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(4000), cache: 'no-store' });
+  if (!res.ok) throw new Error('updown');
   const json = await res.json();
   const fenbu = json?.data?.fenbu || [];
   const map = {};
@@ -1565,7 +1620,8 @@ export async function fetchUpDownDistribution() {
 export async function fetchNorthbound() {
   const url =
     'https://push2.eastmoney.com/api/qt/kamt.rtmin/get?fields1=f1,f2,f3,f4&fields2=f51,f52,f53,f54,f55,f56';
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(4000), cache: 'no-store' });
+  if (!res.ok) throw new Error('northbound');
   const json = await res.json();
   const s2n = json?.data?.s2n || [];
   const times = [];
@@ -1628,7 +1684,8 @@ function tencentSymbol(secid) {
       DJI: 'usDJI',
       SPX: 'usSPX',
       IXIC: 'usIXIC',
-      N225: 'jpN225',
+      // jpN225 在腾讯会返回 none_match；日经走全球指数 gzN225
+      N225: 'gzN225',
       KS11: 'gzKS11',
       KQ11: 'gzKOSDAQ',
     };
@@ -1733,7 +1790,10 @@ async function fetchTencentSnapshots(list) {
   const queries = [...new Set(metas.map((row) => row.query))];
   for (let i = 0; i < queries.length; i += 40) {
     try {
-      const text = await fetchTextGbk(`https://qt.gtimg.cn/q=${queries.slice(i, i + 40).join(',')}`);
+      const text = await fetchTextGbk(
+        `https://qt.gtimg.cn/q=${queries.slice(i, i + 40).join(',')}`,
+        4000,
+      );
       for (const line of text.split(';')) {
         const row = parseTencentQuoteLine(line);
         if (row) bySymbol.set(row.symbol, row);
@@ -1763,45 +1823,32 @@ async function fetchTencentSnapshots(list) {
 }
 
 async function fetchEastKline(secid, klt, lmt) {
-  const hosts = isForeignSecid(secid)
-    ? [
-        'https://push2delay.eastmoney.com',
-        'https://push2his.eastmoney.com',
-        'https://push2.eastmoney.com',
-      ]
-    : ['https://push2his.eastmoney.com', 'https://push2.eastmoney.com'];
-  for (const host of hosts) {
-    try {
-      const url =
-        `${host}/api/qt/stock/kline/get?secid=${encodeURIComponent(secid)}` +
-        `&klt=${klt}&fqt=1&lmt=${lmt}&end=20500101&iscca=1` +
-        `&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57,f59&forcect=1`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-      if (!res.ok) continue;
-      const json = await res.json();
-      const lines = json?.data?.klines || [];
-      if (!lines.length) continue;
+  const path =
+    `/api/qt/stock/kline/get?secid=${encodeURIComponent(secid)}` +
+    `&klt=${klt}&fqt=1&lmt=${lmt}&end=20500101&iscca=1` +
+    `&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57,f59&forcect=1`;
+  const json = await eastGetJson(path, {
+    timeout: 4500,
+    accept: (j) => j?.data?.klines?.length,
+  });
+  const lines = json?.data?.klines || [];
+  if (!lines.length) return null;
+  return {
+    name: json?.data?.name || '',
+    points: lines.map((line) => {
+      const p = String(line).split(',');
       return {
-        name: json?.data?.name || '',
-        points: lines.map((line) => {
-          const p = String(line).split(',');
-          return {
-            date: p[0],
-            open: Number(p[1]),
-            close: Number(p[2]),
-            high: Number(p[3]),
-            low: Number(p[4]),
-            volume: Number(p[5]),
-            amount: Number(p[6]),
-            changePct: Number(p[7]),
-          };
-        }),
+        date: p[0],
+        open: Number(p[1]),
+        close: Number(p[2]),
+        high: Number(p[3]),
+        low: Number(p[4]),
+        volume: Number(p[5]),
+        amount: Number(p[6]),
+        changePct: Number(p[7]),
       };
-    } catch {
-      /* next host */
-    }
-  }
-  return null;
+    }),
+  };
 }
 
 async function fetchYahooKline(secid, klt, lmt) {
@@ -1881,11 +1928,11 @@ export async function fetchKline(secid, klt = 101, lmt = 80) {
 /** 沪深两市成交额等。东财列表不通时，用腾讯指数成交额。 */
 export async function fetchMarketOverview() {
   try {
-    const url =
-      'https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=1.000001,0.399001&fields=f1,f2,f3,f4,f6,f12,f13,f14,f104,f105,f106';
-    const res = await fetch(url, { signal: AbortSignal.timeout(7000) });
-    if (!res.ok) throw new Error('overview');
-    const json = await res.json();
+    const json = await eastGetJson(
+      '/api/qt/ulist.np/get?fltt=2&secids=1.000001,0.399001&fields=f1,f2,f3,f4,f6,f12,f13,f14,f104,f105,f106',
+      { timeout: 4000, accept: (j) => j?.data?.diff?.length },
+    );
+    if (!json) throw new Error('overview');
     const diff = json?.data?.diff || [];
     if (diff.length) {
       let amount = 0;

@@ -29,6 +29,7 @@ export function disposeChart(el) {
   if (!el) return;
   const old = charts.get(el);
   if (old) {
+    old.__ro?.disconnect();
     old.dispose();
     charts.delete(el);
   }
@@ -38,6 +39,17 @@ function getChart(el) {
   disposeChart(el);
   const chart = echarts.init(el, null, { renderer: 'canvas' });
   charts.set(el, chart);
+  // 资金页初始是隐藏的，0 尺寸初始化后折线会一直空白；尺寸回来再 resize。
+  if (typeof ResizeObserver !== 'undefined') {
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth > 0 && el.clientHeight > 0) chart.resize();
+    });
+    ro.observe(el);
+    chart.__ro = ro;
+  }
+  requestAnimationFrame(() => {
+    if (el.isConnected && el.clientWidth > 0 && el.clientHeight > 0) chart.resize();
+  });
   return chart;
 }
 
