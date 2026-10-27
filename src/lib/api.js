@@ -1250,31 +1250,48 @@ function parseFlowKlines(klines) {
   };
 }
 
-/** 沪深大盘主力资金分时 */
-export async function fetchMarketMoneyFlow() {
-  const bust = `_=${Date.now()}`;
-  const q =
-    'lmt=0&klt=1&secid=1.000001&secid2=0.399001' +
-    '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63';
-  const urls = [
-    `https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?${q}&${bust}`,
-    `https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get?${q}&${bust}`,
-  ];
-  for (const url of urls) {
-    try {
-      const res = await fetch(url, {
-        signal: AbortSignal.timeout(7000),
-        cache: 'no-store',
-      });
-      if (!res.ok) continue;
-      const json = await res.json();
-      const parsed = parseFlowKlines(json?.data?.klines);
-      if (parsed?.times?.length) return parsed;
-    } catch {
-      /* next host */
-    }
+const MARKET_FLOW_TTL_MS = 30_000;
+let marketFlowCache = { at: 0, data: null };
+let marketFlowInflight = null;
+
+/**
+ * 沪深大盘主力资金分时。
+ * 跟 efinance / fund-assistant 同一接口：push2 fflow/kline，his 兜底。
+ * 分钟线 30 秒内复用上次结果，避免资金页 15 秒轮询反复打东财。
+ */
+export async function fetchMarketMoneyFlow({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && marketFlowCache.data?.times?.length && now - marketFlowCache.at < MARKET_FLOW_TTL_MS) {
+    return marketFlowCache.data;
   }
-  return null;
+  if (marketFlowInflight) return marketFlowInflight;
+  marketFlowInflight = (async () => {
+    const q =
+      'lmt=0&klt=1&secid=1.000001&secid2=0.399001' +
+      '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63';
+    const urls = [
+      `https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?${q}`,
+      `https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get?${q}`,
+    ];
+    for (const url of urls) {
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        if (!res.ok) continue;
+        const json = await res.json();
+        const parsed = parseFlowKlines(json?.data?.klines);
+        if (parsed?.times?.length) {
+          marketFlowCache = { at: Date.now(), data: parsed };
+          return parsed;
+        }
+      } catch {
+        /* next host */
+      }
+    }
+    return marketFlowCache.data || null;
+  })().finally(() => {
+    marketFlowInflight = null;
+  });
+  return marketFlowInflight;
 }
 
 /**
