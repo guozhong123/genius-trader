@@ -3830,12 +3830,9 @@ async function loadTrendSheet(force = false) {
     }
     const codeList = [...codes.keys()].slice(0, 16);
     const klines = new Map();
-    const bars = await mapPool(codeList, 2, async (code) => {
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        const data = await fetchKline(`90.${code}`, 101, 6).catch(() => null);
-        if (data?.points?.length) return [code, data.points];
-        await new Promise((resolve) => setTimeout(resolve, 350));
-      }
+    const bars = await mapPool(codeList, 6, async (code) => {
+      const data = await fetchKline(`90.${code}`, 101, 6).catch(() => null);
+      if (data?.points?.length) return [code, data.points];
       return [code, []];
     });
     for (const pair of bars) {
