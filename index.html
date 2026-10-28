@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#0f766e" />
     <meta name="mobile-web-app-capable" content="yes" />
     <title>天才交易员</title>
-    <script type="module" crossorigin src="/genius-trader/assets/full-screen-CMDGJ1Xh.js"></script>
-    <link rel="modulepreload" crossorigin href="/genius-trader/assets/styles-BRPXkqUq.js">
-    <link rel="stylesheet" crossorigin href="/genius-trader/assets/styles-Du2_t4JM.css">
+    <script type="module" crossorigin src="/genius-trader/assets/full-screen-zTPKoJoE.js"></script>
+    <link rel="modulepreload" crossorigin href="/genius-trader/assets/styles-1S2n_syC.js">
+    <link rel="stylesheet" crossorigin href="/genius-trader/assets/styles-BvQv11Dk.css">
   </head>
   <body>
     <!-- 登录门禁 -->
@@ -212,15 +212,23 @@
             <p id="lhb-meta" class="mt-2 text-[11px]" style="color: var(--muted)">正在加载龙虎榜…</p>
             <div id="lhb-board" class="lhb-board mt-2 overflow-auto"></div>
             <div class="lhb-ai mt-3">
-              <div class="text-sm font-semibold">AI 建议 · 买这三只</div>
-              <p id="lhb-ai-meta" class="mt-0.5 text-[11px]" style="color: var(--muted)">榜单出来后自动给三只</p>
+              <div class="flex flex-wrap items-start justify-between gap-2">
+                <div class="min-w-0">
+                  <div class="text-sm font-semibold">AI · 主力一日游</div>
+                  <p id="lhb-ai-meta" class="mt-0.5 text-[11px] leading-relaxed" style="color: var(--muted)">榜单出来后点「分析」；只手动调用 DeepSeek，刷新不会自动跑</p>
+                </div>
+                <div class="flex shrink-0 gap-1.5">
+                  <button type="button" id="lhb-ai-history-btn" class="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold ring-soft" style="color: var(--muted)" title="查看每次分析纪录">历史</button>
+                  <button type="button" id="lhb-ai-analyze-btn" class="rounded-lg bg-accent px-3 py-1.5 text-[11px] font-semibold text-white" title="用 DeepSeek 做主力一日游分析">分析</button>
+                </div>
+              </div>
               <div id="lhb-ai-picks" class="lhb-ai-picks mt-2"></div>
               <div class="lhb-ai-rules mt-3" role="note">
-                <div class="lhb-ai-rules-title">先把规矩立住</div>
+                <div class="lhb-ai-rules-title">主力一日游 · 规矩</div>
                 <ol class="lhb-ai-rules-list">
-                  <li><span class="lhb-ai-step lhb-ai-step-pick">① 当晚</span><b>只锁最强的 2–3 只</b>，不追杂毛。</li>
-                  <li><span class="lhb-ai-step lhb-ai-step-buy">② 次日</span>早盘有<b>水下性价比</b>就买；否则<b>尾盘再买</b>。</li>
-                  <li><span class="lhb-ai-step lhb-ai-step-sell">③ 第 3～4 天</span><b>卖出兑现</b>，不恋战。</li>
+                  <li><span class="lhb-ai-step lhb-ai-step-pick">① 当晚</span>榜出后点分析，<b>只锁买入概率最高的 2–3 只</b>，跟主力真买、位置不高。</li>
+                  <li><span class="lhb-ai-step lhb-ai-step-buy">② 次日</span><b>低开或盘中低点</b>再买；诱多 / 追高直接放弃。</li>
+                  <li><span class="lhb-ai-step lhb-ai-step-sell">③ 第三天</span><b>卖出兑现</b>，不恋战、不做波段。</li>
                 </ol>
               </div>
               <div id="lhb-ai-tables" class="lhb-ai-tables mt-3 space-y-3">
@@ -350,6 +358,23 @@
       </div>
       <div id="report-drawer-body" class="report-drawer-body"></div>
     </aside>
+
+    <div id="lhb-hist-root" class="modal-wrap fixed inset-0 z-[65] hidden items-center justify-center p-3 sm:p-6">
+      <div id="lhb-hist-mask" class="absolute inset-0" style="background: var(--mask)"></div>
+      <div class="modal-panel relative z-10 flex h-[min(720px,90vh)] w-[min(640px,96vw)] flex-col overflow-hidden rounded-2xl shadow-2xl"
+        style="background: var(--panel-solid); border: 1px solid var(--line)">
+        <div class="flex shrink-0 items-center gap-2 border-b px-4 py-3" style="border-color: var(--line)">
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-semibold">一日游 · 分析纪录</div>
+            <p class="mt-0.5 text-[11px]" style="color: var(--muted)">每次点「分析」都会留下一条；最新已在页面上展示</p>
+          </div>
+          <button type="button" id="lhb-hist-close" class="rounded-lg p-1.5" style="color: var(--muted)" aria-label="关闭">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+        <div id="lhb-hist-body" class="min-h-0 flex-1 overflow-auto p-3 sm:p-4"></div>
+      </div>
+    </div>
 
     <div id="dialog-root" class="modal-wrap fixed inset-0 z-[70] hidden items-center justify-center p-4">
       <div id="dialog-mask" class="absolute inset-0" style="background: var(--mask)"></div>
