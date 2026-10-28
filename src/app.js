@@ -4426,9 +4426,16 @@ async function refreshDetailCharts() {
 
     els.chartStockFlow.innerHTML = '';
     await waitFrames(1);
-    if (flow?.times?.length) {
-      const s = flow.summary;
-      $('detail-flow-tip').textContent = `主力 ${fmtYi(s.main)} 亿`;
+    const flowSummary = flow?.summary;
+    const hasFlowSeries = !!flow?.times?.length;
+    const hasFlowSummary =
+      flowSummary &&
+      [flowSummary.main, flowSummary.huge, flowSummary.large, flowSummary.mid, flowSummary.small].some(
+        (v) => Number.isFinite(Number(v)),
+      );
+    if (hasFlowSeries || hasFlowSummary) {
+      const s = flowSummary || {};
+      $('detail-flow-tip').textContent = `主力 ${fmtYi(s.main)} 亿${s.note ? ` · ${s.note}` : ''}`;
       els.detailFlowCards.innerHTML = [
         ['主力', s.main],
         ['超大', s.huge],
@@ -4443,10 +4450,14 @@ async function refreshDetailCharts() {
           </div>`,
         )
         .join('');
-      renderFlowChart(els.chartStockFlow, flow, {
-        axisMode,
-        legendNames: flowLegendNames(),
-      });
+      if (hasFlowSeries) {
+        renderFlowChart(els.chartStockFlow, flow, {
+          axisMode,
+          legendNames: flowLegendNames(),
+        });
+      } else {
+        els.chartStockFlow.innerHTML = `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>盘后分时暂不可用，已显示今日资金摘要</span><span class="text-[11px]">主力 ${esc(fmtYi(s.main))} 亿${s.asOf ? ` · ${esc(s.asOf)}` : ''}</span></div>`;
+      }
     } else {
       els.detailFlowCards.innerHTML = '';
       els.chartStockFlow.innerHTML =

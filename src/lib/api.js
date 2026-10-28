@@ -1416,9 +1416,7 @@ function eastFlowHosts(numbered = 8) {
   return [...base, ...extra];
 }
 
-async function fetchFlowKlineRace(query, { timeoutMs = 6500, hosts } = {}) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+async function fetchFlowKlineRace(query, { timeoutMs = 8000, hosts } = {}) {
   const stamp = Date.now();
   const list = hosts || eastFlowHosts();
   // 与东财大盘资金页同款 ut，部分节点无 ut 会空
@@ -1429,7 +1427,8 @@ async function fetchFlowKlineRace(query, { timeoutMs = 6500, hosts } = {}) {
         const res = await fetch(
           `${host}/api/qt/stock/fflow/kline/get?${query}&${ut}&_=${stamp}`,
           {
-            signal: ctrl.signal,
+            // 每路独立超时，避免共享 abort 把慢但成功的节点掐掉
+            signal: AbortSignal.timeout(timeoutMs),
             cache: 'no-store',
             headers: { Referer: 'https://data.eastmoney.com/zjlx/dpzjlx.html' },
           },
@@ -1442,25 +1441,85 @@ async function fetchFlowKlineRace(query, { timeoutMs = 6500, hosts } = {}) {
           ? text
           : text.replace(/^[^(]*\(/, '').replace(/\)\s*;?\s*$/, '');
         const json = JSON.parse(bare);
-        const parsed = parseFlowKlines(json?.data?.klines);
-        if (!parsed?.times?.length) throw new Error('empty');
-        return parsed;
+        const out = parseFlowKlines(json?.data?.klines);
+        if (!out?.times?.length) throw new Error('empty');
+        return out;
       }),
     );
   } catch {
     return null;
-  } finally {
-    clearTimeout(timer);
-    ctrl.abort();
   }
 }
 
-/** 同花顺上证资金分时兜底（东财盘后 fflow 常 502）。字段：超大/大/中/小 流入、流出 */
-async function fetchThsMarketMoneyFlow() {
-  const urls = [
-    'https://d.10jqka.com.cn/v6/moneyflow/hs_1A0001/last.js',
-    'https://d.10jqka.com.cn/v2/moneyflow/hs_1A0001/last.js',
-  ];
+/** 同花顺 moneyflow last.js：超大/大/中/小 流入、流出 → 净流入分时 */
+function parseThsMoneyFlowText(text, { note = '盘后兜底' } = {}) {
+  const m = String(text || '').match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  const bag = Object.values(JSON.parse(m[0]))[0];
+  const raw = String(bag?.data || '');
+  if (!raw) return null;
+  const dateRaw = String(bag.date || '');
+  const date =
+    dateRaw.length === 8
+      ? `${dateRaw.slice(0, 4)}-${dateRaw.slice(4, 6)}-${dateRaw.slice(6, 8)}`
+      : dateRaw;
+  const yi = 1e8;
+  const times = [];
+  const main = [];
+  const small = [];
+  const mid = [];
+  const large = [];
+  const huge = [];
+  for (const line of raw.split(';')) {
+    if (!line) continue;
+    const p = line.split(',');
+    if (p.length < 9) continue;
+    const hhmm = String(p[0] || '').padStart(4, '0');
+    const clock = `${hhmm.slice(0, 2)}:${hhmm.slice(2, 4)}`;
+    if (!isAshareSessionMinute(clock)) continue;
+    const v = p.slice(1, 9).map(Number);
+    if (v.some((x) => !Number.isFinite(x))) continue;
+    const hugeNet = v[0] - v[1];
+    const largeNet = v[2] - v[3];
+    const midNet = v[4] - v[5];
+    const smallNet = v[6] - v[7];
+    times.push(clock);
+    huge.push(+(hugeNet / yi).toFixed(2));
+    large.push(+(largeNet / yi).toFixed(2));
+    mid.push(+(midNet / yi).toFixed(2));
+    small.push(+(smallNet / yi).toFixed(2));
+    main.push(+((hugeNet + largeNet) / yi).toFixed(2));
+  }
+  if (!times.length) return null;
+  const last = (arr) => (arr.length ? arr[arr.length - 1] : 0);
+  const win = Math.min(30, Math.max(0, times.length - 1));
+  const idx0 = Math.max(0, times.length - 1 - win);
+  return {
+    date,
+    times,
+    main,
+    small,
+    mid,
+    large,
+    huge,
+    source: 'ths',
+    summary: {
+      main: last(main),
+      small: last(small),
+      mid: last(mid),
+      large: last(large),
+      huge: last(huge),
+      recentMain: +(last(main) - main[idx0]).toFixed(2),
+      recentSmall: +(last(small) - small[idx0]).toFixed(2),
+      recentMinutes: win,
+      asOf: `${date} ${times[times.length - 1]}`.trim(),
+      fetchedAt: Date.now(),
+      note,
+    },
+  };
+}
+
+async function fetchThsMoneyFlowUrls(urls, note) {
   for (const url of urls) {
     try {
       const res = await fetch(url, {
@@ -1472,69 +1531,94 @@ async function fetchThsMarketMoneyFlow() {
         },
       });
       if (!res.ok) continue;
-      const text = await res.text();
-      const m = text.match(/\{[\s\S]*\}/);
-      if (!m) continue;
-      const bag = Object.values(JSON.parse(m[0]))[0];
-      const raw = String(bag?.data || '');
-      if (!raw) continue;
-      const dateRaw = String(bag.date || '');
-      const date =
-        dateRaw.length === 8
-          ? `${dateRaw.slice(0, 4)}-${dateRaw.slice(4, 6)}-${dateRaw.slice(6, 8)}`
-          : dateRaw;
+      const parsed = parseThsMoneyFlowText(await res.text(), { note });
+      if (parsed?.times?.length) return parsed;
+    } catch {
+      /* next */
+    }
+  }
+  return null;
+}
+
+/** 同花顺上证资金分时兜底（东财盘后 fflow 常 502） */
+async function fetchThsMarketMoneyFlow() {
+  return fetchThsMoneyFlowUrls(
+    [
+      'https://d.10jqka.com.cn/v6/moneyflow/hs_1A0001/last.js',
+      'https://d.10jqka.com.cn/v2/moneyflow/hs_1A0001/last.js',
+    ],
+    '上证分时·盘后兜底',
+  );
+}
+
+/** secid → 同花顺 moneyflow 代码（沪 hs_ / 深 sz_） */
+function thsMoneyFlowCodes(secid) {
+  const [mk, code] = String(secid || '').split('.');
+  const c = String(code || '').replace(/\D/g, '');
+  if (!/^\d{6}$/.test(c)) return [];
+  if (mk === '1' || c.startsWith('6') || c.startsWith('9')) return [`hs_${c}`];
+  if (mk === '0' || c.startsWith('0') || c.startsWith('3')) return [`sz_${c}`, `hs_${c}`];
+  if (/^(92|8|4)/.test(c)) return [`hs_${c}`, `sz_${c}`];
+  return [`hs_${c}`, `sz_${c}`];
+}
+
+/** 个股同花顺分时资金兜底（沪市盘后较稳；深市常空） */
+async function fetchThsStockMoneyFlow(secid) {
+  const codes = thsMoneyFlowCodes(secid);
+  const urls = codes.flatMap((code) => [
+    `https://d.10jqka.com.cn/v6/moneyflow/${code}/last.js`,
+    `https://d.10jqka.com.cn/v2/moneyflow/${code}/last.js`,
+  ]);
+  return fetchThsMoneyFlowUrls(urls, '分时·盘后兜底');
+}
+
+/** 盘后东财分时挂掉时，用日资金摘要填卡片（避免整块「暂无资金」） */
+async function fetchStockFlowDaySummary(secid) {
+  const q = `lmt=3&klt=101&secid=${encodeURIComponent(secid)}&${FLOW_FIELDS}`;
+  const hosts = [
+    'https://push2his.eastmoney.com',
+    'https://push2delay.eastmoney.com',
+    'https://push2.eastmoney.com',
+  ];
+  for (const host of hosts) {
+    try {
+      const res = await fetch(`${host}/api/qt/stock/fflow/daykline/get?${q}&_=${Date.now()}`, {
+        signal: AbortSignal.timeout(7000),
+        cache: 'no-store',
+        headers: { Referer: 'https://data.eastmoney.com/zjlx/' },
+      });
+      if (!res.ok) continue;
+      const lines = (await res.json())?.data?.klines || [];
+      if (!lines.length) continue;
+      const last = String(lines[lines.length - 1] || '').split(',');
+      const date = last[0] || '';
       const yi = 1e8;
-      const times = [];
-      const main = [];
-      const small = [];
-      const mid = [];
-      const large = [];
-      const huge = [];
-      for (const line of raw.split(';')) {
-        if (!line) continue;
-        const p = line.split(',');
-        if (p.length < 9) continue;
-        const hhmm = String(p[0] || '').padStart(4, '0');
-        const clock = `${hhmm.slice(0, 2)}:${hhmm.slice(2, 4)}`;
-        if (!isAshareSessionMinute(clock)) continue;
-        const v = p.slice(1, 9).map(Number);
-        if (v.some((x) => !Number.isFinite(x))) continue;
-        const hugeNet = v[0] - v[1];
-        const largeNet = v[2] - v[3];
-        const midNet = v[4] - v[5];
-        const smallNet = v[6] - v[7];
-        times.push(clock);
-        huge.push(+(hugeNet / yi).toFixed(2));
-        large.push(+(largeNet / yi).toFixed(2));
-        mid.push(+(midNet / yi).toFixed(2));
-        small.push(+(smallNet / yi).toFixed(2));
-        main.push(+((hugeNet + largeNet) / yi).toFixed(2));
-      }
-      if (!times.length) continue;
-      const last = (arr) => (arr.length ? arr[arr.length - 1] : 0);
-      const win = Math.min(30, Math.max(0, times.length - 1));
-      const idx0 = Math.max(0, times.length - 1 - win);
+      const main = +(Number(last[1] || 0) / yi).toFixed(2);
+      const small = +(Number(last[2] || 0) / yi).toFixed(2);
+      const mid = +(Number(last[3] || 0) / yi).toFixed(2);
+      const large = +(Number(last[4] || 0) / yi).toFixed(2);
+      const huge = +(Number(last[5] || 0) / yi).toFixed(2);
       return {
         date,
-        times,
-        main,
-        small,
-        mid,
-        large,
-        huge,
-        source: 'ths',
+        times: [],
+        main: [],
+        small: [],
+        mid: [],
+        large: [],
+        huge: [],
+        source: 'day',
         summary: {
-          main: last(main),
-          small: last(small),
-          mid: last(mid),
-          large: last(large),
-          huge: last(huge),
-          recentMain: +(last(main) - main[idx0]).toFixed(2),
-          recentSmall: +(last(small) - small[idx0]).toFixed(2),
-          recentMinutes: win,
-          asOf: times.length ? `${date} ${times[times.length - 1]}`.trim() : date,
+          main,
+          small,
+          mid,
+          large,
+          huge,
+          recentMain: null,
+          recentSmall: null,
+          recentMinutes: 0,
+          asOf: date,
           fetchedAt: Date.now(),
-          note: '上证分时·盘后兜底',
+          note: '日资金·盘后摘要',
         },
       };
     } catch {
@@ -1839,22 +1923,71 @@ export async function fetchDragonTiger(code) {
   return { recent: [], note: '没有龙虎榜记录' };
 }
 
-/** 个股主力资金分时（多节点竞速 + 会话缓存，盘后 502 不把图刷没） */
-export async function fetchStockMoneyFlow(secid) {
+function todayYmd() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function rememberStockFlow(secid, parsed) {
+  if (!parsed) return parsed;
   const key = `stock:${secid}`;
+  flowCache.set(key, parsed);
+  if (!parsed.times?.length && !parsed.summary) return parsed;
+  try {
+    localStorage.setItem(
+      `gt_stock_flow_v1:${secid}`,
+      JSON.stringify({ ...parsed, savedAt: Date.now() }),
+    );
+  } catch {
+    /* private mode */
+  }
+  return parsed;
+}
+
+function readCachedStockFlow(secid) {
+  const key = `stock:${secid}`;
+  const mem = flowCache.get(key);
+  if (mem?.times?.length || mem?.summary) return mem;
+  try {
+    const raw = localStorage.getItem(`gt_stock_flow_v1:${secid}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed?.date && parsed.date !== todayYmd()) return null;
+    if (!parsed?.times?.length && !parsed?.summary) return null;
+    flowCache.set(key, parsed);
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 个股主力资金分时。
+ * 盘后东财分钟 fflow 常 502/CORS：竞速 → 同花顺分时 → 日资金摘要 → 缓存。
+ */
+export async function fetchStockMoneyFlow(secid) {
+  if (!secid || isForeignSecid(secid)) return parseFlowKlines([]);
   const q = `lmt=0&klt=1&secid=${encodeURIComponent(secid)}&${FLOW_FIELDS}`;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     const parsed = await fetchFlowKlineRace(q, {
-      timeoutMs: 5000 + attempt * 1000,
+      timeoutMs: 7000 + attempt * 1000,
       hosts: eastFlowHosts(6),
     });
-    if (parsed?.times?.length) {
-      flowCache.set(key, parsed);
-      return parsed;
-    }
-    if (attempt < 1) await new Promise((r) => setTimeout(r, 350));
+    if (parsed?.times?.length) return rememberStockFlow(secid, parsed);
+    if (attempt < 2) await new Promise((r) => setTimeout(r, 350 + attempt * 250));
   }
-  return flowCache.get(key) || parseFlowKlines([]);
+
+  const ths = await fetchThsStockMoneyFlow(secid);
+  if (ths?.times?.length) return rememberStockFlow(secid, ths);
+
+  const cached = readCachedStockFlow(secid);
+  if (cached?.times?.length) return cached;
+
+  const day = await fetchStockFlowDaySummary(secid);
+  if (day?.summary) return rememberStockFlow(secid, day);
+
+  return cached || parseFlowKlines([]);
 }
 
 /** 涨跌家数分布 */
