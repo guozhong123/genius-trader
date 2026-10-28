@@ -78,6 +78,7 @@ import { analyzeMainForceIntent } from './lib/predict.js';
 import {
   askDeepseekReport,
   askLhbPick3,
+  askLhbQuick3,
   askLhbReport,
   askMarketReport,
   askPredictPack,
@@ -264,6 +265,8 @@ const els = {
   lhbMeta: $('lhb-meta'),
   lhbBoard: $('lhb-board'),
   lhbFilters: $('lhb-filters'),
+  lhbQuickMeta: $('lhb-quick-meta'),
+  lhbQuickPicks: $('lhb-quick-picks'),
   lhbAiMeta: $('lhb-ai-meta'),
   lhbAiPicks: $('lhb-ai-picks'),
   lhbAiAnalyzeBtn: $('lhb-ai-analyze-btn'),
@@ -429,6 +432,9 @@ function scrollPageTop() {
 const APP_VIEWS = ['watch', 'pulse', 'lhb', 'data', 'etf'];
 let lhbBoardCache = null;
 let lhbBoardLoading = false;
+let lhbQuickCache = null;
+let lhbQuickLoading = false;
+let lhbQuickForDate = '';
 let lhbAdviceCache = null;
 let lhbAdviceLoading = false;
 let lhbAdviceForDate = '';
@@ -2165,6 +2171,36 @@ function paintLhbAuctionHint(pack) {
     ${lines || '<div style="color:var(--muted)">可做的票会在分析后写出竞价条件。</div>'}`;
 }
 
+function renderLhbQuickPicks(pack) {
+  if (!els.lhbQuickPicks) return;
+  const picks = (pack?.picks || []).map((p) => ({
+    ...p,
+    changePct: livePctOf(p.code, p.changePct),
+  }));
+  if (!picks.length) {
+    els.lhbQuickPicks.innerHTML =
+      '<p class="text-[12px]" style="color:var(--muted)">暂无建议。等榜单出来后再看。</p>';
+    return;
+  }
+  els.lhbQuickPicks.innerHTML = picks
+    .map((p, i) => {
+      const tags = (p.buyerTags || [])
+        .map((t) => `<span class="lhb-tag lhb-tag-${escAttr(t)}">${esc(t)}</span>`)
+        .join('');
+      return `<button type="button" class="lhb-ai-pick" data-lhb-quick="${i}">
+        <div class="lhb-ai-pick-top">
+          <span class="lhb-ai-rank">${i + 1}</span>
+          <span class="lhb-ai-name">${esc(p.name)}</span>
+          <span class="tabular-nums" style="color:var(--muted)">${esc(p.code)}</span>
+          <span class="tabular-nums ${tone(p.changePct)}">${fmtPct(p.changePct)}</span>
+        </div>
+        <div class="lhb-ai-pick-tags">${tags}</div>
+        <p class="lhb-ai-reason">${esc(p.reason)}</p>
+      </button>`;
+    })
+    .join('');
+}
+
 function renderLhbAdvice(pack) {
   if (!els.lhbAiPicks) return;
   const picks = (pack?.picks || []).map((p) => ({
@@ -2175,7 +2211,7 @@ function renderLhbAdvice(pack) {
   paintLhbAuctionHint(pack);
   if (!picks.length) {
     els.lhbAiPicks.innerHTML =
-      '<p class="text-[12px] leading-relaxed" style="color:var(--muted)">今晚榜单出来后点右上「分析」。会给出买入概率、真买/诱多、次日低吸与第三天卖出计划；刷新页面不会自动调用 AI。</p>';
+      '<p class="text-[12px] leading-relaxed" style="color:var(--muted)">上面是快捷三只；这里是一日游深分析。点右上「分析」给出买入概率、真买/诱多与次日买/第三天卖计划。</p>';
     return;
   }
   const isDaytrip = picks.some((p) => Number.isFinite(Number(p.buyProb)));
@@ -2517,10 +2553,10 @@ async function ensureLhbAiHistoryTables(preferDate) {
       const batch = todo.slice(i, i + chunk);
       await Promise.all(
         batch.map(async (day) => {
-          if (preferDate === day && lhbAdviceCache?.picks?.length) {
+          if (preferDate === day && lhbQuickCache?.picks?.length) {
             await rememberLhbAdviceDay(
               day,
-              lhbAdviceCache,
+              lhbQuickCache,
               lhbBoardCache?.date === day ? lhbBoardCache.rows : null,
             );
             return;
@@ -2580,27 +2616,95 @@ function syncLhbAnalyzeBtn() {
   els.lhbAiAnalyzeBtn.textContent = lhbAdviceLoading ? '分析中…' : lhbAdviceCache?.picks?.length ? '重新分析' : '分析';
 }
 
-/** 只展示最新分析结果；不自动调用 DeepSeek */
-function refreshLhbAdvice(pack) {
-  if (!els.lhbAiPicks) return;
+/** 上方快捷三只：先席位排序，有密钥再用 AI 补强；并刷新下方一日游缓存展示 */
+async function refreshLhbAdvice(pack, force = false) {
   const date = pack?.date || '';
+  refreshLhbDaytripView(date);
+
+  if (!els.lhbQuickPicks) return;
+  const heuristic = {
+    picks: pickLhbThree(pack?.rows || []),
+    note: '',
+    source: 'local',
+    generatedAt: Date.now(),
+  };
+  if (!force && lhbQuickCache?.picks?.length && lhbQuickForDate === date) {
+    renderLhbQuickPicks(lhbQuickCache);
+    if (els.lhbQuickMeta) {
+      els.lhbQuickMeta.textContent =
+        lhbQuickCache.source && lhbQuickCache.source !== 'local'
+          ? `建议买这三只 · ${date} · ${lhbQuickCache.source}`
+          : `建议买这三只 · ${date}`;
+    }
+    void rememberLhbAdviceDay(date, lhbQuickCache).then(() => {
+      paintLhbHistoryFromSettings();
+      void ensureLhbAiHistoryTables(date);
+    });
+    return;
+  }
+  lhbQuickCache = heuristic;
+  lhbQuickForDate = date;
+  renderLhbQuickPicks(heuristic);
+  if (els.lhbQuickMeta) els.lhbQuickMeta.textContent = date ? `建议买这三只 · ${date}` : '建议买这三只';
+  void rememberLhbAdviceDay(date, heuristic).then(() => {
+    paintLhbHistoryFromSettings();
+    void ensureLhbAiHistoryTables(date);
+  });
+  const apiKey = String(state.settings?.deepseekApiKey || '').trim();
+  if (!apiKey || lhbQuickLoading || !pack?.rows?.length) return;
+  lhbQuickLoading = true;
+  if (els.lhbQuickMeta) els.lhbQuickMeta.textContent = `正在用 AI 从 ${pack.rows.length} 只里挑三只…`;
+  try {
+    const clock = marketClock();
+    const ai = await askLhbQuick3(
+      apiKey,
+      { date, rows: pack.rows.slice(0, 40), clock: clock.line },
+      state.settings?.aiModel,
+    );
+    if (ai.picks?.length === 3) {
+      lhbQuickCache = ai;
+      lhbQuickForDate = date;
+      renderLhbQuickPicks(ai);
+      if (els.lhbQuickMeta) {
+        els.lhbQuickMeta.textContent = `${ai.note || '建议买这三只'} · ${date}`;
+      }
+      void rememberLhbAdviceDay(date, ai).then(() => {
+        paintLhbHistoryFromSettings();
+        void ensureLhbAiHistoryTables(date);
+      });
+    } else if (els.lhbQuickMeta) {
+      els.lhbQuickMeta.textContent = `建议买这三只 · ${date}`;
+    }
+  } catch (e) {
+    console.warn('lhb quick ai', e);
+    if (els.lhbQuickMeta) {
+      els.lhbQuickMeta.textContent = `建议买这三只 · ${date}（AI 未连上，先按席位排序）`;
+    }
+  } finally {
+    lhbQuickLoading = false;
+  }
+}
+
+/** 下方一日游：只展示已保存结果，不自动调用 */
+function refreshLhbDaytripView(date) {
+  if (!els.lhbAiPicks) return;
+  const day = date || '';
   const cached =
-    lhbAdviceCache?.picks?.length && lhbAdviceForDate === date
+    lhbAdviceCache?.picks?.length && lhbAdviceForDate === day
       ? lhbAdviceCache
-      : latestLhbDaytripReport(date);
+      : latestLhbDaytripReport(day);
   if (cached?.picks?.length) {
     lhbAdviceCache = cached;
-    lhbAdviceForDate = date || String(cached.boardDate || '').slice(0, 10);
+    lhbAdviceForDate = day || String(cached.boardDate || '').slice(0, 10);
     renderLhbAdvice(cached);
-    paintLhbAdviceMeta(cached, date);
+    paintLhbAdviceMeta(cached, day);
   } else {
     lhbAdviceCache = null;
-    lhbAdviceForDate = date;
+    lhbAdviceForDate = day;
     renderLhbAdvice(null);
-    paintLhbAdviceMeta(null, date);
+    paintLhbAdviceMeta(null, day);
   }
   syncLhbAnalyzeBtn();
-  void ensureLhbAiHistoryTables(date);
   void loadLhbDaytripBacktest();
 }
 
@@ -2908,7 +3012,7 @@ async function refreshLhbBoard(force = false) {
     renderLhbBoard(lhbBoardCache);
     if (els.lhbMeta) els.lhbMeta.textContent = lhbMetaText(lhbBoardCache, true);
     syncLhbAsof(lhbBoardCache);
-    refreshLhbAdvice({ ...lhbBoardCache, rows: visibleLhbRows() });
+    void refreshLhbAdvice({ ...lhbBoardCache, rows: visibleLhbRows() }, false);
     return;
   }
   lhbBoardLoading = true;
@@ -2930,7 +3034,7 @@ async function refreshLhbBoard(force = false) {
     renderLhbBoard(pack);
     if (els.lhbMeta) els.lhbMeta.textContent = lhbMetaText(pack, true);
     syncLhbAsof(pack);
-    refreshLhbAdvice({ ...pack, rows: visibleLhbRows() });
+    void refreshLhbAdvice({ ...pack, rows: visibleLhbRows() }, force);
   } catch (e) {
     console.error(e);
     if (els.lhbMeta) els.lhbMeta.textContent = `加载失败：${e?.message || e}`;
@@ -6080,7 +6184,17 @@ els.lhbFilters?.addEventListener('click', (e) => {
   if (!lhbBoardCache) return;
   renderLhbBoard(lhbBoardCache);
   if (els.lhbMeta) els.lhbMeta.textContent = lhbMetaText(lhbBoardCache, true);
-  // 筛选只影响榜单与下次「分析」候选；不覆盖已有一日游结果
+  // 筛选后重算上方快捷三只；不覆盖下方一日游结果
+  const heuristic = {
+    picks: pickLhbThree(visibleLhbRows()),
+    note: '',
+    source: 'local',
+    generatedAt: Date.now(),
+  };
+  lhbQuickCache = heuristic;
+  lhbQuickForDate = `${lhbBoardCache.date || ''}:${[...lhbFilterOn].sort().join(',')}`;
+  renderLhbQuickPicks(heuristic);
+  if (els.lhbQuickMeta) els.lhbQuickMeta.textContent = `建议买这三只 · ${lhbBoardCache.date || ''}`;
 });
 els.lhbAiAnalyzeBtn?.addEventListener('click', () => void runLhbDaytripAnalyze());
 els.lhbAiHistoryBtn?.addEventListener('click', () => openLhbHistModal());
