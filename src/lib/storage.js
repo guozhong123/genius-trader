@@ -106,6 +106,8 @@ export const DEFAULT_SETTINGS = {
    * [{ id, boardDate, generatedAt, source, note, picks:[...] }]
    */
   lhbAiReports: [],
+  /** 标记不做买入的交易日 YYYY-MM-DD（次日买那天） */
+  lhbDaytripSkipBuyDate: '',
 };
 
 export const SIM_START_CASH = 100000;

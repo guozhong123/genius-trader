@@ -639,15 +639,18 @@ const LHB_DAYTRIP_SYSTEM = [
   '当晚龙虎榜出来后分析锁票 → 次日低开或盘中低点买入 → 第三天卖出兑现（A股T+1）。',
   '只从给出的龙虎榜名单里挑 2～3 只，禁止名单外代码。必须恰好按买入概率从高到低排序。',
   '核心逻辑：顺势跟主力真买；位置已高、诱多、纯游资一日游出货要大幅降权。',
+  '连板高度：首板可优先；2板谨慎；3板及以上默认大幅降权（buyProb 通常 ≤48），除非机构/北向真买且未追高。',
+  '大盘若标注「宜等/急杀」，note 必须写清今日不宜开新仓，各票 buyProb 整体下压。',
   'force 只能是：真买 / 诱多 / 分歧 / 不明。',
   'position 只能是：不高 / 偏高 / 追高。',
   'buyProb 是「次日按计划低吸后、第三天能兑现」的主观概率 0～100，整数。诱多或追高一般 ≤45；真买且位置不高可到 55～78；禁止给 90 以上。',
-  'buyPlan 写次日怎么买（低开几点附近、是否等回踩）；sellPlan 写第三天怎么卖（高开减、冲高卖、破位走）。',
+  'buyPlan 写次日怎么买；sellPlan 写第三天怎么卖；auction 写一句次日竞价复核（如：低开1%内可买，高开超2%放弃）。',
   'reason 一句人话，点明买家类型与真买/诱多判断。risk 一句主要风险。',
   '禁止承诺收益。输出严格 JSON：',
   '{"note":"两句总判断（适不适合做一日游）",',
   '"picks":[{"code":"600000","name":"浦发银行","buyProb":62,"force":"真买","position":"不高",',
-  '"reason":"机构净买且位置不高","buyPlan":"次日低开1%内或回踩分时均线买","sellPlan":"第三天冲高减仓，弱转强才拿到尾盘","risk":"大盘若低开扩散则放弃"}]}',
+  '"reason":"机构净买且位置不高","buyPlan":"次日低开1%内或回踩分时均线买",',
+  '"sellPlan":"第三天冲高减仓，弱转强才拿到尾盘","auction":"竞价低开或平开可看，高开>2%放弃","risk":"大盘若低开扩散则放弃"}]}',
 ].join('');
 
 function clampBuyProb(n) {
@@ -675,8 +678,9 @@ export async function askLhbPick3(apiKey, { date, rows, clock, tape, marketBits 
         .map((b) => `${b.short || b.seat} ${signed(b.netYi)}亿`)
         .join('、') || row.seats || '未提供';
     const pos = row.aiPos;
+    const boardH = Number(pos?.boardHeight);
     const posBit = pos
-      ? ` 近5日合计${signed(pos.sum5)}% 距20日高${signed(pos.distHigh)}%`
+      ? ` 近5日合计${signed(pos.sum5)}% 距20日高${signed(pos.distHigh)}% 连板${Number.isFinite(boardH) ? boardH : 0}板`
       : '';
     return `${i + 1}. ${row.code} ${row.name} 上榜涨跌${signed(row.changePct)}% 净买${signed(row.netYi)}亿 买家:${(row.buyerTags || []).join('/') || '未标注'} 席位:${seats}${posBit}`;
   });
@@ -688,7 +692,7 @@ export async function askLhbPick3(apiKey, { date, rows, clock, tape, marketBits 
     marketBits || '',
     '候选名单：',
     lines.join('\n') || '没有龙虎榜。不要编造。',
-    '请按一日游/打板接力逻辑给出 2～3 只，并写清买入概率与真买/诱多。',
+    '请按一日游/打板接力逻辑给出 2～3 只；写清买入概率、真买/诱多、连板高度考量与次日竞价复核。',
   ]
     .filter(Boolean)
     .join('\n');
@@ -739,15 +743,23 @@ export async function askLhbPick3(apiKey, { date, rows, clock, tape, marketBits 
       if (!row) return null;
       const force = forceOk.has(String(p.force || '').trim()) ? String(p.force).trim() : '不明';
       const position = posOk.has(String(p.position || '').trim()) ? String(p.position).trim() : '不明';
+      const boardHeight = Number(row.aiPos?.boardHeight);
+      let buyProb = clampBuyProb(p.buyProb);
+      // 本地硬规则：诱多/追高/高位板再砍一刀，避免模型偏乐观
+      if (force === '诱多' || position === '追高') buyProb = Math.min(buyProb, 45);
+      if (Number.isFinite(boardHeight) && boardHeight >= 3) buyProb = Math.min(buyProb, 48);
+      if (Number.isFinite(boardHeight) && boardHeight >= 2 && force !== '真买') buyProb = Math.min(buyProb, 52);
       return {
         code: row.code,
         name: row.name,
-        buyProb: clampBuyProb(p.buyProb),
+        buyProb,
         force,
         position,
+        boardHeight: Number.isFinite(boardHeight) ? boardHeight : null,
         reason: clip(p.reason || '', 100),
         buyPlan: clip(p.buyPlan || '', 80),
         sellPlan: clip(p.sellPlan || '', 80),
+        auction: clip(p.auction || '', 80),
         risk: clip(p.risk || '', 80),
         buyerTags: row.buyerTags || [],
         netYi: row.netYi,

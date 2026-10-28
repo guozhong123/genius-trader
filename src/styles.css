@@ -2875,6 +2875,82 @@ button.pick-card {
   background: color-mix(in oklab, var(--up) 8%, transparent);
 }
 
+.lhb-ai-badge-放弃 {
+  color: #fff;
+  border-color: color-mix(in oklab, var(--down) 50%, var(--line));
+  background: color-mix(in oklab, var(--down) 82%, #0f172a);
+}
+
+.lhb-ai-pick.is-abandon {
+  opacity: 0.55;
+  background: color-mix(in oklab, var(--muted) 6%, var(--panel-solid));
+  border-style: dashed;
+}
+
+.lhb-ai-pick.is-abandon .lhb-ai-prob {
+  filter: grayscale(0.35);
+}
+
+.lhb-ai-skip-banner {
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--down);
+  border: 1px solid color-mix(in oklab, var(--down) 35%, var(--line));
+  background: color-mix(in oklab, var(--down) 10%, var(--panel-solid));
+}
+
+.lhb-ai-skip-banner b {
+  font-weight: 800;
+}
+
+.lhb-ai-auction,
+.lhb-ai-backtest {
+  border-radius: 10px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in oklab, var(--line) 80%, transparent);
+  background: color-mix(in oklab, var(--accent) 5%, var(--panel-solid));
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.lhb-ai-auction-title,
+.lhb-ai-backtest-title {
+  font-size: 12px;
+  font-weight: 800;
+  margin-bottom: 4px;
+  color: var(--accent);
+}
+
+.lhb-ai-auction-base {
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.lhb-ai-backtest-sum {
+  margin-bottom: 6px;
+  color: var(--ink);
+}
+
+.lhb-ai-backtest-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.lhb-ai-bt-chip {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: baseline;
+  border-radius: 8px;
+  padding: 3px 8px;
+  background: color-mix(in oklab, var(--panel-solid) 88%, var(--accent));
+  border: 1px solid color-mix(in oklab, var(--line) 75%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+
 .lhb-ai-plans {
   margin-top: 6px;
   display: grid;
