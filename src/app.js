@@ -2028,23 +2028,47 @@ let lhbHistoryTask = null;
 let lhbGainTask = null;
 let lhbGainCache = { key: '', days: [], byCode: {} };
 
-function slimLhbPicks(picks) {
-  return (picks || []).slice(0, 3).map((p) => ({
-    code: String(p.code || '').replace(/\D/g, '').slice(-6),
-    name: String(p.name || '').trim(),
-    reason: String(p.reason || '').slice(0, 80),
-    buyerTags: Array.isArray(p.buyerTags) ? p.buyerTags.slice(0, 4) : [],
-    changePct: Number.isFinite(Number(p.changePct)) ? Number(p.changePct) : null,
-  }));
+function slimLhbPicks(picks, boardRows) {
+  const byCode = new Map((boardRows || []).map((r) => [String(r.code), r]));
+  return (picks || []).slice(0, 3).map((p) => {
+    const code = String(p.code || '').replace(/\D/g, '').slice(-6);
+    const board = byCode.get(code);
+    // 历史表要「上榜那天」的涨幅和净买，不用实时涨跌
+    const dayPct = Number(board?.changePct);
+    const pickPct = Number(p.changePct);
+    const net = Number(board?.netYi ?? p.netYi);
+    return {
+      code,
+      name: String(board?.name || p.name || '').trim(),
+      reason: String(p.reason || '').slice(0, 80),
+      buyerTags: Array.isArray(p.buyerTags)
+        ? p.buyerTags.slice(0, 4)
+        : Array.isArray(board?.buyerTags)
+          ? board.buyerTags.slice(0, 4)
+          : [],
+      changePct: Number.isFinite(dayPct) ? dayPct : Number.isFinite(pickPct) ? pickPct : null,
+      netYi: Number.isFinite(net) ? net : null,
+    };
+  });
 }
 
 function lhbAiHistoryList() {
   return Array.isArray(state.settings?.lhbAiHistory) ? state.settings.lhbAiHistory : [];
 }
 
-async function rememberLhbAdviceDay(date, pack) {
+function lhbHistoryNeedsEnrich(row) {
+  return (row?.picks || []).some(
+    (p) => !Number.isFinite(Number(p?.netYi)) || !Number.isFinite(Number(p?.changePct)),
+  );
+}
+
+async function rememberLhbAdviceDay(date, pack, boardRows) {
   const day = String(date || '').slice(0, 10);
-  const picks = slimLhbPicks(pack?.picks);
+  const rows =
+    boardRows ||
+    (lhbBoardCache?.date === day ? lhbBoardCache.rows : null) ||
+    [];
+  const picks = slimLhbPicks(pack?.picks, rows);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || picks.length < 1) return;
   const cur = lhbAiHistoryList().filter((row) => row?.date !== day);
   const next = [
@@ -2065,8 +2089,10 @@ async function rememberLhbAdviceDay(date, pack) {
       const old = lhbAiHistoryList()[i];
       return (
         old?.date === row.date &&
-        JSON.stringify(old?.picks?.map((p) => p.code)) === JSON.stringify(row.picks.map((p) => p.code)) &&
-        old?.source === row.source
+        old?.source === row.source &&
+        JSON.stringify(
+          old?.picks?.map((p) => [p.code, p.changePct, p.netYi]),
+        ) === JSON.stringify(row.picks.map((p) => [p.code, p.changePct, p.netYi]))
       );
     });
   if (same) return;
@@ -2093,9 +2119,15 @@ function renderLhbWeekTable(rows) {
             .map((i) => {
               const p = row.picks[i];
               if (!p?.code) return '<td style="color:var(--muted)">—</td>';
+              const pct = Number(p.changePct);
+              const net = Number(p.netYi);
               return `<td><button type="button" class="lhb-ai-cell" data-lhb-hist-code="${escAttr(p.code)}">
                 <span class="lhb-ai-cell-name">${esc(p.name || p.code)}</span>
                 <span class="lhb-ai-cell-code">${esc(p.code)}</span>
+                <span class="lhb-ai-cell-stats">
+                  <span class="tabular-nums ${tone(pct)}">${esc(fmtPct(pct))}</span>
+                  <span class="tabular-nums ${tone(net)}">净买 ${esc(fmtYiBoard(net))}亿</span>
+                </span>
               </button></td>`;
             })
             .join('');
@@ -2223,23 +2255,41 @@ async function ensureLhbAiHistoryTables(preferDate) {
   if (lhbHistoryTask) return lhbHistoryTask;
   lhbHistoryTask = (async () => {
     const want = shTradeDates(LHB_HISTORY_DAYS);
-    const have = new Set(lhbAiHistoryList().map((r) => r.date));
-    const missing = want.filter((day) => !have.has(day));
-    // 缺的交易日用当天榜单启发式补三只，不批量打 AI；并行拉几天加快首屏
+    const byDate = new Map(lhbAiHistoryList().map((r) => [r.date, r]));
+    // 缺日，或已有记录但缺涨幅/净买 → 重新拉榜补齐
+    const todo = want.filter((day) => {
+      const row = byDate.get(day);
+      return !row?.picks?.length || lhbHistoryNeedsEnrich(row);
+    });
     const chunk = 3;
-    for (let i = 0; i < missing.length; i += chunk) {
-      const batch = missing.slice(i, i + chunk);
+    for (let i = 0; i < todo.length; i += chunk) {
+      const batch = todo.slice(i, i + chunk);
       await Promise.all(
         batch.map(async (day) => {
           if (preferDate === day && lhbAdviceCache?.picks?.length) {
-            await rememberLhbAdviceDay(day, lhbAdviceCache);
+            await rememberLhbAdviceDay(
+              day,
+              lhbAdviceCache,
+              lhbBoardCache?.date === day ? lhbBoardCache.rows : null,
+            );
             return;
           }
           const pack = await fetchDailyBillboardOn(day, 40).catch(() => null);
           if (!pack?.rows?.length) return;
-          const picks = pickLhbThree(pack.rows);
+          const existing = byDate.get(day);
+          // 已有选股：只按榜单补当天涨幅/净买；没有则启发式重选
+          const picks = existing?.picks?.length ? existing.picks : pickLhbThree(pack.rows);
           if (!picks.length) return;
-          await rememberLhbAdviceDay(day, { picks, source: 'local', note: '', generatedAt: Date.now() });
+          await rememberLhbAdviceDay(
+            day,
+            {
+              picks,
+              source: existing?.source || 'local',
+              note: existing?.note || '',
+              generatedAt: existing?.generatedAt || Date.now(),
+            },
+            pack.rows,
+          );
         }),
       );
       paintLhbHistoryFromSettings();
