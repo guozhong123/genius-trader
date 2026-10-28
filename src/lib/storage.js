@@ -96,6 +96,11 @@ export const DEFAULT_SETTINGS = {
    * { capital, cash, positions[], trades[], realizedPnl, note, updatedAt, lastRunAt }
    */
   simBook: null,
+  /**
+   * 龙虎榜 AI 建议历史（按交易日，新的在前）
+   * [{ date, picks:[{code,name,reason,buyerTags,changePct}], source, note }]
+   */
+  lhbAiHistory: [],
 };
 
 export const SIM_START_CASH = 100000;

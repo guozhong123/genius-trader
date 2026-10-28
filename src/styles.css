@@ -2787,6 +2787,82 @@ button.pick-card {
   color: var(--muted);
 }
 
+.lhb-ai-table-wrap {
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--line) 80%, transparent);
+  background: var(--panel-solid);
+}
+
+.lhb-ai-hist {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.lhb-ai-hist th,
+.lhb-ai-hist td {
+  padding: 6px 8px;
+  border-bottom: 1px solid color-mix(in oklab, var(--line) 70%, transparent);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.lhb-ai-hist th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: color-mix(in oklab, var(--panel-solid) 92%, var(--accent));
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.lhb-ai-hist tr:last-child td {
+  border-bottom: 0;
+}
+
+.lhb-ai-hist .lhb-ai-date {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  min-width: 4.5rem;
+}
+
+.lhb-ai-hist button.lhb-ai-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  max-width: 7.5rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.lhb-ai-hist button.lhb-ai-cell:hover .lhb-ai-cell-name {
+  color: var(--accent);
+}
+
+.lhb-ai-cell-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 7rem;
+}
+
+.lhb-ai-cell-code {
+  font-size: 10px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.lhb-ai-hist .lhb-ai-pct {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
 @media (max-width: 640px) {
   .lhb-board {
     max-height: 36vh;

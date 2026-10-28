@@ -36,6 +36,8 @@ import {
   fetchIndustryMove,
   fetchDragonTiger,
   fetchDailyBillboard,
+  fetchDailyBillboardOn,
+  shTradeDates,
   fetchLimitSentiment,
   fetchTrackedFlows,
   fetchBoardLeaders,
@@ -264,6 +266,8 @@ const els = {
   lhbFilters: $('lhb-filters'),
   lhbAiMeta: $('lhb-ai-meta'),
   lhbAiPicks: $('lhb-ai-picks'),
+  lhbAiWeekTable: $('lhb-ai-week-table'),
+  lhbAiGainTable: $('lhb-ai-gain-table'),
   simAiBtn: $('sim-ai-btn'),
   simMarkBtn: $('sim-mark-btn'),
   simResetBtn: $('sim-reset-btn'),
@@ -2018,6 +2022,237 @@ function renderLhbAdvice(pack) {
     .join('');
 }
 
+const LHB_HISTORY_DAYS = 10; // 近两周约 10 个交易日
+const LHB_GAIN_DAYS = 7;
+let lhbHistoryTask = null;
+let lhbGainTask = null;
+let lhbGainCache = { key: '', days: [], byCode: {} };
+
+function slimLhbPicks(picks) {
+  return (picks || []).slice(0, 3).map((p) => ({
+    code: String(p.code || '').replace(/\D/g, '').slice(-6),
+    name: String(p.name || '').trim(),
+    reason: String(p.reason || '').slice(0, 80),
+    buyerTags: Array.isArray(p.buyerTags) ? p.buyerTags.slice(0, 4) : [],
+    changePct: Number.isFinite(Number(p.changePct)) ? Number(p.changePct) : null,
+  }));
+}
+
+function lhbAiHistoryList() {
+  return Array.isArray(state.settings?.lhbAiHistory) ? state.settings.lhbAiHistory : [];
+}
+
+async function rememberLhbAdviceDay(date, pack) {
+  const day = String(date || '').slice(0, 10);
+  const picks = slimLhbPicks(pack?.picks);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || picks.length < 1) return;
+  const cur = lhbAiHistoryList().filter((row) => row?.date !== day);
+  const next = [
+    {
+      date: day,
+      picks,
+      source: pack?.source || 'local',
+      note: String(pack?.note || '').slice(0, 160),
+      generatedAt: pack?.generatedAt || Date.now(),
+    },
+    ...cur,
+  ]
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+    .slice(0, 20);
+  const same =
+    next.length === lhbAiHistoryList().length &&
+    next.every((row, i) => {
+      const old = lhbAiHistoryList()[i];
+      return (
+        old?.date === row.date &&
+        JSON.stringify(old?.picks?.map((p) => p.code)) === JSON.stringify(row.picks.map((p) => p.code)) &&
+        old?.source === row.source
+      );
+    });
+  if (same) return;
+  state.settings = await saveSettings({ lhbAiHistory: next });
+}
+
+function renderLhbWeekTable(rows) {
+  if (!els.lhbAiWeekTable) return;
+  const list = (rows || [])
+    .filter((r) => r?.date && r?.picks?.length)
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+    .slice(0, LHB_HISTORY_DAYS);
+  if (!list.length) {
+    els.lhbAiWeekTable.innerHTML =
+      '<p class="px-2 py-2 text-[11px]" style="color:var(--muted)">正在补近两周建议…</p>';
+    return;
+  }
+  els.lhbAiWeekTable.innerHTML = `<table class="lhb-ai-hist">
+    <thead><tr><th>日期</th><th>第1只</th><th>第2只</th><th>第3只</th></tr></thead>
+    <tbody>
+      ${list
+        .map((row) => {
+          const cells = [0, 1, 2]
+            .map((i) => {
+              const p = row.picks[i];
+              if (!p?.code) return '<td style="color:var(--muted)">—</td>';
+              return `<td><button type="button" class="lhb-ai-cell" data-lhb-hist-code="${escAttr(p.code)}">
+                <span class="lhb-ai-cell-name">${esc(p.name || p.code)}</span>
+                <span class="lhb-ai-cell-code">${esc(p.code)}</span>
+              </button></td>`;
+            })
+            .join('');
+          const short = `${String(row.date).slice(5)}${lhbWeekday(row.date) ? ` ${lhbWeekday(row.date)}` : ''}`;
+          return `<tr><td class="lhb-ai-date">${esc(short)}</td>${cells}</tr>`;
+        })
+        .join('')}
+    </tbody>
+  </table>`;
+}
+
+function renderLhbGainTable(days, stocks, byCode) {
+  if (!els.lhbAiGainTable) return;
+  const dates = (days || []).slice(0, LHB_GAIN_DAYS);
+  const rows = stocks || [];
+  if (!dates.length || !rows.length) {
+    els.lhbAiGainTable.innerHTML =
+      '<p class="px-2 py-2 text-[11px]" style="color:var(--muted)">等上面选出股票后再拉近 7 日涨幅。</p>';
+    return;
+  }
+  els.lhbAiGainTable.innerHTML = `<table class="lhb-ai-hist">
+    <thead><tr><th>股票</th>${dates
+      .map((d) => `<th class="tabular-nums">${esc(String(d).slice(5))}</th>`)
+      .join('')}</tr></thead>
+    <tbody>
+      ${rows
+        .map((s) => {
+          const series = byCode?.[s.code] || {};
+          const cells = dates
+            .map((d) => {
+              const pct = series[d];
+              return `<td class="lhb-ai-pct ${tone(pct)}">${esc(fmtPct(pct))}</td>`;
+            })
+            .join('');
+          return `<tr>
+            <td><button type="button" class="lhb-ai-cell" data-lhb-hist-code="${escAttr(s.code)}">
+              <span class="lhb-ai-cell-name">${esc(s.name || s.code)}</span>
+              <span class="lhb-ai-cell-code">${esc(s.code)}</span>
+            </button></td>${cells}
+          </tr>`;
+        })
+        .join('')}
+    </tbody>
+  </table>`;
+}
+
+function stocksFromLhbHistory(history) {
+  const seen = new Set();
+  const out = [];
+  for (const day of history || []) {
+    for (const p of day.picks || []) {
+      const code = String(p.code || '').replace(/\D/g, '').slice(-6);
+      if (!/^\d{6}$/.test(code) || seen.has(code)) continue;
+      seen.add(code);
+      out.push({ code, name: p.name || code });
+      if (out.length >= 9) return out;
+    }
+  }
+  return out;
+}
+
+async function loadLhbGainTable(history) {
+  const stocks = stocksFromLhbHistory(history);
+  if (!els.lhbAiGainTable || !stocks.length) {
+    renderLhbGainTable([], [], {});
+    return;
+  }
+  const key = stocks.map((s) => s.code).join(',');
+  if (lhbGainCache.key === key && lhbGainCache.days?.length) {
+    renderLhbGainTable(lhbGainCache.days, stocks, lhbGainCache.byCode);
+    return;
+  }
+  if (lhbGainTask) return lhbGainTask;
+  els.lhbAiGainTable.innerHTML =
+    '<p class="px-2 py-2 text-[11px]" style="color:var(--muted)">正在拉近 7 日涨幅…</p>';
+  lhbGainTask = (async () => {
+    const byCode = {};
+    const daySet = new Set();
+    await Promise.all(
+      stocks.map(async (s) => {
+        const market = marketOfCode(s.code);
+        const secid = toSecid(market, s.code);
+        const k = await fetchKline(secid, 101, 12).catch(() => null);
+        const points = (k?.points || []).filter((p) => p?.date && Number.isFinite(Number(p.changePct)));
+        const last = points.slice(-LHB_GAIN_DAYS).reverse();
+        const map = {};
+        for (const p of last) {
+          const d = String(p.date).slice(0, 10);
+          map[d] = Number(p.changePct);
+          daySet.add(d);
+        }
+        byCode[s.code] = map;
+      }),
+    );
+    const days = [...daySet].sort((a, b) => b.localeCompare(a)).slice(0, LHB_GAIN_DAYS);
+    lhbGainCache = { key, days, byCode };
+    renderLhbGainTable(days, stocks, byCode);
+  })()
+    .catch((e) => {
+      console.warn('lhb gain table', e);
+      if (els.lhbAiGainTable) {
+        els.lhbAiGainTable.innerHTML =
+          '<p class="px-2 py-2 text-[11px]" style="color:var(--muted)">近 7 日涨幅暂时拉不到。</p>';
+      }
+    })
+    .finally(() => {
+      lhbGainTask = null;
+    });
+  return lhbGainTask;
+}
+
+function paintLhbHistoryFromSettings() {
+  const want = shTradeDates(LHB_HISTORY_DAYS);
+  const history = lhbAiHistoryList()
+    .filter((r) => want.includes(r.date))
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  renderLhbWeekTable(history);
+  void loadLhbGainTable(history);
+  return history;
+}
+
+async function ensureLhbAiHistoryTables(preferDate) {
+  if (!els.lhbAiWeekTable) return;
+  paintLhbHistoryFromSettings();
+  if (lhbHistoryTask) return lhbHistoryTask;
+  lhbHistoryTask = (async () => {
+    const want = shTradeDates(LHB_HISTORY_DAYS);
+    const have = new Set(lhbAiHistoryList().map((r) => r.date));
+    const missing = want.filter((day) => !have.has(day));
+    // 缺的交易日用当天榜单启发式补三只，不批量打 AI；并行拉几天加快首屏
+    const chunk = 3;
+    for (let i = 0; i < missing.length; i += chunk) {
+      const batch = missing.slice(i, i + chunk);
+      await Promise.all(
+        batch.map(async (day) => {
+          if (preferDate === day && lhbAdviceCache?.picks?.length) {
+            await rememberLhbAdviceDay(day, lhbAdviceCache);
+            return;
+          }
+          const pack = await fetchDailyBillboardOn(day, 40).catch(() => null);
+          if (!pack?.rows?.length) return;
+          const picks = pickLhbThree(pack.rows);
+          if (!picks.length) return;
+          await rememberLhbAdviceDay(day, { picks, source: 'local', note: '', generatedAt: Date.now() });
+        }),
+      );
+      paintLhbHistoryFromSettings();
+    }
+    paintLhbHistoryFromSettings();
+  })()
+    .catch((e) => console.warn('lhb history tables', e))
+    .finally(() => {
+      lhbHistoryTask = null;
+    });
+  return lhbHistoryTask;
+}
+
 async function refreshLhbAdvice(pack, force = false) {
   if (!els.lhbAiPicks) return;
   const date = pack?.date || '';
@@ -2029,12 +2264,20 @@ async function refreshLhbAdvice(pack, force = false) {
         ? `建议买这三只 · ${date} · ${lhbAdviceCache.source}`
         : `建议买这三只 · ${date}`;
     }
+    void rememberLhbAdviceDay(date, lhbAdviceCache).then(() => {
+      paintLhbHistoryFromSettings();
+      void ensureLhbAiHistoryTables(date);
+    });
     return;
   }
   lhbAdviceCache = heuristic;
   lhbAdviceForDate = date;
   renderLhbAdvice(heuristic);
   if (els.lhbAiMeta) els.lhbAiMeta.textContent = date ? `建议买这三只 · ${date}` : '建议买这三只';
+  void rememberLhbAdviceDay(date, heuristic).then(() => {
+    paintLhbHistoryFromSettings();
+    void ensureLhbAiHistoryTables(date);
+  });
   const apiKey = String(state.settings?.deepseekApiKey || '').trim();
   if (!apiKey || lhbAdviceLoading || !pack?.rows?.length) return;
   lhbAdviceLoading = true;
@@ -2053,6 +2296,10 @@ async function refreshLhbAdvice(pack, force = false) {
       if (els.lhbAiMeta) {
         els.lhbAiMeta.textContent = `${ai.note || '建议买这三只'} · ${date}`;
       }
+      void rememberLhbAdviceDay(date, ai).then(() => {
+        paintLhbHistoryFromSettings();
+        void ensureLhbAiHistoryTables(date);
+      });
     } else if (els.lhbAiMeta) {
       els.lhbAiMeta.textContent = `建议买这三只 · ${date}`;
     }
@@ -5350,6 +5597,37 @@ els.lhbAiPicks?.addEventListener('click', (e) => {
   const row = lhbBoardCache?.rows?.find((r) => r.code === pick.code) || pick;
   const item = lhbRowToItem(row);
   if (item) void openDetail(item);
+});
+
+function openLhbHistCode(code) {
+  const c = String(code || '').replace(/\D/g, '').slice(-6);
+  if (!/^\d{6}$/.test(c)) return;
+  const fromBoard = lhbBoardCache?.rows?.find((r) => r.code === c);
+  if (fromBoard) {
+    openLhbDetail(c);
+    return;
+  }
+  const fromHist = lhbAiHistoryList()
+    .flatMap((d) => d.picks || [])
+    .find((p) => p.code === c);
+  const item = lhbRowToItem({
+    code: c,
+    name: fromHist?.name || c,
+    market: marketOfCode(c),
+    changePct: fromHist?.changePct,
+  });
+  if (item) void openDetail(item);
+}
+
+els.lhbAiWeekTable?.addEventListener('click', (e) => {
+  const btn = e.target.closest?.('[data-lhb-hist-code]');
+  if (!btn || !els.lhbAiWeekTable.contains(btn)) return;
+  openLhbHistCode(btn.getAttribute('data-lhb-hist-code'));
+});
+els.lhbAiGainTable?.addEventListener('click', (e) => {
+  const btn = e.target.closest?.('[data-lhb-hist-code]');
+  if (!btn || !els.lhbAiGainTable.contains(btn)) return;
+  openLhbHistCode(btn.getAttribute('data-lhb-hist-code'));
 });
 
 els.strategyDesk?.addEventListener('click', (e) => {

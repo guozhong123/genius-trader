@@ -2246,9 +2246,9 @@ export async function fetchBoards(type = 'industry') {
   return fetchTencentBoardQuotes(type);
 }
 
-function shTradeDates(count = 4) {
+export function shTradeDates(count = 4) {
   const out = [];
-  for (let i = 0; i < 12 && out.length < count; i += 1) {
+  for (let i = 0; i < Math.max(20, count * 2) && out.length < count; i += 1) {
     const dt = new Date(Date.now() - i * 86400000);
     const wd = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', weekday: 'short' }).format(dt);
     if (wd === 'Sat' || wd === 'Sun') continue;
@@ -2543,6 +2543,65 @@ export async function fetchPreviousSessionChanges(codes, todayYmd) {
   return map;
 }
 
+function mapBillboardRows(rows, limit = 60) {
+  const byCode = new Map();
+  for (const row of rows || []) {
+    const code = String(row.SECURITY_CODE || '');
+    if (!code) continue;
+    const netYi = +(Number(row.BILLBOARD_NET_AMT || 0) / 1e8).toFixed(2);
+    const cur = byCode.get(code);
+    if (cur && Number(cur.netYi) >= Number(netYi)) {
+      if (row.EXPLANATION && !cur.reason.includes(String(row.EXPLANATION))) {
+        cur.reason = [cur.reason, String(row.EXPLANATION).trim()].filter(Boolean).join('；');
+      }
+      continue;
+    }
+    byCode.set(code, {
+      code,
+      name: String(row.SECURITY_NAME_ABBR || ''),
+      close: Number(row.CLOSE_PRICE),
+      changePct: Number(row.CHANGE_RATE),
+      netYi,
+      buyYi: +(Number(row.BILLBOARD_BUY_AMT || 0) / 1e8).toFixed(2),
+      sellYi: +(Number(row.BILLBOARD_SELL_AMT || 0) / 1e8).toFixed(2),
+      seats: String(row.EXPLAIN || '').trim(),
+      reason: String(row.EXPLANATION || '').trim(),
+      buyers: [],
+      buyerTags: tagsFromExplain(`${row.EXPLAIN || ''} ${row.EXPLANATION || ''}`),
+    });
+  }
+  return [...byCode.values()]
+    .sort((a, b) => Number(b.netYi) - Number(a.netYi))
+    .slice(0, limit);
+}
+
+/** 指定交易日的龙虎榜（轻量：不拉席位明细，够启发式挑三只） */
+export async function fetchDailyBillboardOn(date, limit = 60) {
+  const day = String(date || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return { date: '', rows: [] };
+  const url =
+    'https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_DAILYBILLBOARD_DETAILSNEW' +
+    '&columns=SECURITY_CODE,SECURITY_NAME_ABBR,TRADE_DATE,CLOSE_PRICE,CHANGE_RATE,' +
+    'BILLBOARD_NET_AMT,BILLBOARD_BUY_AMT,BILLBOARD_SELL_AMT,EXPLAIN,EXPLANATION' +
+    '&pageSize=200&pageNumber=1&sortColumns=BILLBOARD_NET_AMT&sortTypes=-1' +
+    `&filter=(TRADE_DATE='${day}')&source=WEB&client=WEB`;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return { date: day, rows: [] };
+    const rows = (await res.json())?.result?.data || [];
+    if (!rows.length) return { date: day, rows: [] };
+    return {
+      date: day,
+      rows: mapBillboardRows(rows, limit).map((row) => ({
+        ...row,
+        buyerTags: row.buyerTags?.length ? uniqueTags(row.buyerTags) : ['营业部'],
+      })),
+    };
+  } catch {
+    return { date: day, rows: [] };
+  }
+}
+
 /**
  * 最近一个已披露交易日的龙虎榜个股（按净买入排序，代码去重）。
  * 附带席位买家标签（北向 / 机构 / 游资 / 营业部）。
@@ -2550,49 +2609,12 @@ export async function fetchPreviousSessionChanges(codes, todayYmd) {
  */
 export async function fetchDailyBillboard(limit = 60) {
   for (const date of shTradeDates(8)) {
-    const url =
-      'https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_DAILYBILLBOARD_DETAILSNEW' +
-      '&columns=SECURITY_CODE,SECURITY_NAME_ABBR,TRADE_DATE,CLOSE_PRICE,CHANGE_RATE,' +
-      'BILLBOARD_NET_AMT,BILLBOARD_BUY_AMT,BILLBOARD_SELL_AMT,EXPLAIN,EXPLANATION' +
-      '&pageSize=200&pageNumber=1&sortColumns=BILLBOARD_NET_AMT&sortTypes=-1' +
-      `&filter=(TRADE_DATE='${date}')&source=WEB&client=WEB`;
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
-      if (!res.ok) continue;
-      const rows = (await res.json())?.result?.data || [];
-      if (!rows.length) continue;
-      const byCode = new Map();
-      for (const row of rows) {
-        const code = String(row.SECURITY_CODE || '');
-        if (!code) continue;
-        const netYi = +(Number(row.BILLBOARD_NET_AMT || 0) / 1e8).toFixed(2);
-        const cur = byCode.get(code);
-        if (cur && Number(cur.netYi) >= Number(netYi)) {
-          if (row.EXPLANATION && !cur.reason.includes(String(row.EXPLANATION))) {
-            cur.reason = [cur.reason, String(row.EXPLANATION).trim()].filter(Boolean).join('；');
-          }
-          continue;
-        }
-        byCode.set(code, {
-          code,
-          name: String(row.SECURITY_NAME_ABBR || ''),
-          close: Number(row.CLOSE_PRICE),
-          changePct: Number(row.CHANGE_RATE),
-          netYi,
-          buyYi: +(Number(row.BILLBOARD_BUY_AMT || 0) / 1e8).toFixed(2),
-          sellYi: +(Number(row.BILLBOARD_SELL_AMT || 0) / 1e8).toFixed(2),
-          seats: String(row.EXPLAIN || '').trim(),
-          reason: String(row.EXPLANATION || '').trim(),
-          buyers: [],
-          buyerTags: tagsFromExplain(`${row.EXPLAIN || ''} ${row.EXPLANATION || ''}`),
-        });
-      }
-      const ranked = [...byCode.values()]
-        .sort((a, b) => Number(b.netYi) - Number(a.netYi))
-        .slice(0, limit);
+      const basic = await fetchDailyBillboardOn(date, limit);
+      if (!basic.rows?.length) continue;
       const [seats, prevByCode] = await Promise.all([
         fetchBillboardSeats(date).catch(() => []),
-        fetchPreviousSessionChanges(ranked.map((row) => row.code)).catch(() => ({})),
+        fetchPreviousSessionChanges(basic.rows.map((row) => row.code)).catch(() => ({})),
       ]);
       const seatsByCode = new Map();
       for (const seat of seats) {
@@ -2600,25 +2622,21 @@ export async function fetchDailyBillboard(limit = 60) {
         list.push(seat);
         seatsByCode.set(seat.code, list);
       }
-      const mapped = ranked
-        .map((row) => {
-          const list = (seatsByCode.get(row.code) || [])
-            .filter((s) => Number(s.netYi) > 0)
-            .sort((a, b) => Number(b.netYi) - Number(a.netYi))
-            .slice(0, 4);
-          const tags = uniqueTags([
-            ...row.buyerTags,
-            ...list.map((s) => s.tag),
-          ]);
-          const prev = prevByCode[row.code];
-          return {
-            ...row,
-            buyers: list,
-            buyerTags: tags.length ? tags : ['营业部'],
-            prevChangePct: prev ? prev.changePct : null,
-            prevDate: prev?.date || '',
-          };
-        });
+      const mapped = basic.rows.map((row) => {
+        const list = (seatsByCode.get(row.code) || [])
+          .filter((s) => Number(s.netYi) > 0)
+          .sort((a, b) => Number(b.netYi) - Number(a.netYi))
+          .slice(0, 4);
+        const tags = uniqueTags([...row.buyerTags, ...list.map((s) => s.tag)]);
+        const prev = prevByCode[row.code];
+        return {
+          ...row,
+          buyers: list,
+          buyerTags: tags.length ? tags : ['营业部'],
+          prevChangePct: prev ? prev.changePct : null,
+          prevDate: prev?.date || '',
+        };
+      });
       return { date, rows: mapped };
     } catch {
       /* try older day */
