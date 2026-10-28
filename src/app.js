@@ -439,7 +439,9 @@ let lhbAdviceCache = null;
 let lhbAdviceLoading = false;
 let lhbAdviceForDate = '';
 const LHB_FILTERS = ['北向', '机构', '主力', '游资'];
-const lhbFilterOn = new Set(LHB_FILTERS);
+/** 默认过滤游资：只看北向/机构/主力 */
+const LHB_FILTER_DEFAULT = ['北向', '机构', '主力'];
+const lhbFilterOn = new Set(LHB_FILTER_DEFAULT);
 const LHB_SORT_KEYS = { livePct: '今日涨跌', prevPct: '前一日涨跌', netYi: '净买亿' };
 let lhbSort = { key: 'netYi', dir: 'desc' };
 const SIM_FEE_RATE = 0.0005; // 万五
@@ -559,7 +561,10 @@ function setView(view) {
     refreshPulse();
     loadTrendSheet();
   }
-  if (state.view === 'lhb') void refreshLhbBoard(false);
+  if (state.view === 'lhb') {
+    syncLhbFilterButtons();
+    void refreshLhbBoard(false);
+  }
   if (state.view === 'etf') ensureHeatmap();
   syncMarketAiBtn();
   requestAnimationFrame(() => resizeAllCharts());
@@ -1960,15 +1965,22 @@ function renderLhbBoard(pack) {
   </table>`;
 }
 
+function isPureYouzi(row) {
+  const tags = row?.buyerTags || [];
+  if (!tags.includes('游资')) return false;
+  return !tags.includes('北向') && !tags.includes('机构') && !tags.includes('主力');
+}
+
 function scoreLhbPick(row) {
   const net = Number(row.netYi) || 0;
   const tags = row.buyerTags || [];
   let score = net;
-  // 默认不过滤游资：北向/机构/主力/游资都可进建议，主要看净买强度
+  // AI 建议默认避开纯游资，优先北向/机构/主力
   if (tags.includes('北向')) score += 2.4;
   if (tags.includes('机构')) score += 2.0;
   if (tags.includes('主力')) score += 1.6;
-  if (tags.includes('游资')) score += 1.6;
+  if (isPureYouzi(row)) score -= 8;
+  else if (tags.includes('游资')) score -= 0.8;
   if (net <= 0) score -= 10;
   return score;
 }
@@ -1979,13 +1991,14 @@ function heuristicLhbReason(row) {
   if (tags.includes('北向') && tags.includes('机构')) return '北向+机构同时净买，资金比纯游资干净。';
   if (tags.includes('北向')) return `北向席位在买${top ? `（${top.short} ${fmtYiBoard(top.netYi)}亿）` : ''}。`;
   if (tags.includes('机构')) return `有机构席位净买${top ? `，${top.short} ${fmtYiBoard(top.netYi)}亿` : ''}。`;
+  if (tags.includes('主力')) return `主力净买靠前${top ? `，${top.short} ${fmtYiBoard(top.netYi)}亿` : ''}。`;
   if (tags.includes('游资')) return `游资净买靠前，短线可看一眼，注意一日游。`;
   return `榜上净买入 ${fmtYiBoard(row.netYi)} 亿，席位以营业部为主。`;
 }
 
 function pickLhbThree(rows) {
   return [...(rows || [])]
-    .filter((r) => Number(r.netYi) > 0)
+    .filter((r) => Number(r.netYi) > 0 && !isPureYouzi(r))
     .sort((a, b) => scoreLhbPick(b) - scoreLhbPick(a))
     .slice(0, 3)
     .map((r) => ({
@@ -6201,7 +6214,7 @@ els.lhbFilters?.addEventListener('click', (e) => {
   if (!tag) return;
   if (lhbFilterOn.has(tag)) lhbFilterOn.delete(tag);
   else lhbFilterOn.add(tag);
-  if (!lhbFilterOn.size) LHB_FILTERS.forEach((t) => lhbFilterOn.add(t));
+  if (!lhbFilterOn.size) LHB_FILTER_DEFAULT.forEach((t) => lhbFilterOn.add(t));
   syncLhbFilterButtons();
   if (!lhbBoardCache) return;
   renderLhbBoard(lhbBoardCache);
