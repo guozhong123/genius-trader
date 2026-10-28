@@ -633,35 +633,67 @@ export async function askLhbReport(apiKey, facts, modelPref) {
   };
 }
 
-const LHB_PICK_SYSTEM = [
+const LHB_DAYTRIP_SYSTEM = [
   FACTS_GROUNDING,
-  '你是个人A股短线参谋。用户给你当天龙虎榜去重后的个股（净买入、涨跌、谁在买）。',
-  '只从名单里挑 3 只更值得短线关注买入的股票，必须恰好 3 只，禁止名单外的代码。',
-  '优先：北向或机构净买、净买入靠前、不是纯游资一日游打板。涨停且只有营业部/游资的票要降权。',
-  'reason 写一句人话，必须点明买家类型（北向/机构/游资/营业部）。',
-  '输出严格 JSON：',
-  '{"picks":[{"code":"600000","name":"浦发银行","reason":"北向净买，资金比游资干净"}],"note":"一句总判断"}',
+  '你是个人A股「主力一日游 / 打板接力」超短参谋。用户玩法固定：',
+  '当晚龙虎榜出来后分析锁票 → 次日低开或盘中低点买入 → 第三天卖出兑现（A股T+1）。',
+  '只从给出的龙虎榜名单里挑 2～3 只，禁止名单外代码。必须恰好按买入概率从高到低排序。',
+  '核心逻辑：顺势跟主力真买；位置已高、诱多、纯游资一日游出货要大幅降权。',
+  'force 只能是：真买 / 诱多 / 分歧 / 不明。',
+  'position 只能是：不高 / 偏高 / 追高。',
+  'buyProb 是「次日按计划低吸后、第三天能兑现」的主观概率 0～100，整数。诱多或追高一般 ≤45；真买且位置不高可到 55～78；禁止给 90 以上。',
+  'buyPlan 写次日怎么买（低开几点附近、是否等回踩）；sellPlan 写第三天怎么卖（高开减、冲高卖、破位走）。',
+  'reason 一句人话，点明买家类型与真买/诱多判断。risk 一句主要风险。',
+  '禁止承诺收益。输出严格 JSON：',
+  '{"note":"两句总判断（适不适合做一日游）",',
+  '"picks":[{"code":"600000","name":"浦发银行","buyProb":62,"force":"真买","position":"不高",',
+  '"reason":"机构净买且位置不高","buyPlan":"次日低开1%内或回踩分时均线买","sellPlan":"第三天冲高减仓，弱转强才拿到尾盘","risk":"大盘若低开扩散则放弃"}]}',
 ].join('');
 
-/** 从本机龙虎榜名单里挑 3 只建议买的票 */
-export async function askLhbPick3(apiKey, { date, rows, clock }, modelPref) {
+function clampBuyProb(n) {
+  const x = Math.round(Number(n));
+  if (!Number.isFinite(x)) return 0;
+  return Math.max(0, Math.min(100, x));
+}
+
+/** 龙虎榜一日游分析：买入概率 + 真买/诱多 + 次日买/第三天卖计划 */
+export async function askLhbPick3(apiKey, { date, rows, clock, tape, marketBits }, modelPref) {
   const key = String(apiKey || '').trim();
   if (!key) throw new Error('缺少 DeepSeek 密钥');
-  const lines = (rows || []).map(
-    (row, i) =>
-      `${i + 1}. ${row.code} ${row.name} 涨跌${signed(row.changePct)}% 净买${signed(row.netYi)}亿 买家:${(row.buyerTags || []).join('/') || '未标注'} 席位:${(row.buyers || [])
+  const bjNow = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date());
+  const lines = (rows || []).map((row, i) => {
+    const seats =
+      (row.buyers || [])
         .map((b) => `${b.short || b.seat} ${signed(b.netYi)}亿`)
-        .join('、') || row.seats || '未提供'}`,
-  );
+        .join('、') || row.seats || '未提供';
+    const pos = row.aiPos;
+    const posBit = pos
+      ? ` 近5日合计${signed(pos.sum5)}% 距20日高${signed(pos.distHigh)}%`
+      : '';
+    return `${i + 1}. ${row.code} ${row.name} 上榜涨跌${signed(row.changePct)}% 净买${signed(row.netYi)}亿 买家:${(row.buyerTags || []).join('/') || '未标注'} 席位:${seats}${posBit}`;
+  });
   const facts = [
+    `本机拉取事实的北京时间 ${bjNow}。以下来自东财龙虎榜与本机日K，不是模型记忆。`,
     clock || '',
-    date ? `龙虎榜交易日 ${date}` : '龙虎榜日期未提供。',
+    date ? `龙虎榜交易日 ${date}（收盘后披露）。用户打算次日买、第三天卖。` : '龙虎榜日期未提供。',
+    tape ? `大盘情绪：${tape}` : '',
+    marketBits || '',
+    '候选名单：',
     lines.join('\n') || '没有龙虎榜。不要编造。',
+    '请按一日游/打板接力逻辑给出 2～3 只，并写清买入概率与真买/诱多。',
   ]
     .filter(Boolean)
     .join('\n');
   const messages = [
-    { role: 'system', content: LHB_PICK_SYSTEM },
+    { role: 'system', content: LHB_DAYTRIP_SYSTEM },
     { role: 'user', content: facts },
   ];
   const preferred = modelPref === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash';
@@ -698,27 +730,40 @@ export async function askLhbPick3(apiKey, { date, rows, clock }, modelPref) {
   if (!json) throw lastErr || new Error('DeepSeek 分析失败');
   const report = JSON.parse(json?.choices?.[0]?.message?.content || '{}');
   const byCode = new Map((rows || []).map((r) => [String(r.code), r]));
+  const forceOk = new Set(['真买', '诱多', '分歧', '不明']);
+  const posOk = new Set(['不高', '偏高', '追高']);
   const picks = (Array.isArray(report.picks) ? report.picks : [])
     .map((p) => {
       const code = String(p?.code || '').replace(/\D/g, '').slice(-6);
       const row = byCode.get(code);
       if (!row) return null;
+      const force = forceOk.has(String(p.force || '').trim()) ? String(p.force).trim() : '不明';
+      const position = posOk.has(String(p.position || '').trim()) ? String(p.position).trim() : '不明';
       return {
         code: row.code,
         name: row.name,
-        reason: clip(p.reason || '', 80),
+        buyProb: clampBuyProb(p.buyProb),
+        force,
+        position,
+        reason: clip(p.reason || '', 100),
+        buyPlan: clip(p.buyPlan || '', 80),
+        sellPlan: clip(p.sellPlan || '', 80),
+        risk: clip(p.risk || '', 80),
         buyerTags: row.buyerTags || [],
         netYi: row.netYi,
         changePct: row.changePct,
       };
     })
     .filter(Boolean)
+    .sort((a, b) => b.buyProb - a.buyProb)
     .slice(0, 3);
   return {
+    kind: 'lhb-daytrip',
     picks,
-    note: clip(report.note, 160),
+    note: clip(report.note, 220),
     generatedAt: Date.now(),
     source: used,
+    boardDate: date || '',
   };
 }
 

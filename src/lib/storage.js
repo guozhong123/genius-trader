@@ -98,9 +98,14 @@ export const DEFAULT_SETTINGS = {
   simBook: null,
   /**
    * 龙虎榜 AI 建议历史（按交易日，新的在前）
-   * [{ date, picks:[{code,name,reason,buyerTags,changePct}], source, note }]
+   * [{ date, picks:[{code,name,reason,buyerTags,changePct,netYi,buyProb,force,position}], source, note }]
    */
   lhbAiHistory: [],
+  /**
+   * 龙虎榜「主力一日游」每次手动分析纪录（新的在前，最多约 30 条）
+   * [{ id, boardDate, generatedAt, source, note, picks:[...] }]
+   */
+  lhbAiReports: [],
 };
 
 export const SIM_START_CASH = 100000;
