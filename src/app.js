@@ -2818,17 +2818,41 @@ async function loadLhbDaytripBacktest() {
   return lhbBacktestTask;
 }
 
-/** 手动：拉日K位置 + DeepSeek 一日游分析 */
-async function runLhbDaytripAnalyze() {
+/** 手动：拉日K位置 + DeepSeek 一日游分析。同日榜默认复用，避免每次结果乱跳。 */
+async function runLhbDaytripAnalyze(force = false) {
   if (lhbAdviceLoading) return;
   if (!lhbBoardCache?.rows?.length) {
     if (els.lhbAiMeta) els.lhbAiMeta.textContent = '先刷新龙虎榜，再点分析。';
     return;
   }
+  const date = lhbBoardCache.date || '';
+  const existing =
+    (lhbAdviceCache?.picks?.length && lhbAdviceForDate === date && lhbAdviceCache) ||
+    latestLhbDaytripReport(date);
+  if (existing?.picks?.length && !force) {
+    lhbAdviceCache = existing;
+    lhbAdviceForDate = date;
+    renderLhbAdvice(existing);
+    paintLhbAdviceMeta(existing, date);
+    syncLhbAnalyzeBtn();
+    if (els.lhbAiMeta) {
+      const when = formatAiTime(existing.generatedAt);
+      els.lhbAiMeta.textContent = `${when ? `已有分析 ${when}` : '已有分析'} · 榜 ${date} · 点「重新分析」才会再调 AI`;
+    }
+    return;
+  }
+  if (existing?.picks?.length && force) {
+    const ok = await confirmDialog(
+      '重新分析',
+      '同一天榜单再分析，结果可能和上次不完全一样。确定要重新调用 DeepSeek 吗？',
+    );
+    if (!ok) return;
+  }
   const apiKey = await ensureDeepseekKey();
   if (!apiKey) return;
-  const date = lhbBoardCache.date || '';
-  const baseRows = visibleLhbRows().slice(0, 40);
+  const baseRows = [...visibleLhbRows()]
+    .sort((a, b) => scoreLhbPick(b) - scoreLhbPick(a) || String(a.code).localeCompare(String(b.code)))
+    .slice(0, 24);
   if (!baseRows.length) {
     if (els.lhbAiMeta) els.lhbAiMeta.textContent = '当前筛选下没有股票，换筛选或刷新榜单后再分析。';
     return;
@@ -2839,7 +2863,7 @@ async function runLhbDaytripAnalyze() {
     els.lhbAiMeta.textContent = `正在补日K位置，并从 ${baseRows.length} 只里做一日游分析…`;
   }
   try {
-    const rows = await enrichLhbAiPos(baseRows.map((r) => ({ ...r })), 28);
+    const rows = await enrichLhbAiPos(baseRows.map((r) => ({ ...r })), 24);
     const clock = marketClock();
     const tape = judgeTape(state.center);
     const panic = tape?.label === '宜等';
@@ -2902,7 +2926,7 @@ function openLhbHistModal() {
   const list = lhbAiReportsList();
   if (!list.length) {
     els.lhbHistBody.innerHTML =
-      '<p class="text-[12px] leading-relaxed" style="color:var(--muted)">还没有分析纪录。榜单出来后点「分析」，每次都会留在这里。</p>';
+      '<p class="text-[12px] leading-relaxed" style="color:var(--muted)">还没有分析纪录。同一天榜单默认只分析一次；只有点「重新分析」才会再留一条。</p>';
   } else {
     els.lhbHistBody.innerHTML = list
       .map((row, idx) => {
@@ -6196,7 +6220,13 @@ els.lhbFilters?.addEventListener('click', (e) => {
   renderLhbQuickPicks(heuristic);
   if (els.lhbQuickMeta) els.lhbQuickMeta.textContent = `建议买这三只 · ${lhbBoardCache.date || ''}`;
 });
-els.lhbAiAnalyzeBtn?.addEventListener('click', () => void runLhbDaytripAnalyze());
+els.lhbAiAnalyzeBtn?.addEventListener('click', () => {
+  const date = lhbBoardCache?.date || '';
+  const has =
+    (lhbAdviceCache?.picks?.length && lhbAdviceForDate === date) ||
+    !!latestLhbDaytripReport(date)?.picks?.length;
+  void runLhbDaytripAnalyze(!!has);
+});
 els.lhbAiHistoryBtn?.addEventListener('click', () => openLhbHistModal());
 els.lhbAiSkipBtn?.addEventListener('click', () => void toggleLhbDaytripSkip());
 els.lhbHistClose?.addEventListener('click', () => closeLhbHistModal());
@@ -6231,6 +6261,15 @@ els.lhbBoard?.addEventListener('keydown', (e) => {
   if (!row || !els.lhbBoard.contains(row)) return;
   e.preventDefault();
   openLhbDetail(row.getAttribute('data-lhb-open'));
+});
+els.lhbQuickPicks?.addEventListener('click', (e) => {
+  const btn = e.target.closest?.('[data-lhb-quick]');
+  if (!btn || !els.lhbQuickPicks.contains(btn)) return;
+  const pick = lhbQuickCache?.picks?.[Number(btn.getAttribute('data-lhb-quick'))];
+  if (!pick) return;
+  const row = lhbBoardCache?.rows?.find((r) => r.code === pick.code) || pick;
+  const item = lhbRowToItem(row);
+  if (item) void openDetail(item);
 });
 els.lhbAiPicks?.addEventListener('click', (e) => {
   const btn = e.target.closest?.('[data-lhb-pick]');

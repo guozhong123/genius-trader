@@ -683,7 +683,8 @@ export async function askLhbQuick3(apiKey, { date, rows, clock }, modelPref) {
     try {
       json = await postDeepseek(key, {
         model: attempt.model,
-        temperature: 0.2,
+        temperature: 0,
+        top_p: 1,
         response_format: { type: 'json_object' },
         messages,
         ...(attempt.thinking ? { thinking: attempt.thinking } : {}),
@@ -728,6 +729,8 @@ const LHB_DAYTRIP_SYSTEM = [
   '你是个人A股「主力一日游 / 打板接力」超短参谋。用户玩法固定：',
   '当晚龙虎榜出来后分析锁票 → 次日低开或盘中低点买入 → 第三天卖出兑现（A股T+1）。',
   '只从给出的龙虎榜名单里挑 2～3 只，禁止名单外代码。必须恰好按买入概率从高到低排序。',
+  '稳定性要求：同一份候选名单（代码、净买、买家类型、连板）必须给出相同股票代码与相近 buyProb；禁止随机换票、禁止为了「新鲜感」换结论。',
+  '排序硬规则（从高到低）：①北向/机构真买且位置不高 ②主力净买靠前且非高位板 ③其余。诱多、追高、3板及以上一律排后或 buyProb≤45。',
   '核心逻辑：顺势跟主力真买；位置已高、诱多、纯游资一日游出货要大幅降权。',
   '连板高度：首板可优先；2板谨慎；3板及以上默认大幅降权（buyProb 通常 ≤48），除非机构/北向真买且未追高。',
   '大盘若标注「宜等/急杀」，note 必须写清今日不宜开新仓，各票 buyProb 整体下压。',
@@ -743,6 +746,22 @@ const LHB_DAYTRIP_SYSTEM = [
   '"sellPlan":"第三天冲高减仓，弱转强才拿到尾盘","auction":"竞价低开或平开可看，高开>2%放弃","risk":"大盘若低开扩散则放弃"}]}',
 ].join('');
 
+function daytripSeed(date, rows) {
+  const key = [
+    String(date || ''),
+    ...(rows || []).map(
+      (r) =>
+        `${r.code}:${Number(r.netYi) || 0}:${Number(r.changePct) || 0}:${(r.buyerTags || []).join('/')}:${r.aiPos?.boardHeight ?? ''}`,
+    ),
+  ].join('|');
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i += 1) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return Math.abs(h) % 2147483647;
+}
+
 function clampBuyProb(n) {
   const x = Math.round(Number(n));
   if (!Number.isFinite(x)) return 0;
@@ -753,16 +772,25 @@ function clampBuyProb(n) {
 export async function askLhbPick3(apiKey, { date, rows, clock, tape, marketBits }, modelPref) {
   const key = String(apiKey || '').trim();
   if (!key) throw new Error('缺少 DeepSeek 密钥');
-  const bjNow = new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    hour12: false,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date());
-  const lines = (rows || []).map((row, i) => {
+  // 候选按净买+买家类型稳定排序，避免每次送进模型的顺序不同
+  const ranked = [...(rows || [])].sort((a, b) => {
+    const tagScore = (r) => {
+      const tags = r.buyerTags || [];
+      let s = Number(r.netYi) || 0;
+      if (tags.includes('北向')) s += 3.2;
+      if (tags.includes('机构')) s += 2.2;
+      if (tags.includes('主力')) s += 1.2;
+      if (tags.includes('游资')) s += 0.3;
+      const h = Number(r.aiPos?.boardHeight);
+      if (Number.isFinite(h) && h >= 3) s -= 4;
+      else if (Number.isFinite(h) && h >= 2) s -= 1.5;
+      return s;
+    };
+    const d = tagScore(b) - tagScore(a);
+    if (d !== 0) return d;
+    return String(a.code).localeCompare(String(b.code));
+  });
+  const lines = ranked.map((row, i) => {
     const seats =
       (row.buyers || [])
         .map((b) => `${b.short || b.seat} ${signed(b.netYi)}亿`)
@@ -775,12 +803,11 @@ export async function askLhbPick3(apiKey, { date, rows, clock, tape, marketBits 
     return `${i + 1}. ${row.code} ${row.name} 上榜涨跌${signed(row.changePct)}% 净买${signed(row.netYi)}亿 买家:${(row.buyerTags || []).join('/') || '未标注'} 席位:${seats}${posBit}`;
   });
   const facts = [
-    `本机拉取事实的北京时间 ${bjNow}。以下来自东财龙虎榜与本机日K，不是模型记忆。`,
-    clock || '',
+    '以下来自东财龙虎榜与本机日K，不是模型记忆。同一份名单请输出稳定结论。',
     date ? `龙虎榜交易日 ${date}（收盘后披露）。用户打算次日买、第三天卖。` : '龙虎榜日期未提供。',
     tape ? `大盘情绪：${tape}` : '',
     marketBits || '',
-    '候选名单：',
+    '候选名单（已按主力一日游优先级排好，请优先从前排选）：',
     lines.join('\n') || '没有龙虎榜。不要编造。',
     '请按一日游/打板接力逻辑给出 2～3 只；写清买入概率、真买/诱多、连板高度考量与次日竞价复核。',
   ]
@@ -791,6 +818,7 @@ export async function askLhbPick3(apiKey, { date, rows, clock, tape, marketBits 
     { role: 'user', content: facts },
   ];
   const preferred = modelPref === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash';
+  const seed = daytripSeed(date, ranked);
   const attempts =
     preferred === 'deepseek-v4-pro'
       ? [
@@ -809,7 +837,9 @@ export async function askLhbPick3(apiKey, { date, rows, clock, tape, marketBits 
     try {
       json = await postDeepseek(key, {
         model: attempt.model,
-        temperature: 0.2,
+        temperature: 0,
+        top_p: 1,
+        seed,
         response_format: { type: 'json_object' },
         messages,
         ...(attempt.thinking ? { thinking: attempt.thinking } : {}),
@@ -819,6 +849,24 @@ export async function askLhbPick3(apiKey, { date, rows, clock, tape, marketBits 
     } catch (e) {
       lastErr = e;
       if (/401|invalid|api key|密钥/i.test(String(e?.message || ''))) throw e;
+      // 个别接口不认 seed：去掉后再试同一模型
+      if (/seed|unknown|unsupported|invalid/i.test(String(e?.message || ''))) {
+        try {
+          json = await postDeepseek(key, {
+            model: attempt.model,
+            temperature: 0,
+            top_p: 1,
+            response_format: { type: 'json_object' },
+            messages,
+            ...(attempt.thinking ? { thinking: attempt.thinking } : {}),
+          });
+          used = attempt.model;
+          break;
+        } catch (e2) {
+          lastErr = e2;
+          if (/401|invalid|api key|密钥/i.test(String(e2?.message || ''))) throw e2;
+        }
+      }
     }
   }
   if (!json) throw lastErr || new Error('DeepSeek 分析失败');
