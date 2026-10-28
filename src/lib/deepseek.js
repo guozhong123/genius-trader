@@ -637,9 +637,9 @@ const LHB_QUICK_SYSTEM = [
   FACTS_GROUNDING,
   '你是个人A股短线参谋。用户给你当天龙虎榜去重后的个股（净买入、涨跌、谁在买）。',
   '只从名单里挑 3 只更值得短线关注买入的股票，必须恰好 3 只，禁止名单外的代码。',
-  '默认过滤纯游资：买家只有游资、没有北向/机构/主力的票禁止入选。',
-  '优先：北向或机构或主力净买、净买入靠前。涨停且只有营业部/游资的票要降权。',
-  'reason 写一句人话，必须点明买家类型（北向/机构/主力/游资/营业部）。',
+  '只选北向/机构/主力净买的票；纯游资、散户营业部禁止入选（避免次日砸盘）。',
+  '优先：北向或机构或主力净买、净买入靠前。',
+  'reason 写一句人话，必须点明买家类型（北向/机构/主力）。',
   '输出严格 JSON：',
   '{"picks":[{"code":"600000","name":"浦发银行","reason":"北向净买，资金比游资干净"}],"note":"一句总判断"}',
 ].join('');
@@ -700,15 +700,15 @@ export async function askLhbQuick3(apiKey, { date, rows, clock }, modelPref) {
   if (!json) throw lastErr || new Error('DeepSeek 分析失败');
   const report = JSON.parse(json?.choices?.[0]?.message?.content || '{}');
   const byCode = new Map((rows || []).map((r) => [String(r.code), r]));
-  const isPureYouzi = (row) => {
+  const hasForceBuyer = (row) => {
     const tags = row?.buyerTags || [];
-    return tags.includes('游资') && !tags.includes('北向') && !tags.includes('机构') && !tags.includes('主力');
+    return tags.includes('北向') || tags.includes('机构') || tags.includes('主力');
   };
   const picks = (Array.isArray(report.picks) ? report.picks : [])
     .map((p) => {
       const code = String(p?.code || '').replace(/\D/g, '').slice(-6);
       const row = byCode.get(code);
-      if (!row || isPureYouzi(row)) return null;
+      if (!row || !hasForceBuyer(row)) return null;
       return {
         code: row.code,
         name: row.name,
@@ -720,11 +720,11 @@ export async function askLhbQuick3(apiKey, { date, rows, clock }, modelPref) {
     })
     .filter(Boolean)
     .slice(0, 3);
-  // 模型若仍掺了纯游资被滤掉，用名单里非纯游资票补足 3 只
+  // 模型若掺了游资/散户被滤掉，用名单里主力票补足 3 只
   if (picks.length < 3) {
     const have = new Set(picks.map((p) => p.code));
     const fillers = [...(rows || [])]
-      .filter((r) => Number(r.netYi) > 0 && !isPureYouzi(r) && !have.has(r.code))
+      .filter((r) => Number(r.netYi) > 0 && hasForceBuyer(r) && !have.has(r.code))
       .sort((a, b) => (Number(b.netYi) || 0) - (Number(a.netYi) || 0));
     for (const r of fillers) {
       if (picks.length >= 3) break;
@@ -761,8 +761,8 @@ const LHB_DAYTRIP_SYSTEM = [
   '只从给出的龙虎榜名单里挑 2～3 只，禁止名单外代码。必须恰好按买入概率从高到低排序。',
   '稳定性要求：同一份候选名单（代码、净买、买家类型、连板）必须给出相同股票代码与相近 buyProb；禁止随机换票、禁止为了「新鲜感」换结论。',
   '排序硬规则（从高到低）：①北向/机构真买且位置不高 ②主力净买靠前且非高位板 ③其余。诱多、追高、3板及以上一律排后或 buyProb≤45。',
-  '默认过滤纯游资：买家只有游资、没有北向/机构/主力的票禁止入选。',
-  '核心逻辑：顺势跟主力真买；位置已高、诱多、纯游资一日游出货要大幅降权。',
+  '只选北向/机构/主力；纯游资、散户营业部禁止入选（游资容易次日砸盘）。',
+  '核心逻辑：顺势跟主力真买；位置已高、诱多要大幅降权。',
   '连板高度：首板可优先；2板谨慎；3板及以上默认大幅降权（buyProb 通常 ≤48），除非机构/北向真买且未追高。',
   '大盘若标注「宜等/急杀」，note 必须写清今日不宜开新仓，各票 buyProb 整体下压。',
   'force 只能是：真买 / 诱多 / 分歧 / 不明。',
@@ -905,15 +905,15 @@ export async function askLhbPick3(apiKey, { date, rows, clock, tape, marketBits 
   const byCode = new Map((rows || []).map((r) => [String(r.code), r]));
   const forceOk = new Set(['真买', '诱多', '分歧', '不明']);
   const posOk = new Set(['不高', '偏高', '追高']);
-  const isPureYouziRow = (row) => {
+  const hasForceBuyer = (row) => {
     const tags = row?.buyerTags || [];
-    return tags.includes('游资') && !tags.includes('北向') && !tags.includes('机构') && !tags.includes('主力');
+    return tags.includes('北向') || tags.includes('机构') || tags.includes('主力');
   };
   const picks = (Array.isArray(report.picks) ? report.picks : [])
     .map((p) => {
       const code = String(p?.code || '').replace(/\D/g, '').slice(-6);
       const row = byCode.get(code);
-      if (!row || isPureYouziRow(row)) return null;
+      if (!row || !hasForceBuyer(row)) return null;
       const force = forceOk.has(String(p.force || '').trim()) ? String(p.force).trim() : '不明';
       const position = posOk.has(String(p.position || '').trim()) ? String(p.position).trim() : '不明';
       const boardHeight = Number(row.aiPos?.boardHeight);

@@ -270,6 +270,7 @@ const els = {
   lhbAiMeta: $('lhb-ai-meta'),
   lhbAiPicks: $('lhb-ai-picks'),
   lhbAiAnalyzeBtn: $('lhb-ai-analyze-btn'),
+  lhbAiModel: $('lhb-ai-model'),
   lhbAiHistoryBtn: $('lhb-ai-history-btn'),
   lhbAiSkipBtn: $('lhb-ai-skip-btn'),
   lhbAiSkipBanner: $('lhb-ai-skip-banner'),
@@ -563,6 +564,7 @@ function setView(view) {
   }
   if (state.view === 'lhb') {
     syncLhbFilterButtons();
+    syncLhbAiModelSelect();
     void refreshLhbBoard(false);
   }
   if (state.view === 'etf') ensureHeatmap();
@@ -1965,10 +1967,14 @@ function renderLhbBoard(pack) {
   </table>`;
 }
 
-function isPureYouzi(row) {
+/** 一日游/建议只跟主力资金：必须有北向、机构或主力；纯游资/散户营业部不要 */
+function hasMainForceBuyer(row) {
   const tags = row?.buyerTags || [];
-  if (!tags.includes('游资')) return false;
-  return !tags.includes('北向') && !tags.includes('机构') && !tags.includes('主力');
+  return tags.includes('北向') || tags.includes('机构') || tags.includes('主力');
+}
+
+function isPureYouzi(row) {
+  return !hasMainForceBuyer(row);
 }
 
 function scoreLhbPick(row) {
@@ -1998,7 +2004,7 @@ function heuristicLhbReason(row) {
 
 function pickLhbThree(rows) {
   return [...(rows || [])]
-    .filter((r) => Number(r.netYi) > 0 && !isPureYouzi(r))
+    .filter((r) => Number(r.netYi) > 0 && hasMainForceBuyer(r))
     .sort((a, b) => scoreLhbPick(b) - scoreLhbPick(a))
     .slice(0, 3)
     .map((r) => ({
@@ -2627,6 +2633,12 @@ function syncLhbAnalyzeBtn() {
   els.lhbAiAnalyzeBtn.textContent = lhbAdviceLoading ? '分析中…' : lhbAdviceCache?.picks?.length ? '重新分析' : '分析';
 }
 
+function syncLhbAiModelSelect() {
+  if (!els.lhbAiModel) return;
+  const cur = state.settings?.aiModel === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash';
+  els.lhbAiModel.value = cur;
+}
+
 /** 上方快捷三只：先席位排序，有密钥再用 AI 补强；并刷新下方一日游缓存展示 */
 async function refreshLhbAdvice(pack, force = false) {
   const date = pack?.date || '';
@@ -2663,16 +2675,18 @@ async function refreshLhbAdvice(pack, force = false) {
   });
   const apiKey = String(state.settings?.deepseekApiKey || '').trim();
   if (!apiKey || lhbQuickLoading || !pack?.rows?.length) return;
+  const quickRows = (pack.rows || []).filter((r) => hasMainForceBuyer(r)).slice(0, 40);
+  if (!quickRows.length) return;
   lhbQuickLoading = true;
-  if (els.lhbQuickMeta) els.lhbQuickMeta.textContent = `正在用 AI 从 ${pack.rows.length} 只里挑三只…`;
+  if (els.lhbQuickMeta) els.lhbQuickMeta.textContent = `正在用 AI 从 ${quickRows.length} 只主力票里挑三只…`;
   try {
     const clock = marketClock();
     const ai = await askLhbQuick3(
       apiKey,
-      { date, rows: pack.rows.slice(0, 40), clock: clock.line },
-      state.settings?.aiModel,
+      { date, rows: quickRows, clock: clock.line },
+      state.settings?.aiModel === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash',
     );
-    if (ai.picks?.length === 3) {
+    if (ai.picks?.length >= 1) {
       lhbQuickCache = ai;
       lhbQuickForDate = date;
       renderLhbQuickPicks(ai);
@@ -2862,16 +2876,23 @@ async function runLhbDaytripAnalyze(force = false) {
   const apiKey = await ensureDeepseekKey();
   if (!apiKey) return;
   const baseRows = [...visibleLhbRows()]
+    .filter((r) => hasMainForceBuyer(r))
     .sort((a, b) => scoreLhbPick(b) - scoreLhbPick(a) || String(a.code).localeCompare(String(b.code)))
     .slice(0, 24);
   if (!baseRows.length) {
-    if (els.lhbAiMeta) els.lhbAiMeta.textContent = '当前筛选下没有股票，换筛选或刷新榜单后再分析。';
+    if (els.lhbAiMeta) {
+      els.lhbAiMeta.textContent = '当前没有主力/北向/机构票（已排除游资散户）。换筛选或刷新后再分析。';
+    }
     return;
   }
   lhbAdviceLoading = true;
   syncLhbAnalyzeBtn();
+  const modelPref =
+    els.lhbAiModel?.value === 'deepseek-v4-pro' || state.settings?.aiModel === 'deepseek-v4-pro'
+      ? 'deepseek-v4-pro'
+      : 'deepseek-flash';
   if (els.lhbAiMeta) {
-    els.lhbAiMeta.textContent = `正在补日K位置，并从 ${baseRows.length} 只里做一日游分析…`;
+    els.lhbAiMeta.textContent = `正在补日K位置，并用 ${modelPref === 'deepseek-v4-pro' ? 'Pro' : 'Flash'} 从 ${baseRows.length} 只主力票里分析…`;
   }
   try {
     const rows = await enrichLhbAiPos(baseRows.map((r) => ({ ...r })), 24);
@@ -2889,7 +2910,7 @@ async function runLhbDaytripAnalyze(force = false) {
           : '',
         marketBits: lhbDaytripMarketBits(),
       },
-      state.settings?.aiModel,
+      modelPref,
     );
     if (!ai.picks?.length) {
       if (els.lhbAiMeta) els.lhbAiMeta.textContent = `分析完成，但没有合一日游条件的票 · ${date}`;
@@ -6237,6 +6258,10 @@ els.lhbAiAnalyzeBtn?.addEventListener('click', () => {
     (lhbAdviceCache?.picks?.length && lhbAdviceForDate === date) ||
     !!latestLhbDaytripReport(date)?.picks?.length;
   void runLhbDaytripAnalyze(!!has);
+});
+els.lhbAiModel?.addEventListener('change', async () => {
+  const model = els.lhbAiModel.value === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash';
+  state.settings = await saveSettings({ aiModel: model });
 });
 els.lhbAiHistoryBtn?.addEventListener('click', () => openLhbHistModal());
 els.lhbAiSkipBtn?.addEventListener('click', () => void toggleLhbDaytripSkip());

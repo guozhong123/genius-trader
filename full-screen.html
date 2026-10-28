@@ -219,7 +219,11 @@
                     <div class="text-sm font-semibold">AI · 主力一日游</div>
                     <p id="lhb-ai-meta" class="mt-0.5 text-[11px] leading-relaxed" style="color: var(--muted)">单独分析：点「分析」才调用；刷新不会自动跑</p>
                   </div>
-                  <div class="flex shrink-0 flex-wrap gap-1.5">
+                  <div class="flex shrink-0 flex-wrap items-center gap-1.5">
+                    <select id="lhb-ai-model" class="rounded-lg px-2 py-1.5 text-[11px] font-semibold outline-none ring-soft" style="background:var(--panel);border:1px solid var(--line);color:var(--ink)" title="分析模型，默认 Flash">
+                      <option value="deepseek-flash">Flash</option>
+                      <option value="deepseek-v4-pro">Pro</option>
+                    </select>
                     <button type="button" id="lhb-ai-skip-btn" class="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold ring-soft" style="color: var(--down)" title="大盘急杀或不想做时，标记次日不做">今日不做</button>
                     <button type="button" id="lhb-ai-history-btn" class="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold ring-soft" style="color: var(--muted)" title="查看每次分析纪录">历史</button>
                     <button type="button" id="lhb-ai-analyze-btn" class="rounded-lg bg-accent px-3 py-1.5 text-[11px] font-semibold text-white" title="用 DeepSeek 做主力一日游分析">分析</button>
@@ -232,7 +236,7 @@
                 <div class="lhb-ai-rules mt-3" role="note">
                   <div class="lhb-ai-rules-title">主力一日游 · 规矩</div>
                   <ol class="lhb-ai-rules-list">
-                    <li><span class="lhb-ai-step lhb-ai-step-pick">① 当晚</span>榜出后点分析，<b>只锁买入概率最高的 2–3 只</b>；诱多 / 追高 / &lt;50% 自动标放弃。</li>
+                    <li><span class="lhb-ai-step lhb-ai-step-pick">① 当晚</span>榜出后点分析，<b>只锁主力/北向/机构</b>，不要游资散户；诱多 / 追高 / &lt;50% 自动标放弃。</li>
                     <li><span class="lhb-ai-step lhb-ai-step-buy">② 次日</span><b>竞价复核</b>后再买：低开/平开可看，高开&gt;2%放弃；盘中低点更好。</li>
                     <li><span class="lhb-ai-step lhb-ai-step-sell">③ 第三天</span><b>卖出兑现</b>，不恋战；大盘急杀可点「今日不做」。</li>
                   </ol>

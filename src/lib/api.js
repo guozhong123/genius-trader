@@ -923,22 +923,23 @@ async function fetchEastIndices(list) {
   if (!res.ok) throw new Error('ulist');
   const json = await res.json();
   const diff = json?.data?.diff || [];
-  return list.map((meta, i) => {
+  return list.map((meta) => {
     const secid = meta.secid || toSecid(meta.market, meta.code, meta.marketNo);
-    const row =
-      diff.find((d) => String(d.f12).toUpperCase() === String(meta.code).toUpperCase()) ||
-      {};
+    // 只按代码对齐，避免缺行时串到别的指数（日经空白常见原因）
+    const row = diff.find((d) => String(d.f12).toUpperCase() === String(meta.code).toUpperCase());
+    if (!row) return { ...meta, secid, price: null, changePct: null };
     let price = Number(row.f2);
     const prev = Number(row.f18);
-    if (!price && prev) price = prev;
+    if (!(price > 0) && prev > 0) price = prev;
+    const changePct = Number(row.f3);
     return {
       ...meta,
       secid,
       name: row.f14 || meta.name,
-      price,
-      changePct: Number(row.f3),
+      price: price > 0 ? price : null,
+      changePct: Number.isFinite(changePct) ? changePct : null,
       change: Number(row.f4),
-      prevClose: prev,
+      prevClose: Number.isFinite(prev) ? prev : null,
     };
   });
 }
@@ -986,22 +987,10 @@ async function fetchYahooSnapshots(list) {
 
 export async function fetchIndices(list) {
   if (!list?.length) return [];
-  let east = [];
-  if (!quoteListLikelyDown()) {
-    try {
-      east = await fetchEastIndices(list);
-    } catch {
-      noteQuoteListDown();
-      east = [];
-    }
-  }
-  const priced = east.filter((row) => Number(row.price) > 0).length;
-  if (!priced) noteQuoteListDown();
-  const byEast = new Map((east || []).map((row) => [row.secid || toSecid(row.market, row.code, row.marketNo), row]));
+  // 腾讯先拿日经等海外指数（gzN225），避免东财缺行导致卡片空白
   let merged = list.map((meta) => {
     const secid = meta.secid || toSecid(meta.market, meta.code, meta.marketNo);
-    const hit = byEast.get(secid);
-    return hit ? { ...meta, ...hit, secid, name: meta.name || hit.name } : { ...meta, secid };
+    return { ...meta, secid };
   });
   const fill = (alts) => {
     const map = new Map((alts || []).map((row) => [row.secid, row]));
@@ -1017,9 +1006,20 @@ export async function fetchIndices(list) {
       };
     });
   };
-  if (merged.some((row) => !indexQuoteComplete(row))) {
-    fill(await fetchTencentSnapshots(list).catch(() => []));
+  fill(await fetchTencentSnapshots(list).catch(() => []));
+  if (merged.every((row) => indexQuoteComplete(row))) return merged;
+
+  let east = [];
+  if (!quoteListLikelyDown()) {
+    try {
+      east = await fetchEastIndices(list);
+    } catch {
+      noteQuoteListDown();
+      east = [];
+    }
   }
+  if (!east.some((row) => indexQuoteComplete(row))) noteQuoteListDown();
+  fill(east);
   const missing = merged.filter((row) => !indexQuoteComplete(row));
   if (missing.length) fill(await fetchYahooSnapshots(missing).catch(() => []));
   return merged;
@@ -1070,16 +1070,10 @@ function parseTrendsPayload(data, ndays = 1) {
   };
 }
 
-async function fetchTencentUsMinute(secid) {
-  const sym = tencentSymbol(secid);
-  if (!sym || !/^us/i.test(sym)) return null;
-  const urls = [
-    `https://web.ifzq.gtimg.cn/appstock/app/UsMinute/query?code=${encodeURIComponent(sym)}`,
-    `https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${encodeURIComponent(sym)}`,
-  ];
+async function fetchTencentMinuteBySym(secid, sym, urls) {
   for (const url of urls) {
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000), cache: 'no-store' });
       if (!res.ok) continue;
       const json = await res.json();
       const bag = json?.data?.[sym] || json?.data?.[sym.toLowerCase()] || {};
@@ -1114,6 +1108,24 @@ async function fetchTencentUsMinute(secid) {
     }
   }
   return null;
+}
+
+async function fetchTencentUsMinute(secid) {
+  const sym = tencentSymbol(secid);
+  if (!sym || !/^us/i.test(sym)) return null;
+  return fetchTencentMinuteBySym(secid, sym, [
+    `https://web.ifzq.gtimg.cn/appstock/app/UsMinute/query?code=${encodeURIComponent(sym)}`,
+    `https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${encodeURIComponent(sym)}`,
+  ]);
+}
+
+/** A 股闭盘分时兜底：腾讯当日分钟（不影响开盘东财快路径） */
+async function fetchTencentAshareMinute(secid) {
+  const sym = tencentSymbol(secid);
+  if (!sym || !/^(sh|sz|bj)/i.test(sym)) return null;
+  return fetchTencentMinuteBySym(secid, sym, [
+    `https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${encodeURIComponent(sym)}`,
+  ]);
 }
 
 async function fetchYahooChart(secid, { interval = '1m', range = '1d' } = {}) {
@@ -1192,22 +1204,70 @@ export async function fetchIntraday(secid, ndays = 1) {
     `&fields2=f51,f52,f53,f54,f55,f56,f57,f58&mpi=${mpi}&ut=fa5fd1943c7b386f172d6893dbfba10b` +
     `&secid=${encodeURIComponent(secid)}&ndays=${days}&iscr=0&iscca=0`;
 
-  // 海外指数：push2 常 502，优先 delay / 腾讯分钟 / Yahoo
+  // —— A 股当日：开盘快路径只打 push2，成功立刻返回，不拖慢盘中 ——
+  if (days <= 1 && !isForeignSecid(secid)) {
+    try {
+      const res = await fetch(`https://push2.eastmoney.com/api/qt/stock/trends2/get?${q}`, {
+        signal: AbortSignal.timeout(3500),
+        cache: 'no-store',
+      });
+      if (res.ok) {
+        const parsed = parseTrendsPayload((await res.json())?.data, days);
+        if (parsed?.points?.length) return parsed;
+      }
+    } catch {
+      /* 走闭盘补数 */
+    }
+
+    // —— 闭盘 / 空数据补数：his、delay、腾讯分钟并行，不影响上面的开盘快路径 ——
+    const closed = await Promise.all([
+      (async () => {
+        try {
+          const res = await fetch(
+            `https://push2his.eastmoney.com/api/qt/stock/trends2/get?${q}&_=${Date.now()}`,
+            { signal: AbortSignal.timeout(6000), cache: 'no-store' },
+          );
+          if (!res.ok) return null;
+          return parseTrendsPayload((await res.json())?.data, days);
+        } catch {
+          return null;
+        }
+      })(),
+      (async () => {
+        try {
+          const res = await fetch(
+            `https://push2delay.eastmoney.com/api/qt/stock/trends2/get?${q}&_=${Date.now()}`,
+            { signal: AbortSignal.timeout(6000), cache: 'no-store' },
+          );
+          if (!res.ok) return null;
+          return parseTrendsPayload((await res.json())?.data, days);
+        } catch {
+          return null;
+        }
+      })(),
+      fetchTencentAshareMinute(secid).catch(() => null),
+    ]);
+    const bestClosed = closed
+      .filter((p) => p?.points?.length)
+      .sort((a, b) => b.points.length - a.points.length)[0];
+    return bestClosed || null;
+  }
+
+  // 海外指数 / 五日：多源串试
   const hosts = isForeignSecid(secid)
     ? [
         'https://push2delay.eastmoney.com',
-        'https://push2.eastmoney.com',
         'https://push2his.eastmoney.com',
+        'https://push2.eastmoney.com',
       ]
-    : days > 1
-      ? ['https://push2his.eastmoney.com', 'https://push2.eastmoney.com']
-      : ['https://push2.eastmoney.com', 'https://push2his.eastmoney.com'];
+    : ['https://push2his.eastmoney.com', 'https://push2.eastmoney.com'];
 
   let best = null;
   for (const host of hosts) {
     try {
       const res = await fetch(`${host}/api/qt/stock/trends2/get?${q}`, {
         signal: AbortSignal.timeout(8000),
+        cache: 'no-store',
       });
       if (!res.ok) continue;
       const json = await res.json();
@@ -1217,7 +1277,6 @@ export async function fetchIntraday(secid, ndays = 1) {
       const daySet = new Set(
         parsed.points.map((p) => String(p.time || '').slice(0, 5)).filter(Boolean),
       );
-      // 至少 2 个交易日才算真正的五日；否则继续试下一个源
       if (daySet.size >= 2 || parsed.points.length > 300) return parsed;
       if (!best || parsed.points.length > best.points.length) best = parsed;
     } catch {
@@ -1685,7 +1744,8 @@ function tencentSymbol(secid) {
       DJI: 'usDJI',
       SPX: 'usSPX',
       IXIC: 'usIXIC',
-      N225: 'jpN225',
+      // jpN225 在腾讯常 none_match；日经走全球指数 gzN225
+      N225: 'gzN225',
       KS11: 'gzKS11',
       KQ11: 'gzKOSDAQ',
     };
