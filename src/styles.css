@@ -2787,6 +2787,76 @@ button.pick-card {
   color: var(--muted);
 }
 
+.lhb-ai-rules {
+  border-radius: 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in oklab, var(--accent) 35%, var(--line));
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in oklab, var(--accent) 14%, transparent),
+      color-mix(in oklab, var(--up) 8%, transparent) 55%,
+      color-mix(in oklab, var(--panel-solid) 88%, transparent)
+    );
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 12%, transparent);
+}
+
+.lhb-ai-rules-title {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+
+.lhb-ai-rules-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 7px;
+}
+
+.lhb-ai-rules-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
+.lhb-ai-rules-list li b {
+  font-weight: 800;
+}
+
+.lhb-ai-step {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.lhb-ai-step-pick {
+  color: #fff;
+  background: var(--accent);
+}
+
+.lhb-ai-step-buy {
+  color: #fff;
+  background: var(--up);
+}
+
+.lhb-ai-step-sell {
+  color: #fff;
+  background: color-mix(in oklab, var(--down) 88%, #0f172a);
+}
+
 .lhb-ai-table-wrap {
   border-radius: 10px;
   border: 1px solid color-mix(in oklab, var(--line) 80%, transparent);
