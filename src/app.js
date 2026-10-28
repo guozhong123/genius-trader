@@ -1962,16 +1962,14 @@ function renderLhbBoard(pack) {
 
 function scoreLhbPick(row) {
   const net = Number(row.netYi) || 0;
-  const pct = Number(row.changePct) || 0;
   const tags = row.buyerTags || [];
-  const code = String(row.code || '');
   let score = net;
-  if (tags.includes('北向')) score += 3.2;
-  if (tags.includes('机构')) score += 2.2;
-  if (tags.includes('游资')) score += 0.4;
+  // 默认不过滤游资：北向/机构/主力/游资都可进建议，主要看净买强度
+  if (tags.includes('北向')) score += 2.4;
+  if (tags.includes('机构')) score += 2.0;
+  if (tags.includes('主力')) score += 1.6;
+  if (tags.includes('游资')) score += 1.6;
   if (net <= 0) score -= 10;
-  const band = /^(300|301|688|689)/.test(code) ? 19.5 : /^[48]/.test(code) ? 29.5 : 9.5;
-  if (pct >= band - 0.15 && !tags.includes('北向') && !tags.includes('机构')) score -= 3.5;
   return score;
 }
 
