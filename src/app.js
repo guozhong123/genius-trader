@@ -1581,7 +1581,12 @@ function renderPredictCard() {
 }
 
 async function loadDataCenter() {
+  const flowEl = $('chart-market-flow');
   try {
+    if (flowEl && !state.center?.flow?.times?.length) {
+      flowEl.innerHTML =
+        '<div class="flex h-full items-center justify-center text-[12px]" style="color:var(--muted)">主力资金加载中…</div>';
+    }
     const settled = await Promise.allSettled([
       fetchMarketMoneyFlow(),
       fetchUpDownDistribution(),
@@ -1603,13 +1608,29 @@ async function loadDataCenter() {
     };
     renderFlowSummary();
     const axisOpts = { axisMode: chartAxisMode(), legendNames: flowLegendNames() };
-    if (state.center.flow) renderFlowChart($('chart-market-flow'), state.center.flow, axisOpts);
+    if (state.center.flow?.times?.length) {
+      renderFlowChart(flowEl, state.center.flow, axisOpts);
+      const asof = $('flow-asof');
+      if (asof) {
+        const s = state.center.flow.summary || {};
+        const note = s.note || (state.center.flow.source === 'ths' ? '上证·盘后兜底' : '');
+        asof.textContent = [s.asOf || state.center.flow.date || '', note].filter(Boolean).join(' · ');
+      }
+    } else if (flowEl) {
+      flowEl.innerHTML =
+        '<div class="flex h-full flex-col items-center justify-center gap-1 text-[12px]" style="color:var(--muted)"><span>盘后资金分时暂未拉到</span><span class="text-[11px]">点顶栏刷新重试</span></div>';
+    }
     if (state.center.updown) renderUpDownChart($('chart-updown'), state.center.updown);
     if (state.center.northbound) renderNorthboundChart($('chart-northbound'), state.center.northbound);
     renderPredictCard();
     if (state.briefOpen && state.briefTab === 'insight') renderBriefBody();
+    requestAnimationFrame(() => resizeAllCharts());
   } catch (e) {
     console.error(e);
+    if (flowEl && !state.center?.flow?.times?.length) {
+      flowEl.innerHTML =
+        '<div class="flex h-full items-center justify-center text-[12px]" style="color:var(--muted)">主力资金加载失败，请刷新重试</div>';
+    }
   }
 }
 
