@@ -82,13 +82,11 @@ import {
   askLhbReport,
   askMarketReport,
   askPredictPack,
-  askScanBatch,
   askSeatReport,
   askSimOrders,
   buildLhbFacts,
   buildMarketFacts,
   buildPredictFacts,
-  buildScanFacts,
   buildSeatFacts,
   buildSimFacts,
   buildStockFacts,
@@ -1017,18 +1015,6 @@ function aiProbCell(item) {
   </div>`;
 }
 
-function scanBarHtml() {
-  if (state.primaryKind !== 'stock') return '';
-  const label = state.scanRunning
-    ? `分析中 ${state.scanProgress?.done || 0}/${state.scanProgress?.total || 0}`
-    : '分析全部';
-  const dis = state.scanRunning ? 'disabled' : '';
-  return `<div class="scan-bar">
-    <button type="button" data-scan-all ${dis} class="scan-btn" title="本页唯一批量 AI：只在你点时调用">${esc(label)}</button>
-    <span class="scan-hint">点股票打开详情可单独分析；刷新不会自动调用 AI</span>
-  </div>`;
-}
-
 function rowHtml(item) {
   const q = state.quotes[quoteKey(item)] || {};
   const name = preferDisplayName(q.name, item.name);
@@ -1123,7 +1109,6 @@ function renderList() {
     blocks.push(rest.map(rowHtml).join(''));
   }
   els.list.innerHTML = `
-    ${scanBarHtml()}
     ${listHeaderHtml()}
     <div class="grid gap-0.5">${blocks.join('')}</div>`;
   bindListEvents();
@@ -1167,13 +1152,6 @@ async function openEditPosDialog(item) {
 }
 
 function bindListEvents() {
-  els.list.querySelectorAll('[data-scan-all]').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      scanAllStocks();
-    });
-  });
-
   els.list.querySelector('[data-sort-cycle]')?.addEventListener('click', async () => {
     const cur = state.settings?.sortBy || 'manual';
     await setSort(nextSortCycle(cur));
@@ -4097,75 +4075,12 @@ async function runDeepseekForItem(item, opts = {}) {
     }
     if (/401|invalid|api key|密钥/i.test(msg)) {
       state.settings = await saveSettings({ deepseekApiKey: '' });
-      state.scanStop = true;
     }
   } finally {
     const next = { ...state.aiRunning };
     delete next[keyId];
     state.aiRunning = next;
     // 无论 quiet 与否都刷新列表，保证概率与弹窗一致
-    renderList();
-  }
-}
-
-async function scanAllStocks() {
-  if (state.scanRunning) return;
-  const stocks = state.list.filter((x) => x.kind === 'stock');
-  if (!stocks.length) return;
-  const calls = Math.ceil(stocks.length / 12);
-  const ok = await confirmDialog(
-    '分析全部',
-    `给 ${stocks.length} 只股票打买入、继续等、不买的概率，大约 ${calls} 次调用。确定开始？`,
-  );
-  if (!ok) return;
-  const apiKey = await ensureDeepseekKey();
-  if (!apiKey) return;
-  state.scanRunning = true;
-  state.scanStop = false;
-  const chunks = [];
-  for (let i = 0; i < stocks.length; i += 12) chunks.push(stocks.slice(i, i + 12));
-  state.scanProgress = { done: 0, total: stocks.length };
-  renderList();
-  const tape = judgeTape(state.center)?.label || '';
-  try {
-    for (const chunk of chunks) {
-      if (state.scanStop) break;
-      const rows = [];
-      let cursor = 0;
-      const worker = async () => {
-        while (cursor < chunk.length) {
-          const item = chunk[cursor];
-          cursor += 1;
-          const secid = item.secid || toSecid(item.market, item.code, item.marketNo);
-          const dayK = await fetchKline(secid, 101, 30).catch(() => null);
-          rows.push({ item, quote: state.quotes[quoteKey(item)] || {}, dayK });
-        }
-      };
-      await Promise.all(Array.from({ length: Math.min(4, chunk.length) }, () => worker()));
-      const scored = await askScanBatch(apiKey, buildScanFacts(rows, tape ? `今天环境：${tape}` : ''));
-      const known = new Map(chunk.map((item) => [String(item.code).replace(/\D/g, '').slice(-6), item]));
-      const aiScan = { ...(state.settings?.aiScan || {}) };
-      const now = Date.now();
-      for (const row of scored) {
-        const item = known.get(row.code);
-        if (!item) continue;
-        aiScan[itemKey(item)] = { ...row, generatedAt: now };
-      }
-      state.settings = await saveSettings({ aiScan });
-      state.scanProgress = {
-        ...state.scanProgress,
-        done: Math.min(stocks.length, (state.scanProgress?.done || 0) + chunk.length),
-      };
-      renderList();
-    }
-  } catch (e) {
-    console.error(e);
-    const msg = String(e?.message || e);
-    if (/401|invalid|api key|密钥/i.test(msg)) {
-      state.settings = await saveSettings({ deepseekApiKey: '' });
-    }
-  } finally {
-    state.scanRunning = false;
     renderList();
   }
 }
@@ -4328,6 +4243,33 @@ function isForeignDetail(item) {
   );
 }
 
+/** 详情分时轴市场：美股过夜 / 韩日白天 / 港股 / A 股 */
+function chartSessionOf(item) {
+  if (!isForeignDetail(item)) return 'ashare';
+  const code = String(item?.code || '').toUpperCase();
+  const name = String(item?.name || '');
+  const market = String(item?.market || '').toUpperCase();
+  if (
+    market === 'US' ||
+    /^(NDX|NDX100|IXIC|DJIA|DJI|SPX)$/.test(code) ||
+    /纳斯达克|道琼斯|标普/.test(name)
+  ) {
+    return 'us';
+  }
+  if (
+    market === 'KR' ||
+    market === 'JP' ||
+    /^(KS11|KQ11|N225)$/.test(code) ||
+    /韩国|KOSPI|日经/.test(name)
+  ) {
+    return 'asia';
+  }
+  if (market === 'HK' || /^(HSI|HSTECH|HSCEI)$/.test(code) || /恒生|港股/.test(name)) {
+    return 'hk';
+  }
+  return 'raw';
+}
+
 function syncPeriodTabs() {
   document.querySelectorAll('.period-btn').forEach((btn) => {
     const on = btn.dataset.period === state.period;
@@ -4335,9 +4277,9 @@ function syncPeriodTabs() {
     btn.classList.toggle('text-white', on);
     btn.style.color = on ? '#fff' : 'var(--muted)';
   });
-  const foreign = isForeignDetail(state.detail);
+  // 海外指数也支持全部/已走（按其开盘时段轴）
   const axisWrap = document.querySelector('#stock-chart-wrap .detail-axis-btn')?.parentElement;
-  if (axisWrap) axisWrap.classList.toggle('hidden', foreign);
+  if (axisWrap) axisWrap.classList.remove('hidden');
 }
 
 async function refreshDetailCharts() {
@@ -4347,6 +4289,7 @@ async function refreshDetailCharts() {
   try {
     const period = state.period;
     const foreign = isForeignDetail(item);
+    const session = chartSessionOf(item);
     // A 股五日：近 5 根日 K；海外五日：优先 5 日分钟分时（与日K区分开）
     const minute = period === 'intraday' || (foreign && period === 'fiveday');
     const kltMap = { fiveday: 101, day: 101, week: 102, month: 103 };
@@ -4373,7 +4316,7 @@ async function refreshDetailCharts() {
     const useMinute =
       minute && mainData?._chart !== 'kline' && Array.isArray(mainData?.points) && mainData.points[0]?.price != null;
 
-    const axisMode = foreign ? 'live' : chartAxisMode();
+    const axisMode = chartAxisMode();
     syncPeriodTabs();
     const prices = mainData?.points?.map((p) => p.price ?? p.high) || [];
     const intraHi = prices.reduce((m, v) => (Number(v) > m ? Number(v) : m), -Infinity);
@@ -4410,7 +4353,7 @@ async function refreshDetailCharts() {
             preClose: intra.preClose,
             markLine: markLine,
           },
-          { axisMode },
+          { axisMode, session },
         );
         const last = intra.points[intra.points.length - 1];
         if (last?.price != null) {

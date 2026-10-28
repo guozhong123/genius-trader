@@ -57,22 +57,59 @@ function padTimeLabel(t) {
   return `${String(Number(m[1])).padStart(2, '0')}:${m[2]}`;
 }
 
+function pushClockRange(times, h0, m0, h1, m1) {
+  let cur = h0 * 60 + m0;
+  const end = h1 * 60 + m1;
+  while (cur <= end) {
+    const h = Math.floor(cur / 60);
+    const m = cur % 60;
+    times.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+    cur += 1;
+  }
+}
+
 /** A 股交易日分时轴：09:30–11:30、13:00–15:00（含端点，逐分钟；午休不占轴，标准压缩轴） */
 export function buildAshareSessionTimes() {
   const times = [];
-  const pushRange = (h0, m0, h1, m1) => {
-    let cur = h0 * 60 + m0;
-    const end = h1 * 60 + m1;
-    while (cur <= end) {
-      const h = Math.floor(cur / 60);
-      const m = cur % 60;
-      times.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
-      cur += 1;
-    }
-  };
-  pushRange(9, 30, 11, 30);
-  pushRange(13, 0, 15, 0);
+  pushClockRange(times, 9, 30, 11, 30);
+  pushClockRange(times, 13, 0, 15, 0);
   return times;
+}
+
+/**
+ * 美股常规盘对应北京时间轴：21:30–次日 04:00（东财海外指数分时）
+ * 纳指/道指等过夜时段用这个，不能再用 A 股 09:30–15:00。
+ */
+export function buildUsBeijingSessionTimes() {
+  const times = [];
+  pushClockRange(times, 21, 30, 23, 59);
+  pushClockRange(times, 0, 0, 4, 0);
+  return times;
+}
+
+/**
+ * 韩/日指数北京时间轴：08:00–14:30（对应当地 09:00–15:30，连续竞价压缩）
+ */
+export function buildAsiaIndexSessionTimes() {
+  const times = [];
+  pushClockRange(times, 8, 0, 14, 30);
+  return times;
+}
+
+/** 港股：09:30–12:00、13:00–16:00 */
+export function buildHkSessionTimes() {
+  const times = [];
+  pushClockRange(times, 9, 30, 12, 0);
+  pushClockRange(times, 13, 0, 16, 0);
+  return times;
+}
+
+export function sessionTimesOf(session = 'ashare') {
+  if (session === 'us') return buildUsBeijingSessionTimes();
+  if (session === 'asia') return buildAsiaIndexSessionTimes();
+  if (session === 'hk') return buildHkSessionTimes();
+  if (session === 'raw') return null;
+  return buildAshareSessionTimes();
 }
 
 function clockMinutesOf(label) {
@@ -83,9 +120,30 @@ function clockMinutesOf(label) {
   return Number(m[1]) * 60 + Number(m[2]);
 }
 
+function inSessionMinutes(mins, session = 'ashare') {
+  if (mins == null) return false;
+  if (session === 'us') return mins >= 21 * 60 + 30 || mins <= 4 * 60;
+  if (session === 'asia') return mins >= 8 * 60 && mins <= 14 * 60 + 30;
+  if (session === 'hk') {
+    return (
+      (mins >= 9 * 60 + 30 && mins <= 12 * 60) || (mins >= 13 * 60 && mins <= 16 * 60)
+    );
+  }
+  if (session === 'raw') return true;
+  return (
+    (mins >= 9 * 60 + 30 && mins <= 11 * 60 + 30) || (mins >= 13 * 60 && mins <= 15 * 60)
+  );
+}
+
 /** 将稀疏分时对齐到完整交易时段，缺失分钟填 null（再前向填充，避免折线被掐断） */
 export function padSeriesToSession(times, ...seriesArrays) {
-  const session = buildAshareSessionTimes();
+  return padSeriesToCustomSession(buildAshareSessionTimes(), times, ...seriesArrays);
+}
+
+export function padSeriesToCustomSession(session, times, ...seriesArrays) {
+  if (!session?.length) {
+    return { times: times || [], series: seriesArrays.map((arr) => [...(arr || [])]) };
+  }
   const index = new Map((times || []).map((t, i) => [padTimeLabel(t), i]));
   const series = seriesArrays.map((arr) =>
     session.map((t) => {
@@ -121,8 +179,8 @@ function isMultiDayLabel(t) {
   return /\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}/.test(s) || /\d{4}-\d{2}-\d{2}/.test(s);
 }
 
-/** 五日分时：丢掉午休/隔夜空洞标签以外的周末杂点（若接口误带） */
-function filterIntradayPoints(times, prices, avgs, volumes) {
+/** 按市场时段丢掉非交易分钟（A 股午休 / 美股盘前杂点等） */
+function filterIntradayPoints(times, prices, avgs, volumes, session = 'ashare') {
   const outT = [];
   const outP = [];
   const outA = [];
@@ -133,13 +191,11 @@ function filterIntradayPoints(times, prices, avgs, volumes) {
     const m = clock.match(/(\d{1,2}):(\d{2})/);
     if (!m) continue;
     const mins = Number(m[1]) * 60 + Number(m[2]);
-    // 只保留 A 股连续竞价时段，去掉放假空档与午休
-    if ((mins >= 9 * 60 + 30 && mins <= 11 * 60 + 30) || (mins >= 13 * 60 && mins <= 15 * 60)) {
-      outT.push(label);
-      outP.push(prices?.[i] ?? null);
-      outA.push(avgs?.[i] ?? null);
-      outV.push(volumes?.[i] ?? null);
-    }
+    if (!inSessionMinutes(mins, session)) continue;
+    outT.push(label);
+    outP.push(prices?.[i] ?? null);
+    outA.push(avgs?.[i] ?? null);
+    outV.push(volumes?.[i] ?? null);
   }
   return { times: outT, prices: outP, avgs: outA, volumes: outV };
 }
@@ -147,24 +203,35 @@ function filterIntradayPoints(times, prices, avgs, volumes) {
 export function renderIntradayChart(
   el,
   { times, prices, avgs, volumes, preClose, markLine },
-  { axisMode = 'full' } = {},
+  { axisMode = 'full', session = 'ashare' } = {},
 ) {
   if (!el) return;
   let chartTimes = times || [];
   let chartPrices = prices || [];
   let chartAvgs = avgs || [];
   let chartVolumes = volumes || [];
-  // 带日期标签，或点数明显超过一个交易日（约 241 分钟）→ 按多日处理
-  const multiDay = chartTimes.some(isMultiDayLabel) || chartTimes.length > 300;
+  // 带日期标签才按多日；A 股单日约 241 点。美/韩单日可到 ~390，不能用「>300 ⇒ 多日」
+  const multiDay =
+    chartTimes.some(isMultiDayLabel) ||
+    (session === 'ashare' && chartTimes.length > 300);
   // 滤掉非交易分钟；全日轴对齐并前向填充，稀疏缺口不再把线掐断
   if (multiDay || axisMode === 'live') {
-    const filtered = filterIntradayPoints(chartTimes, chartPrices, chartAvgs, chartVolumes);
+    const filtered = filterIntradayPoints(
+      chartTimes,
+      chartPrices,
+      chartAvgs,
+      chartVolumes,
+      session,
+    );
     chartTimes = filtered.times;
     chartPrices = forwardFillUntilLast(filtered.prices);
     chartAvgs = forwardFillUntilLast(filtered.avgs);
     chartVolumes = filtered.volumes;
   } else if (axisMode === 'full' && chartTimes.length) {
-    const padded = padSeriesToSession(chartTimes, chartPrices, chartAvgs, chartVolumes);
+    const sessionAxis = sessionTimesOf(session);
+    const padded = sessionAxis
+      ? padSeriesToCustomSession(sessionAxis, chartTimes, chartPrices, chartAvgs, chartVolumes)
+      : { times: chartTimes, series: [chartPrices, chartAvgs, chartVolumes] };
     chartTimes = padded.times;
     [chartPrices, chartAvgs, chartVolumes] = padded.series;
     chartPrices = forwardFillUntilLast(chartPrices);
