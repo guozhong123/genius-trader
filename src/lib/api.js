@@ -1388,8 +1388,22 @@ const FLOW_FIELDS =
 /** 会话内资金分时缓存：盘后节点常 502，成功一次后刷新不要把图清空 */
 const flowCache = new Map();
 
-/** 东财 push2 主域盘后常 502；延迟域 + 编号节点竞速，谁先有 klines 用谁 */
+function isExtensionRuntime() {
+  try {
+    return typeof chrome !== 'undefined' && !!chrome?.runtime?.id;
+  } catch {
+    return false;
+  }
+}
+
+/** 东财 push2 主域盘后常 502；延迟/历史竞速。编号节点仅扩展可用（网页有 CORS） */
 function eastFlowHosts(numbered = 8) {
+  const base = [
+    'https://push2delay.eastmoney.com',
+    'https://push2his.eastmoney.com',
+    'https://push2.eastmoney.com',
+  ];
+  if (!isExtensionRuntime()) return base;
   const used = new Set();
   const extra = [];
   while (extra.length < numbered && used.size < 99) {
@@ -1399,12 +1413,7 @@ function eastFlowHosts(numbered = 8) {
     extra.push(`https://${n}.push2.eastmoney.com`);
     if (extra.length < numbered) extra.push(`https://${n}.push2delay.eastmoney.com`);
   }
-  return [
-    'https://push2delay.eastmoney.com',
-    'https://push2his.eastmoney.com',
-    'https://push2.eastmoney.com',
-    ...extra,
-  ];
+  return [...base, ...extra];
 }
 
 async function fetchFlowKlineRace(query, { timeoutMs = 6500, hosts } = {}) {
@@ -1412,11 +1421,13 @@ async function fetchFlowKlineRace(query, { timeoutMs = 6500, hosts } = {}) {
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   const stamp = Date.now();
   const list = hosts || eastFlowHosts();
+  // 与东财大盘资金页同款 ut，部分节点无 ut 会空
+  const ut = 'ut=b2884a393a59ad64002292a3e90d46a5';
   try {
     return await Promise.any(
       list.map(async (host) => {
         const res = await fetch(
-          `${host}/api/qt/stock/fflow/kline/get?${query}&_=${stamp}`,
+          `${host}/api/qt/stock/fflow/kline/get?${query}&${ut}&_=${stamp}`,
           {
             signal: ctrl.signal,
             cache: 'no-store',
@@ -1426,7 +1437,11 @@ async function fetchFlowKlineRace(query, { timeoutMs = 6500, hosts } = {}) {
         if (!res.ok) throw new Error(String(res.status));
         const text = await res.text();
         if (!text || text.trim().startsWith('<')) throw new Error('html');
-        const json = JSON.parse(text);
+        // 兼容偶发 JSONP 外壳
+        const bare = text.trim().startsWith('{')
+          ? text
+          : text.replace(/^[^(]*\(/, '').replace(/\)\s*;?\s*$/, '');
+        const json = JSON.parse(bare);
         const parsed = parseFlowKlines(json?.data?.klines);
         if (!parsed?.times?.length) throw new Error('empty');
         return parsed;

@@ -552,9 +552,13 @@ function setView(view) {
     tab.style.color = on ? '#fff' : 'var(--muted)';
   });
   if (state.view === 'data') {
-    loadDataCenter();
-    loadBoards();
-    loadRank();
+    // 先让资金页可见再画图，避免隐藏容器 0 尺寸把折线画没
+    requestAnimationFrame(() => {
+      void paintDataCenterCharts();
+      loadDataCenter();
+      loadBoards();
+      loadRank();
+    });
   }
   if (state.view === 'pulse') {
     refreshPulse();
@@ -1580,6 +1584,23 @@ function renderPredictCard() {
     <p class="mt-1 text-[11px] tabular-nums" style="color:var(--muted)">全天主力 ${esc(mainYi)} 亿 · 小单 ${esc(smallYi)} 亿${esc(recentBit)}</p>`;
 }
 
+function paintDataCenterCharts() {
+  const flowEl = $('chart-market-flow');
+  const axisOpts = { axisMode: chartAxisMode(), legendNames: flowLegendNames() };
+  if (state.center?.flow?.times?.length && flowEl) {
+    renderFlowChart(flowEl, state.center.flow, axisOpts);
+    const asof = $('flow-asof');
+    if (asof) {
+      const s = state.center.flow.summary || {};
+      const note = s.note || (state.center.flow.source === 'ths' ? '上证分时·盘后兜底' : '');
+      asof.textContent = [s.asOf || state.center.flow.date || '', note].filter(Boolean).join(' · ');
+    }
+  }
+  if (state.center?.updown) renderUpDownChart($('chart-updown'), state.center.updown);
+  if (state.center?.northbound) renderNorthboundChart($('chart-northbound'), state.center.northbound);
+  requestAnimationFrame(() => resizeAllCharts());
+}
+
 async function loadDataCenter() {
   const flowEl = $('chart-market-flow');
   try {
@@ -1607,24 +1628,14 @@ async function loadDataCenter() {
       ...(overview ? { overview } : {}),
     };
     renderFlowSummary();
-    const axisOpts = { axisMode: chartAxisMode(), legendNames: flowLegendNames() };
     if (state.center.flow?.times?.length) {
-      renderFlowChart(flowEl, state.center.flow, axisOpts);
-      const asof = $('flow-asof');
-      if (asof) {
-        const s = state.center.flow.summary || {};
-        const note = s.note || (state.center.flow.source === 'ths' ? '上证·盘后兜底' : '');
-        asof.textContent = [s.asOf || state.center.flow.date || '', note].filter(Boolean).join(' · ');
-      }
+      paintDataCenterCharts();
     } else if (flowEl) {
       flowEl.innerHTML =
         '<div class="flex h-full flex-col items-center justify-center gap-1 text-[12px]" style="color:var(--muted)"><span>盘后资金分时暂未拉到</span><span class="text-[11px]">点顶栏刷新重试</span></div>';
     }
-    if (state.center.updown) renderUpDownChart($('chart-updown'), state.center.updown);
-    if (state.center.northbound) renderNorthboundChart($('chart-northbound'), state.center.northbound);
     renderPredictCard();
     if (state.briefOpen && state.briefTab === 'insight') renderBriefBody();
-    requestAnimationFrame(() => resizeAllCharts());
   } catch (e) {
     console.error(e);
     if (flowEl && !state.center?.flow?.times?.length) {
