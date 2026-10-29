@@ -1239,26 +1239,49 @@ export async function fetchIntraday(secid, ndays = 1) {
     `&fields2=f51,f52,f53,f54,f55,f56,f57,f58&mpi=${mpi}&ut=fa5fd1943c7b386f172d6893dbfba10b` +
     `&secid=${encodeURIComponent(secid)}&ndays=${days}&iscr=0&iscca=0`;
 
-  // —— A 股当日：开盘只走 push2（可选再试 his 一次）；盘后才并行多源 ——
+  // —— A 股当日：开盘轻量顺序试；偶发空再短补一次；闭盘才并行多源 ——
   if (days <= 1 && !isForeignSecid(secid)) {
     const live = isAshareLiveSession();
-    for (const host of live
-      ? ['https://push2.eastmoney.com', 'https://push2his.eastmoney.com']
-      : ['https://push2.eastmoney.com']) {
-      try {
-        const res = await fetch(`${host}/api/qt/stock/trends2/get?${q}`, {
-          signal: AbortSignal.timeout(live ? 3500 : 4000),
-          cache: 'no-store',
-        });
-        if (!res.ok) continue;
-        const parsed = parseTrendsPayload((await res.json())?.data, days);
-        if (parsed?.points?.length) return parsed;
-      } catch {
-        /* next */
+    const tryHosts = async (hosts, timeoutMs) => {
+      for (const host of hosts) {
+        try {
+          const res = await fetch(`${host}/api/qt/stock/trends2/get?${q}&_=${Date.now()}`, {
+            signal: AbortSignal.timeout(timeoutMs),
+            cache: 'no-store',
+          });
+          if (!res.ok) continue;
+          const parsed = parseTrendsPayload((await res.json())?.data, days);
+          if (parsed?.points?.length) return parsed;
+        } catch {
+          /* next */
+        }
       }
+      return null;
+    };
+
+    if (live) {
+      // 盘中：push2 → his → delay，单路短超时；仍空再轻补腾讯分钟（不并行拖慢）
+      let parsed = await tryHosts(
+        [
+          'https://push2.eastmoney.com',
+          'https://push2his.eastmoney.com',
+          'https://push2delay.eastmoney.com',
+        ],
+        3200,
+      );
+      if (parsed?.points?.length) return parsed;
+      await new Promise((r) => setTimeout(r, 220));
+      parsed = await tryHosts(['https://push2.eastmoney.com'], 2800);
+      if (parsed?.points?.length) return parsed;
+      const tx = await fetchTencentAshareMinute(secid).catch(() => null);
+      return tx?.points?.length ? tx : null;
     }
-    // 盘中失败不再拖 his/delay/腾讯；只在闭盘补数
-    if (live) return null;
+
+    // 先打一下 push2，成功立刻回
+    {
+      const quick = await tryHosts(['https://push2.eastmoney.com'], 4000);
+      if (quick?.points?.length) return quick;
+    }
 
     const closed = await Promise.all([
       (async () => {
@@ -1445,6 +1468,7 @@ async function fetchEastFlowSimple(query, { timeoutMs = 4000 } = {}) {
   const hosts = [
     'https://push2.eastmoney.com',
     'https://push2his.eastmoney.com',
+    'https://push2delay.eastmoney.com',
   ];
   for (const host of hosts) {
     try {

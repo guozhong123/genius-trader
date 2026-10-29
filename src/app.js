@@ -4346,7 +4346,10 @@ async function refreshDetailCharts() {
       console.error(e);
     }
     const useMinute =
-      minute && mainData?._chart !== 'kline' && Array.isArray(mainData?.points) && mainData.points[0]?.price != null;
+      minute &&
+      mainData?._chart !== 'kline' &&
+      Array.isArray(mainData?.points) &&
+      mainData.points.some((p) => p?.price != null && Number(p.price) > 0);
 
     const axisMode = chartAxisMode();
     syncPeriodTabs();
@@ -4371,9 +4374,9 @@ async function refreshDetailCharts() {
     els.chartMain.innerHTML = '';
     await waitFrames(1);
 
-    if (useMinute) {
-      const intra = mainData;
-      if (intra?.points?.length) {
+    if (minute) {
+      if (useMinute && mainData?.points?.length) {
+        const intra = mainData;
         renderIntradayChart(
           els.chartMain,
           {
@@ -4386,7 +4389,7 @@ async function refreshDetailCharts() {
           },
           { axisMode, session },
         );
-        const last = intra.points[intra.points.length - 1];
+        const last = [...intra.points].reverse().find((p) => p?.price != null) || intra.points.at(-1);
         if (last?.price != null) {
           $('detail-price').textContent = fmtPrice(last.price, item.market);
           const pct = intra.preClose
@@ -4398,7 +4401,39 @@ async function refreshDetailCharts() {
         }
       } else {
         els.chartMain.innerHTML =
-          `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>暂无分时（闭盘也会显示当日走势）</span><span class="text-[11px]">可切换日K，或稍后重试</span></div>`;
+          `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>暂无分时，正在重试…</span><span class="text-[11px]">可切日K，或稍后点开再试</span></div>`;
+        // 偶发空包：短延迟再拉一次，仍在分时页才补画
+        await new Promise((r) => setTimeout(r, 400));
+        if (state.detail === item && state.period === period) {
+          try {
+            const again = await fetchIntraday(secid, period === 'fiveday' ? 5 : 1);
+            if (again?.points?.some((p) => p?.price != null && Number(p.price) > 0)) {
+              mainData = { ...again, _chart: 'intra' };
+              renderIntradayChart(
+                els.chartMain,
+                {
+                  times: again.points.map((p) => p.time),
+                  prices: again.points.map((p) => p.price),
+                  avgs: again.points.map((p) => p.avg),
+                  volumes: again.points.map((p) => p.volume),
+                  preClose: again.preClose,
+                  markLine: buildLevelMarkLines({
+                    preClose: again.preClose,
+                    resistance: null,
+                    support: null,
+                  }),
+                },
+                { axisMode, session },
+              );
+            } else {
+              els.chartMain.innerHTML =
+                `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>暂无分时</span><span class="text-[11px]">可切换日K，或稍后重试</span></div>`;
+            }
+          } catch {
+            els.chartMain.innerHTML =
+              `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>暂无分时</span><span class="text-[11px]">可切换日K，或稍后重试</span></div>`;
+          }
+        }
       }
     } else if (mainData?.points?.length) {
       const title =
@@ -4424,7 +4459,9 @@ async function refreshDetailCharts() {
     }
     resizeAllCharts();
 
-    // 资金流后补，失败不影响分时
+    // 资金流后补，失败不影响分时；先清旧 tip，避免串到上一只票
+    $('detail-flow-tip').textContent = '亿元';
+    els.detailFlowCards.innerHTML = '';
     els.chartStockFlow.innerHTML =
       '<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">加载中…</div>';
     let flow = null;
@@ -4471,6 +4508,7 @@ async function refreshDetailCharts() {
         els.chartStockFlow.innerHTML = `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>盘后分时暂不可用，已显示今日资金摘要</span><span class="text-[11px]">主力 ${esc(fmtYi(s.main))} 亿${s.asOf ? ` · ${esc(s.asOf)}` : ''}</span></div>`;
       }
     } else {
+      $('detail-flow-tip').textContent = '亿元';
       els.detailFlowCards.innerHTML = '';
       els.chartStockFlow.innerHTML =
         '<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">暂无资金流</div>';
