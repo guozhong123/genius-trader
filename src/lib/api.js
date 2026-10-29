@@ -1245,6 +1245,32 @@ function readCachedIntraday(secid) {
   return intradayCache.get(`intra:${secid}:${todayYmd()}`) || null;
 }
 
+/** 东财 trends 同接口多节点竞速：网页 push2 常 Failed to fetch，delay/his 更稳 */
+async function raceEastTrends(query, hosts, timeoutMs = 4500) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const stamp = Date.now();
+  try {
+    return await Promise.any(
+      hosts.map(async (host) => {
+        const res = await fetch(`${host}/api/qt/stock/trends2/get?${query}&_=${stamp}`, {
+          signal: ctrl.signal,
+          cache: 'no-store',
+        });
+        if (!res.ok) throw new Error(String(res.status));
+        const parsed = parseTrendsPayload((await res.json())?.data, 1);
+        if (!parsed?.points?.length) throw new Error('empty');
+        return parsed;
+      }),
+    );
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+    ctrl.abort();
+  }
+}
+
 /** 分时走势。ndays=5 为近五个交易日的分时。 */
 export async function fetchIntraday(secid, ndays = 1) {
   const days = ndays > 1 ? 5 : 1;
@@ -1255,73 +1281,22 @@ export async function fetchIntraday(secid, ndays = 1) {
     `&fields2=f51,f52,f53,f54,f55,f56,f57,f58&mpi=${mpi}&ut=fa5fd1943c7b386f172d6893dbfba10b` +
     `&secid=${encodeURIComponent(secid)}&ndays=${days}&iscr=0&iscca=0`;
 
-  // —— A 股当日：开盘只走东财轻量，空包用缓存；闭盘才并行多源 ——
+  // —— A 股当日：东财 delay/his/push2 竞速（同接口，网页 push2 常挂）——
   if (days <= 1 && !isForeignSecid(secid)) {
-    const live = isAshareLiveSession();
-    const tryHosts = async (hosts, timeoutMs) => {
-      for (const host of hosts) {
-        try {
-          const res = await fetch(`${host}/api/qt/stock/trends2/get?${q}&_=${Date.now()}`, {
-            signal: AbortSignal.timeout(timeoutMs),
-            cache: 'no-store',
-          });
-          if (!res.ok) continue;
-          const parsed = parseTrendsPayload((await res.json())?.data, days);
-          if (parsed?.points?.length) return parsed;
-        } catch {
-          /* next */
-        }
-      }
-      return null;
-    };
+    const eastHosts = [
+      'https://push2delay.eastmoney.com',
+      'https://push2his.eastmoney.com',
+      'https://push2.eastmoney.com',
+    ];
+    const raced = await raceEastTrends(q, eastHosts, 4500);
+    if (raced?.points?.length) return rememberIntraday(secid, raced);
 
-    if (live) {
-      // 盘中：只 push2 → his，不做 delay/腾讯兜底；失败直接用上一笔缓存
-      const parsed = await tryHosts(
-        ['https://push2.eastmoney.com', 'https://push2his.eastmoney.com'],
-        3500,
-      );
-      if (parsed?.points?.length) return rememberIntraday(secid, parsed);
-      return readCachedIntraday(secid);
-    }
+    // 开盘：不再走腾讯等外源兜底，只用当日已成功缓存
+    if (isAshareLiveSession()) return readCachedIntraday(secid);
 
-    // 闭盘：先 push2，再 his/delay/腾讯并行
-    {
-      const quick = await tryHosts(['https://push2.eastmoney.com'], 4000);
-      if (quick?.points?.length) return rememberIntraday(secid, quick);
-    }
-
-    const closed = await Promise.all([
-      (async () => {
-        try {
-          const res = await fetch(
-            `https://push2his.eastmoney.com/api/qt/stock/trends2/get?${q}&_=${Date.now()}`,
-            { signal: AbortSignal.timeout(6000), cache: 'no-store' },
-          );
-          if (!res.ok) return null;
-          return parseTrendsPayload((await res.json())?.data, days);
-        } catch {
-          return null;
-        }
-      })(),
-      (async () => {
-        try {
-          const res = await fetch(
-            `https://push2delay.eastmoney.com/api/qt/stock/trends2/get?${q}&_=${Date.now()}`,
-            { signal: AbortSignal.timeout(6000), cache: 'no-store' },
-          );
-          if (!res.ok) return null;
-          return parseTrendsPayload((await res.json())?.data, days);
-        } catch {
-          return null;
-        }
-      })(),
-      fetchTencentAshareMinute(secid).catch(() => null),
-    ]);
-    const bestClosed = closed
-      .filter((p) => p?.points?.length)
-      .sort((a, b) => b.points.length - a.points.length)[0];
-    if (bestClosed?.points?.length) return rememberIntraday(secid, bestClosed);
+    // 闭盘：腾讯分钟补数
+    const tx = await fetchTencentAshareMinute(secid).catch(() => null);
+    if (tx?.points?.length) return rememberIntraday(secid, tx);
     return readCachedIntraday(secid);
   }
 
@@ -1445,7 +1420,8 @@ const flowCache = new Map();
 
 function isExtensionRuntime() {
   try {
-    return typeof chrome !== 'undefined' && !!chrome?.runtime?.id;
+    // 网页 polyfill 固定 id='web'，不能当扩展（否则会打编号节点触发 CORS）
+    return typeof chrome !== 'undefined' && !!chrome?.runtime?.id && chrome.runtime.id !== 'web';
   } catch {
     return false;
   }
@@ -1471,37 +1447,45 @@ function eastFlowHosts(numbered = 8) {
   return [...base, ...extra];
 }
 
-/** 开盘快路径：顺序试少量节点，成功即返回，不打多源竞赛 */
+/** 开盘快路径：东财同接口节点竞速（网页 push2 常挂，delay/his 优先） */
 async function fetchEastFlowSimple(query, { timeoutMs = 4000 } = {}) {
   const ut = 'ut=b2884a393a59ad64002292a3e90d46a5';
   const hosts = [
-    'https://push2.eastmoney.com',
-    'https://push2his.eastmoney.com',
     'https://push2delay.eastmoney.com',
+    'https://push2his.eastmoney.com',
+    'https://push2.eastmoney.com',
   ];
-  for (const host of hosts) {
-    try {
-      const res = await fetch(
-        `${host}/api/qt/stock/fflow/kline/get?${query}&${ut}&_=${Date.now()}`,
-        {
-          signal: AbortSignal.timeout(timeoutMs),
-          cache: 'no-store',
-          headers: { Referer: 'https://data.eastmoney.com/zjlx/dpzjlx.html' },
-        },
-      );
-      if (!res.ok) continue;
-      const text = await res.text();
-      if (!text || text.trim().startsWith('<')) continue;
-      const bare = text.trim().startsWith('{')
-        ? text
-        : text.replace(/^[^(]*\(/, '').replace(/\)\s*;?\s*$/, '');
-      const parsed = parseFlowKlines(JSON.parse(bare)?.data?.klines);
-      if (parsed?.times?.length) return parsed;
-    } catch {
-      /* next */
-    }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const stamp = Date.now();
+  try {
+    return await Promise.any(
+      hosts.map(async (host) => {
+        const res = await fetch(
+          `${host}/api/qt/stock/fflow/kline/get?${query}&${ut}&_=${stamp}`,
+          {
+            signal: ctrl.signal,
+            cache: 'no-store',
+            headers: { Referer: 'https://data.eastmoney.com/zjlx/dpzjlx.html' },
+          },
+        );
+        if (!res.ok) throw new Error(String(res.status));
+        const text = await res.text();
+        if (!text || text.trim().startsWith('<')) throw new Error('html');
+        const bare = text.trim().startsWith('{')
+          ? text
+          : text.replace(/^[^(]*\(/, '').replace(/\)\s*;?\s*$/, '');
+        const parsed = parseFlowKlines(JSON.parse(bare)?.data?.klines);
+        if (!parsed?.times?.length) throw new Error('empty');
+        return parsed;
+      }),
+    );
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+    ctrl.abort();
   }
-  return null;
 }
 
 /** 仅闭盘兜底用：多节点竞速；有赢家后 abort 其余，避免拖慢 */
