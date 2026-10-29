@@ -1080,19 +1080,22 @@ async function fetchTencentMinuteBySym(secid, sym, urls) {
       const block = bag?.data || bag;
       const rows = block?.data || [];
       if (!Array.isArray(rows) || !rows.length) continue;
-      const dateRaw = String(block.date || '');
-      const dateLabel =
-        dateRaw.length === 8 ? `${dateRaw.slice(4, 6)}-${dateRaw.slice(6, 8)}` : '';
+      // 单日分时只用 HH:MM，避免带 MM-DD 被当成多日而不铺全日轴
       const points = [];
       let prev = null;
       for (const row of rows) {
         const parts = String(row).trim().split(/\s+/);
         if (parts.length < 2) continue;
-        const clock = parts[0].length === 4 ? `${parts[0].slice(0, 2)}:${parts[0].slice(2)}` : parts[0];
+        const clockRaw = parts[0].length === 4
+          ? `${parts[0].slice(0, 2)}:${parts[0].slice(2)}`
+          : parts[0];
+        const clock = clockRaw.includes(':')
+          ? `${String(Number(clockRaw.split(':')[0])).padStart(2, '0')}:${clockRaw.split(':')[1].slice(0, 2)}`
+          : clockRaw;
         const price = Number(parts[1]);
         if (!(price > 0)) continue;
         points.push({
-          time: dateLabel ? `${dateLabel} ${clock}` : clock,
+          time: clock,
           price,
           avg: price,
           volume: Number(parts[2] || 0) - (prev || 0),
@@ -1229,6 +1232,19 @@ function isAshareLiveSession(now = new Date()) {
   return mins >= 9 * 60 + 15 && mins <= 15 * 60 + 5;
 }
 
+/** 当日分时会话缓存：开盘偶发空包时复用上一笔成功数据，不走 delay/腾讯兜底 */
+const intradayCache = new Map();
+
+function rememberIntraday(secid, parsed) {
+  if (!parsed?.points?.length) return parsed;
+  intradayCache.set(`intra:${secid}:${todayYmd()}`, parsed);
+  return parsed;
+}
+
+function readCachedIntraday(secid) {
+  return intradayCache.get(`intra:${secid}:${todayYmd()}`) || null;
+}
+
 /** 分时走势。ndays=5 为近五个交易日的分时。 */
 export async function fetchIntraday(secid, ndays = 1) {
   const days = ndays > 1 ? 5 : 1;
@@ -1239,7 +1255,7 @@ export async function fetchIntraday(secid, ndays = 1) {
     `&fields2=f51,f52,f53,f54,f55,f56,f57,f58&mpi=${mpi}&ut=fa5fd1943c7b386f172d6893dbfba10b` +
     `&secid=${encodeURIComponent(secid)}&ndays=${days}&iscr=0&iscca=0`;
 
-  // —— A 股当日：开盘轻量顺序试；偶发空再短补一次；闭盘才并行多源 ——
+  // —— A 股当日：开盘只走东财轻量，空包用缓存；闭盘才并行多源 ——
   if (days <= 1 && !isForeignSecid(secid)) {
     const live = isAshareLiveSession();
     const tryHosts = async (hosts, timeoutMs) => {
@@ -1260,27 +1276,19 @@ export async function fetchIntraday(secid, ndays = 1) {
     };
 
     if (live) {
-      // 盘中：push2 → his → delay，单路短超时；仍空再轻补腾讯分钟（不并行拖慢）
-      let parsed = await tryHosts(
-        [
-          'https://push2.eastmoney.com',
-          'https://push2his.eastmoney.com',
-          'https://push2delay.eastmoney.com',
-        ],
-        3200,
+      // 盘中：只 push2 → his，不做 delay/腾讯兜底；失败直接用上一笔缓存
+      const parsed = await tryHosts(
+        ['https://push2.eastmoney.com', 'https://push2his.eastmoney.com'],
+        3500,
       );
-      if (parsed?.points?.length) return parsed;
-      await new Promise((r) => setTimeout(r, 220));
-      parsed = await tryHosts(['https://push2.eastmoney.com'], 2800);
-      if (parsed?.points?.length) return parsed;
-      const tx = await fetchTencentAshareMinute(secid).catch(() => null);
-      return tx?.points?.length ? tx : null;
+      if (parsed?.points?.length) return rememberIntraday(secid, parsed);
+      return readCachedIntraday(secid);
     }
 
-    // 先打一下 push2，成功立刻回
+    // 闭盘：先 push2，再 his/delay/腾讯并行
     {
       const quick = await tryHosts(['https://push2.eastmoney.com'], 4000);
-      if (quick?.points?.length) return quick;
+      if (quick?.points?.length) return rememberIntraday(secid, quick);
     }
 
     const closed = await Promise.all([
@@ -1313,7 +1321,8 @@ export async function fetchIntraday(secid, ndays = 1) {
     const bestClosed = closed
       .filter((p) => p?.points?.length)
       .sort((a, b) => b.points.length - a.points.length)[0];
-    return bestClosed || null;
+    if (bestClosed?.points?.length) return rememberIntraday(secid, bestClosed);
+    return readCachedIntraday(secid);
   }
 
   // 海外指数 / 五日：多源串试

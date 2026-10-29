@@ -179,6 +179,25 @@ function isMultiDayLabel(t) {
   return /\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}/.test(s) || /\d{4}-\d{2}-\d{2}/.test(s);
 }
 
+function trendDateKey(t) {
+  const s = String(t || '');
+  const m = s.match(/^(\d{4}-\d{2}-\d{2}|\d{1,2}-\d{1,2})\s+/);
+  return m ? m[1] : null;
+}
+
+/** 多个不同日历日才算多日；同一天的 MM-DD HH:MM（如腾讯）仍按单日全日轴铺 */
+function isMultiDaySeries(times, session = 'ashare') {
+  const keys = new Set();
+  for (const t of times || []) {
+    const k = trendDateKey(t);
+    if (k) keys.add(k);
+  }
+  if (keys.size >= 2) return true;
+  // 仅 A 股：无日期且点数异常多，才当五日
+  if (session === 'ashare' && keys.size === 0 && (times || []).length > 300) return true;
+  return false;
+}
+
 /** 按市场时段丢掉非交易分钟（A 股午休 / 美股盘前杂点等） */
 function filterIntradayPoints(times, prices, avgs, volumes, session = 'ashare') {
   const outT = [];
@@ -210,10 +229,8 @@ export function renderIntradayChart(
   let chartPrices = prices || [];
   let chartAvgs = avgs || [];
   let chartVolumes = volumes || [];
-  // 带日期标签才按多日；A 股单日约 241 点。美/韩单日可到 ~390，不能用「>300 ⇒ 多日」
-  const multiDay =
-    chartTimes.some(isMultiDayLabel) ||
-    (session === 'ashare' && chartTimes.length > 300);
+  // 多日才走压缩轴；腾讯单日即便带 MM-DD 也要铺全日时段
+  const multiDay = isMultiDaySeries(chartTimes, session);
   // 滤掉非交易分钟；全日轴对齐并前向填充，稀疏缺口不再把线掐断
   if (multiDay || axisMode === 'live') {
     const filtered = filterIntradayPoints(

@@ -4401,39 +4401,7 @@ async function refreshDetailCharts() {
         }
       } else {
         els.chartMain.innerHTML =
-          `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>暂无分时，正在重试…</span><span class="text-[11px]">可切日K，或稍后点开再试</span></div>`;
-        // 偶发空包：短延迟再拉一次，仍在分时页才补画
-        await new Promise((r) => setTimeout(r, 400));
-        if (state.detail === item && state.period === period) {
-          try {
-            const again = await fetchIntraday(secid, period === 'fiveday' ? 5 : 1);
-            if (again?.points?.some((p) => p?.price != null && Number(p.price) > 0)) {
-              mainData = { ...again, _chart: 'intra' };
-              renderIntradayChart(
-                els.chartMain,
-                {
-                  times: again.points.map((p) => p.time),
-                  prices: again.points.map((p) => p.price),
-                  avgs: again.points.map((p) => p.avg),
-                  volumes: again.points.map((p) => p.volume),
-                  preClose: again.preClose,
-                  markLine: buildLevelMarkLines({
-                    preClose: again.preClose,
-                    resistance: null,
-                    support: null,
-                  }),
-                },
-                { axisMode, session },
-              );
-            } else {
-              els.chartMain.innerHTML =
-                `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>暂无分时</span><span class="text-[11px]">可切换日K，或稍后重试</span></div>`;
-            }
-          } catch {
-            els.chartMain.innerHTML =
-              `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>暂无分时</span><span class="text-[11px]">可切换日K，或稍后重试</span></div>`;
-          }
-        }
+          `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>暂无分时</span><span class="text-[11px]">可切换日K，或稍后重试</span></div>`;
       }
     } else if (mainData?.points?.length) {
       const title =
