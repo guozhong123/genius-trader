@@ -4337,14 +4337,14 @@ async function refreshDetailCharts() {
       }
       return intra;
     };
-    const [mainRes, flowRes] = await Promise.allSettled([
-      mainFetch(),
-      foreign ? Promise.resolve(null) : fetchStockMoneyFlow(secid),
-    ]);
-    let mainData = mainRes.status === 'fulfilled' ? mainRes.value : null;
-    const flow = flowRes.status === 'fulfilled' ? flowRes.value : null;
-    if (mainRes.status === 'rejected') console.error(mainRes.reason);
-    if (flowRes.status === 'rejected') console.error(flowRes.reason);
+
+    // 分时先出图：不跟资金流 Promise.all，避免开盘被资金多源拖慢
+    let mainData = null;
+    try {
+      mainData = await mainFetch();
+    } catch (e) {
+      console.error(e);
+    }
     const useMinute =
       minute && mainData?._chart !== 'kline' && Array.isArray(mainData?.points) && mainData.points[0]?.price != null;
 
@@ -4368,7 +4368,6 @@ async function refreshDetailCharts() {
       supportName: useMinute ? `最低涨幅 ${pctOf(intraLo)}` : '支撑',
     });
 
-    // 清空占位后再渲染，保证容器已有尺寸
     els.chartMain.innerHTML = '';
     await waitFrames(1);
 
@@ -4423,7 +4422,20 @@ async function refreshDetailCharts() {
       els.chartMain.innerHTML =
         `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>暂无${esc(label)}（闭盘也应显示历史K线）</span><span class="text-[11px]">请稍后重试，或切回分时再切回来</span></div>`;
     }
+    resizeAllCharts();
 
+    // 资金流后补，失败不影响分时
+    els.chartStockFlow.innerHTML =
+      '<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">加载中…</div>';
+    let flow = null;
+    if (!foreign) {
+      try {
+        flow = await fetchStockMoneyFlow(secid);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    if (state.detail !== item) return;
     els.chartStockFlow.innerHTML = '';
     await waitFrames(1);
     const flowSummary = flow?.summary;

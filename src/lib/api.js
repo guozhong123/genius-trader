@@ -1211,6 +1211,24 @@ async function fetchYahooChart(secid, { interval = '1m', range = '1d' } = {}) {
   }
 }
 
+/** 沪市时间：交易日 09:15–15:05 视为盘中，开盘路径保持轻量，不做盘后多源兜底 */
+function isAshareLiveSession(now = new Date()) {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    weekday: 'short',
+    hour: 'numeric',
+    minute: 'numeric',
+    hour12: false,
+  });
+  const parts = Object.fromEntries(fmt.formatToParts(now).map((p) => [p.type, p.value]));
+  const wd = String(parts.weekday || '');
+  if (wd === 'Sat' || wd === 'Sun') return false;
+  const hour = Number(parts.hour === '24' ? 0 : parts.hour);
+  const minute = Number(parts.minute);
+  const mins = hour * 60 + minute;
+  return mins >= 9 * 60 + 15 && mins <= 15 * 60 + 5;
+}
+
 /** 分时走势。ndays=5 为近五个交易日的分时。 */
 export async function fetchIntraday(secid, ndays = 1) {
   const days = ndays > 1 ? 5 : 1;
@@ -1221,22 +1239,27 @@ export async function fetchIntraday(secid, ndays = 1) {
     `&fields2=f51,f52,f53,f54,f55,f56,f57,f58&mpi=${mpi}&ut=fa5fd1943c7b386f172d6893dbfba10b` +
     `&secid=${encodeURIComponent(secid)}&ndays=${days}&iscr=0&iscca=0`;
 
-  // —— A 股当日：开盘快路径只打 push2，成功立刻返回，不拖慢盘中 ——
+  // —— A 股当日：开盘只走 push2（可选再试 his 一次）；盘后才并行多源 ——
   if (days <= 1 && !isForeignSecid(secid)) {
-    try {
-      const res = await fetch(`https://push2.eastmoney.com/api/qt/stock/trends2/get?${q}`, {
-        signal: AbortSignal.timeout(3500),
-        cache: 'no-store',
-      });
-      if (res.ok) {
+    const live = isAshareLiveSession();
+    for (const host of live
+      ? ['https://push2.eastmoney.com', 'https://push2his.eastmoney.com']
+      : ['https://push2.eastmoney.com']) {
+      try {
+        const res = await fetch(`${host}/api/qt/stock/trends2/get?${q}`, {
+          signal: AbortSignal.timeout(live ? 3500 : 4000),
+          cache: 'no-store',
+        });
+        if (!res.ok) continue;
         const parsed = parseTrendsPayload((await res.json())?.data, days);
         if (parsed?.points?.length) return parsed;
+      } catch {
+        /* next */
       }
-    } catch {
-      /* 走闭盘补数 */
     }
+    // 盘中失败不再拖 his/delay/腾讯；只在闭盘补数
+    if (live) return null;
 
-    // —— 闭盘 / 空数据补数：his、delay、腾讯分钟并行，不影响上面的开盘快路径 ——
     const closed = await Promise.all([
       (async () => {
         try {
@@ -1416,10 +1439,44 @@ function eastFlowHosts(numbered = 8) {
   return [...base, ...extra];
 }
 
-async function fetchFlowKlineRace(query, { timeoutMs = 8000, hosts } = {}) {
+/** 开盘快路径：顺序试少量节点，成功即返回，不打多源竞赛 */
+async function fetchEastFlowSimple(query, { timeoutMs = 4000 } = {}) {
+  const ut = 'ut=b2884a393a59ad64002292a3e90d46a5';
+  const hosts = [
+    'https://push2.eastmoney.com',
+    'https://push2his.eastmoney.com',
+  ];
+  for (const host of hosts) {
+    try {
+      const res = await fetch(
+        `${host}/api/qt/stock/fflow/kline/get?${query}&${ut}&_=${Date.now()}`,
+        {
+          signal: AbortSignal.timeout(timeoutMs),
+          cache: 'no-store',
+          headers: { Referer: 'https://data.eastmoney.com/zjlx/dpzjlx.html' },
+        },
+      );
+      if (!res.ok) continue;
+      const text = await res.text();
+      if (!text || text.trim().startsWith('<')) continue;
+      const bare = text.trim().startsWith('{')
+        ? text
+        : text.replace(/^[^(]*\(/, '').replace(/\)\s*;?\s*$/, '');
+      const parsed = parseFlowKlines(JSON.parse(bare)?.data?.klines);
+      if (parsed?.times?.length) return parsed;
+    } catch {
+      /* next */
+    }
+  }
+  return null;
+}
+
+/** 仅闭盘兜底用：多节点竞速；有赢家后 abort 其余，避免拖慢 */
+async function fetchFlowKlineRace(query, { timeoutMs = 6500, hosts } = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   const stamp = Date.now();
   const list = hosts || eastFlowHosts();
-  // 与东财大盘资金页同款 ut，部分节点无 ut 会空
   const ut = 'ut=b2884a393a59ad64002292a3e90d46a5';
   try {
     return await Promise.any(
@@ -1427,8 +1484,7 @@ async function fetchFlowKlineRace(query, { timeoutMs = 8000, hosts } = {}) {
         const res = await fetch(
           `${host}/api/qt/stock/fflow/kline/get?${query}&${ut}&_=${stamp}`,
           {
-            // 每路独立超时，避免共享 abort 把慢但成功的节点掐掉
-            signal: AbortSignal.timeout(timeoutMs),
+            signal: ctrl.signal,
             cache: 'no-store',
             headers: { Referer: 'https://data.eastmoney.com/zjlx/dpzjlx.html' },
           },
@@ -1436,18 +1492,19 @@ async function fetchFlowKlineRace(query, { timeoutMs = 8000, hosts } = {}) {
         if (!res.ok) throw new Error(String(res.status));
         const text = await res.text();
         if (!text || text.trim().startsWith('<')) throw new Error('html');
-        // 兼容偶发 JSONP 外壳
         const bare = text.trim().startsWith('{')
           ? text
           : text.replace(/^[^(]*\(/, '').replace(/\)\s*;?\s*$/, '');
-        const json = JSON.parse(bare);
-        const out = parseFlowKlines(json?.data?.klines);
+        const out = parseFlowKlines(JSON.parse(bare)?.data?.klines);
         if (!out?.times?.length) throw new Error('empty');
         return out;
       }),
     );
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
+    ctrl.abort();
   }
 }
 
@@ -1674,13 +1731,21 @@ function readCachedMarketFlow() {
 
 /**
  * 沪深大盘主力资金分时。
- * 盘后东财 fflow 常 502：多节点竞速 → 同花顺上证兜底 → 会话/本地缓存。
+ * 开盘：push2/his 轻量顺序；闭盘：竞速 → 同花顺 → 缓存。
  */
 export async function fetchMarketMoneyFlow() {
   const dual =
     `lmt=0&klt=1&secid=1.000001&secid2=0.399001&${FLOW_FIELDS}`;
   const solo =
     `lmt=0&klt=1&secid=1.000001&${FLOW_FIELDS}`;
+
+  if (isAshareLiveSession()) {
+    const live =
+      (await fetchEastFlowSimple(dual, { timeoutMs: 3500 })) ||
+      (await fetchEastFlowSimple(solo, { timeoutMs: 3000 }));
+    if (live?.times?.length) return rememberMarketFlow(live);
+    return readCachedMarketFlow() || live;
+  }
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const parsed =
@@ -1963,19 +2028,25 @@ function readCachedStockFlow(secid) {
 
 /**
  * 个股主力资金分时。
- * 盘后东财分钟 fflow 常 502/CORS：竞速 → 同花顺分时 → 日资金摘要 → 缓存。
+ * 开盘：东财 push2/his 轻量顺序，不拖慢分时；闭盘才多源/日摘要兜底。
  */
 export async function fetchStockMoneyFlow(secid) {
   if (!secid || isForeignSecid(secid)) return parseFlowKlines([]);
   const q = `lmt=0&klt=1&secid=${encodeURIComponent(secid)}&${FLOW_FIELDS}`;
 
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  if (isAshareLiveSession()) {
+    const live = await fetchEastFlowSimple(q, { timeoutMs: 3500 });
+    if (live?.times?.length) return rememberStockFlow(secid, live);
+    return readCachedStockFlow(secid) || parseFlowKlines([]);
+  }
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     const parsed = await fetchFlowKlineRace(q, {
-      timeoutMs: 7000 + attempt * 1000,
-      hosts: eastFlowHosts(6),
+      timeoutMs: 5500 + attempt * 800,
+      hosts: eastFlowHosts(4),
     });
     if (parsed?.times?.length) return rememberStockFlow(secid, parsed);
-    if (attempt < 2) await new Promise((r) => setTimeout(r, 350 + attempt * 250));
+    if (attempt < 1) await new Promise((r) => setTimeout(r, 300));
   }
 
   const ths = await fetchThsStockMoneyFlow(secid);
