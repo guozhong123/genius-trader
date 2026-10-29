@@ -36,6 +36,8 @@ import {
   fetchIndustryMove,
   fetchDragonTiger,
   fetchDailyBillboard,
+  fetchDailyBillboardOn,
+  shTradeDates,
   fetchLimitSentiment,
   fetchTrackedFlows,
   fetchBoardLeaders,
@@ -76,16 +78,15 @@ import { analyzeMainForceIntent } from './lib/predict.js';
 import {
   askDeepseekReport,
   askLhbPick3,
+  askLhbQuick3,
   askLhbReport,
   askMarketReport,
   askPredictPack,
-  askScanBatch,
   askSeatReport,
   askSimOrders,
   buildLhbFacts,
   buildMarketFacts,
   buildPredictFacts,
-  buildScanFacts,
   buildSeatFacts,
   buildSimFacts,
   buildStockFacts,
@@ -262,8 +263,23 @@ const els = {
   lhbMeta: $('lhb-meta'),
   lhbBoard: $('lhb-board'),
   lhbFilters: $('lhb-filters'),
+  lhbQuickMeta: $('lhb-quick-meta'),
+  lhbQuickPicks: $('lhb-quick-picks'),
   lhbAiMeta: $('lhb-ai-meta'),
   lhbAiPicks: $('lhb-ai-picks'),
+  lhbAiAnalyzeBtn: $('lhb-ai-analyze-btn'),
+  lhbAiModel: $('lhb-ai-model'),
+  lhbAiHistoryBtn: $('lhb-ai-history-btn'),
+  lhbAiSkipBtn: $('lhb-ai-skip-btn'),
+  lhbAiSkipBanner: $('lhb-ai-skip-banner'),
+  lhbAiAuction: $('lhb-ai-auction'),
+  lhbAiBacktest: $('lhb-ai-backtest'),
+  lhbAiWeekTable: $('lhb-ai-week-table'),
+  lhbAiGainTable: $('lhb-ai-gain-table'),
+  lhbHistRoot: $('lhb-hist-root'),
+  lhbHistMask: $('lhb-hist-mask'),
+  lhbHistClose: $('lhb-hist-close'),
+  lhbHistBody: $('lhb-hist-body'),
   simAiBtn: $('sim-ai-btn'),
   simMarkBtn: $('sim-mark-btn'),
   simResetBtn: $('sim-reset-btn'),
@@ -415,11 +431,16 @@ function scrollPageTop() {
 const APP_VIEWS = ['watch', 'pulse', 'lhb', 'data', 'etf'];
 let lhbBoardCache = null;
 let lhbBoardLoading = false;
+let lhbQuickCache = null;
+let lhbQuickLoading = false;
+let lhbQuickForDate = '';
 let lhbAdviceCache = null;
 let lhbAdviceLoading = false;
 let lhbAdviceForDate = '';
 const LHB_FILTERS = ['北向', '机构', '主力', '游资'];
-const lhbFilterOn = new Set(LHB_FILTERS);
+/** 默认过滤游资：只看北向/机构/主力 */
+const LHB_FILTER_DEFAULT = ['北向', '机构', '主力'];
+const lhbFilterOn = new Set(LHB_FILTER_DEFAULT);
 const LHB_SORT_KEYS = { livePct: '今日涨跌', prevPct: '前一日涨跌', netYi: '净买亿' };
 let lhbSort = { key: 'netYi', dir: 'desc' };
 const SIM_FEE_RATE = 0.0005; // 万五
@@ -531,15 +552,23 @@ function setView(view) {
     tab.style.color = on ? '#fff' : 'var(--muted)';
   });
   if (state.view === 'data') {
-    loadDataCenter();
-    loadBoards();
-    loadRank();
+    // 先让资金页可见再画图，避免隐藏容器 0 尺寸把折线画没
+    requestAnimationFrame(() => {
+      void paintDataCenterCharts();
+      loadDataCenter();
+      loadBoards();
+      loadRank();
+    });
   }
   if (state.view === 'pulse') {
     refreshPulse();
     loadTrendSheet();
   }
-  if (state.view === 'lhb') void refreshLhbBoard(false);
+  if (state.view === 'lhb') {
+    syncLhbFilterButtons();
+    syncLhbAiModelSelect();
+    void refreshLhbBoard(false);
+  }
   if (state.view === 'etf') ensureHeatmap();
   syncMarketAiBtn();
   requestAnimationFrame(() => resizeAllCharts());
@@ -990,18 +1019,6 @@ function aiProbCell(item) {
   </div>`;
 }
 
-function scanBarHtml() {
-  if (state.primaryKind !== 'stock') return '';
-  const label = state.scanRunning
-    ? `分析中 ${state.scanProgress?.done || 0}/${state.scanProgress?.total || 0}`
-    : '分析全部';
-  const dis = state.scanRunning ? 'disabled' : '';
-  return `<div class="scan-bar">
-    <button type="button" data-scan-all ${dis} class="scan-btn" title="本页唯一批量 AI：只在你点时调用">${esc(label)}</button>
-    <span class="scan-hint">点股票打开详情可单独分析；刷新不会自动调用 AI</span>
-  </div>`;
-}
-
 function rowHtml(item) {
   const q = state.quotes[quoteKey(item)] || {};
   const name = preferDisplayName(q.name, item.name);
@@ -1096,7 +1113,6 @@ function renderList() {
     blocks.push(rest.map(rowHtml).join(''));
   }
   els.list.innerHTML = `
-    ${scanBarHtml()}
     ${listHeaderHtml()}
     <div class="grid gap-0.5">${blocks.join('')}</div>`;
   bindListEvents();
@@ -1140,13 +1156,6 @@ async function openEditPosDialog(item) {
 }
 
 function bindListEvents() {
-  els.list.querySelectorAll('[data-scan-all]').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      scanAllStocks();
-    });
-  });
-
   els.list.querySelector('[data-sort-cycle]')?.addEventListener('click', async () => {
     const cur = state.settings?.sortBy || 'manual';
     await setSort(nextSortCycle(cur));
@@ -1575,8 +1584,30 @@ function renderPredictCard() {
     <p class="mt-1 text-[11px] tabular-nums" style="color:var(--muted)">全天主力 ${esc(mainYi)} 亿 · 小单 ${esc(smallYi)} 亿${esc(recentBit)}</p>`;
 }
 
+function paintDataCenterCharts() {
+  const flowEl = $('chart-market-flow');
+  const axisOpts = { axisMode: chartAxisMode(), legendNames: flowLegendNames() };
+  if (state.center?.flow?.times?.length && flowEl) {
+    renderFlowChart(flowEl, state.center.flow, axisOpts);
+    const asof = $('flow-asof');
+    if (asof) {
+      const s = state.center.flow.summary || {};
+      const note = s.note || (state.center.flow.source === 'ths' ? '上证分时·盘后兜底' : '');
+      asof.textContent = [s.asOf || state.center.flow.date || '', note].filter(Boolean).join(' · ');
+    }
+  }
+  if (state.center?.updown) renderUpDownChart($('chart-updown'), state.center.updown);
+  if (state.center?.northbound) renderNorthboundChart($('chart-northbound'), state.center.northbound);
+  requestAnimationFrame(() => resizeAllCharts());
+}
+
 async function loadDataCenter() {
+  const flowEl = $('chart-market-flow');
   try {
+    if (flowEl && !state.center?.flow?.times?.length) {
+      flowEl.innerHTML =
+        '<div class="flex h-full items-center justify-center text-[12px]" style="color:var(--muted)">主力资金加载中…</div>';
+    }
     const settled = await Promise.allSettled([
       fetchMarketMoneyFlow(),
       fetchUpDownDistribution(),
@@ -1597,14 +1628,20 @@ async function loadDataCenter() {
       ...(overview ? { overview } : {}),
     };
     renderFlowSummary();
-    const axisOpts = { axisMode: chartAxisMode(), legendNames: flowLegendNames() };
-    if (state.center.flow) renderFlowChart($('chart-market-flow'), state.center.flow, axisOpts);
-    if (state.center.updown) renderUpDownChart($('chart-updown'), state.center.updown);
-    if (state.center.northbound) renderNorthboundChart($('chart-northbound'), state.center.northbound);
+    if (state.center.flow?.times?.length) {
+      paintDataCenterCharts();
+    } else if (flowEl) {
+      flowEl.innerHTML =
+        '<div class="flex h-full flex-col items-center justify-center gap-1 text-[12px]" style="color:var(--muted)"><span>盘后资金分时暂未拉到</span><span class="text-[11px]">点顶栏刷新重试</span></div>';
+    }
     renderPredictCard();
     if (state.briefOpen && state.briefTab === 'insight') renderBriefBody();
   } catch (e) {
     console.error(e);
+    if (flowEl && !state.center?.flow?.times?.length) {
+      flowEl.innerHTML =
+        '<div class="flex h-full items-center justify-center text-[12px]" style="color:var(--muted)">主力资金加载失败，请刷新重试</div>';
+    }
   }
 }
 
@@ -1940,18 +1977,27 @@ function renderLhbBoard(pack) {
   </table>`;
 }
 
+/** 一日游/建议只跟主力资金：必须有北向、机构或主力；纯游资/散户营业部不要 */
+function hasMainForceBuyer(row) {
+  const tags = row?.buyerTags || [];
+  return tags.includes('北向') || tags.includes('机构') || tags.includes('主力');
+}
+
+function isPureYouzi(row) {
+  return !hasMainForceBuyer(row);
+}
+
 function scoreLhbPick(row) {
   const net = Number(row.netYi) || 0;
-  const pct = Number(row.changePct) || 0;
   const tags = row.buyerTags || [];
-  const code = String(row.code || '');
   let score = net;
-  if (tags.includes('北向')) score += 3.2;
-  if (tags.includes('机构')) score += 2.2;
-  if (tags.includes('游资')) score += 0.4;
+  // AI 建议默认避开纯游资，优先北向/机构/主力
+  if (tags.includes('北向')) score += 2.4;
+  if (tags.includes('机构')) score += 2.0;
+  if (tags.includes('主力')) score += 1.6;
+  if (isPureYouzi(row)) score -= 8;
+  else if (tags.includes('游资')) score -= 0.8;
   if (net <= 0) score -= 10;
-  const band = /^(300|301|688|689)/.test(code) ? 19.5 : /^[48]/.test(code) ? 29.5 : 9.5;
-  if (pct >= band - 0.15 && !tags.includes('北向') && !tags.includes('机构')) score -= 3.5;
   return score;
 }
 
@@ -1961,13 +2007,14 @@ function heuristicLhbReason(row) {
   if (tags.includes('北向') && tags.includes('机构')) return '北向+机构同时净买，资金比纯游资干净。';
   if (tags.includes('北向')) return `北向席位在买${top ? `（${top.short} ${fmtYiBoard(top.netYi)}亿）` : ''}。`;
   if (tags.includes('机构')) return `有机构席位净买${top ? `，${top.short} ${fmtYiBoard(top.netYi)}亿` : ''}。`;
+  if (tags.includes('主力')) return `主力净买靠前${top ? `，${top.short} ${fmtYiBoard(top.netYi)}亿` : ''}。`;
   if (tags.includes('游资')) return `游资净买靠前，短线可看一眼，注意一日游。`;
   return `榜上净买入 ${fmtYiBoard(row.netYi)} 亿，席位以营业部为主。`;
 }
 
 function pickLhbThree(rows) {
   return [...(rows || [])]
-    .filter((r) => Number(r.netYi) > 0)
+    .filter((r) => Number(r.netYi) > 0 && hasMainForceBuyer(r))
     .sort((a, b) => scoreLhbPick(b) - scoreLhbPick(a))
     .slice(0, 3)
     .map((r) => ({
@@ -1988,23 +2035,186 @@ function livePctOf(code, fallback) {
   return Number.isFinite(n) ? n : null;
 }
 
-function renderLhbAdvice(pack) {
-  if (!els.lhbAiPicks) return;
+function lhbProbClass(prob) {
+  const n = Number(prob);
+  if (!Number.isFinite(n) || n < 50) return 'is-low';
+  if (n < 62) return 'is-mid';
+  return '';
+}
+
+function lhbDaytripMarketBits() {
+  const bits = [];
+  const tape = judgeTape(state.center);
+  if (tape?.label) bits.push(`情绪 ${tape.label}${tape.detail ? `（${tape.detail}）` : ''}`);
+  for (const idx of state.indices || []) {
+    const code = String(idx.code || '');
+    const name = idx.name || code;
+    const pct = Number(idx.changePct ?? state.quotes?.[quoteKey(idx)]?.changePct);
+    if (!Number.isFinite(pct)) continue;
+    if (/000001|399001|399006|NDX|N225|KS11/.test(code) || /上证|深证|创业|纳指|日经|韩国/.test(name)) {
+      bits.push(`${name} ${fmtPct(pct)}`);
+    }
+    if (bits.length >= 6) break;
+  }
+  return bits.join(' · ');
+}
+
+function lhbLimitBand(code) {
+  const c = String(code || '');
+  if (/^(300|301|688|689)/.test(c)) return 19.5;
+  if (/^[48]/.test(c) || c.startsWith('92')) return 29.5;
+  return 9.5;
+}
+
+function lhbBoardHeightFromK(pts, code) {
+  const band = lhbLimitBand(code);
+  let n = 0;
+  for (let i = (pts || []).length - 1; i >= 0; i -= 1) {
+    const pct = Number(pts[i]?.changePct);
+    if (Number.isFinite(pct) && pct >= band - 0.15) n += 1;
+    else break;
+  }
+  return n;
+}
+
+/** 诱多 / 追高 / 概率&lt;50 → 默认放弃 */
+function isLhbAbandonPick(p) {
+  const force = String(p?.force || '');
+  const position = String(p?.position || '');
+  const prob = Number(p?.buyProb);
+  if (force === '诱多' || position === '追高') return true;
+  if (Number.isFinite(prob) && prob < 50) return true;
+  const h = Number(p?.boardHeight);
+  if (Number.isFinite(h) && h >= 3 && force !== '真买') return true;
+  return false;
+}
+
+/** 给候选股补近 5 日涨幅、距 20 日高点、连板高度 */
+async function enrichLhbAiPos(rows, limit = 24) {
+  const list = (rows || []).slice(0, limit);
+  await Promise.all(
+    list.map(async (row) => {
+      if (row.aiPos?.boardHeight != null && row.aiPos?.sum5 != null) return;
+      const code = String(row.code || '').replace(/\D/g, '').slice(-6);
+      if (!/^\d{6}$/.test(code)) return;
+      const market = row.market || marketOfCode(code);
+      const k = await fetchKline(toSecid(market, code), 101, 28).catch(() => null);
+      const pts = (k?.points || []).filter((p) => Number.isFinite(Number(p?.close)));
+      if (pts.length < 5) return;
+      const last5 = pts.slice(-5);
+      const sum5 = last5.reduce((s, p) => s + (Number(p.changePct) || 0), 0);
+      const window = pts.slice(-20);
+      const highs = window.map((p) => Number(p.high)).filter(Number.isFinite);
+      const lastClose = Number(pts[pts.length - 1]?.close);
+      const high20 = highs.length ? Math.max(...highs) : NaN;
+      const distHigh =
+        Number.isFinite(high20) && high20 > 0 && Number.isFinite(lastClose)
+          ? ((lastClose - high20) / high20) * 100
+          : null;
+      row.aiPos = {
+        sum5: Math.round(sum5 * 10) / 10,
+        distHigh: Number.isFinite(distHigh) ? Math.round(distHigh * 10) / 10 : null,
+        boardHeight: lhbBoardHeightFromK(pts, code),
+      };
+    }),
+  );
+  return list;
+}
+
+/** boardDate 之后第 n 个交易日（跳过周末与内置节假日） */
+function lhbTradeDayAfter(boardDate, n = 1) {
+  const start = String(boardDate || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || n < 1) return '';
+  const [y0, m0, d0] = start.split('-').map(Number);
+  let found = 0;
+  for (let i = 1; i <= 20; i += 1) {
+    const dt = new Date(Date.UTC(y0, m0 - 1, d0 + i));
+    const ymd = dt.toISOString().slice(0, 10);
+    const wd = dt.getUTCDay();
+    if (wd === 0 || wd === 6) continue;
+    if (CN_HOLIDAYS.has(ymd)) continue;
+    found += 1;
+    if (found === n) return ymd;
+  }
+  return '';
+}
+
+function nextLhbBuyDate(boardDate) {
+  return lhbTradeDayAfter(boardDate || marketClock().today, 1);
+}
+
+function lhbSkipBuyDate() {
+  return String(state.settings?.lhbDaytripSkipBuyDate || '').slice(0, 10);
+}
+
+function paintLhbSkipBanner(boardDate) {
+  if (!els.lhbAiSkipBanner) return;
+  const buyDay = nextLhbBuyDate(boardDate || lhbBoardCache?.date || marketClock().today);
+  const skipped = lhbSkipBuyDate() && lhbSkipBuyDate() === buyDay;
+  const tape = judgeTape(state.center);
+  const panic = tape?.label === '宜等';
+  if (skipped) {
+    els.lhbAiSkipBanner.classList.remove('hidden');
+    els.lhbAiSkipBanner.innerHTML = `已标记 <b>${esc(buyDay)}</b> 不做一日游。想做再点一次「今日不做」取消。`;
+    if (els.lhbAiSkipBtn) els.lhbAiSkipBtn.textContent = '取消不做';
+    return;
+  }
+  if (panic) {
+    els.lhbAiSkipBanner.classList.remove('hidden');
+    els.lhbAiSkipBanner.innerHTML = `大盘偏弱（${esc(tape.detail || '宜等')}）。建议点「今日不做」，或只留真买且位置不高的票。`;
+    if (els.lhbAiSkipBtn) els.lhbAiSkipBtn.textContent = '今日不做';
+    return;
+  }
+  els.lhbAiSkipBanner.classList.add('hidden');
+  els.lhbAiSkipBanner.innerHTML = '';
+  if (els.lhbAiSkipBtn) els.lhbAiSkipBtn.textContent = '今日不做';
+}
+
+async function toggleLhbDaytripSkip() {
+  const boardDate = lhbBoardCache?.date || marketClock().today;
+  const buyDay = nextLhbBuyDate(boardDate);
+  if (!buyDay) return;
+  const cur = lhbSkipBuyDate();
+  const next = cur === buyDay ? '' : buyDay;
+  state.settings = await saveSettings({ lhbDaytripSkipBuyDate: next });
+  paintLhbSkipBanner(boardDate);
+}
+
+function paintLhbAuctionHint(pack) {
+  if (!els.lhbAiAuction) return;
+  const picks = pack?.picks || [];
+  if (!picks.length) {
+    els.lhbAiAuction.classList.add('hidden');
+    els.lhbAiAuction.innerHTML = '';
+    return;
+  }
+  const lines = picks
+    .filter((p) => !isLhbAbandonPick(p) && p.auction)
+    .map((p) => `<div><b>${esc(p.name || p.code)}</b> ${esc(p.auction)}</div>`)
+    .join('');
+  els.lhbAiAuction.classList.remove('hidden');
+  els.lhbAiAuction.innerHTML = `<div class="lhb-ai-auction-title">次日竞价复核</div>
+    <div class="lhb-ai-auction-base">统一口令：低开/平开可看；高开 &gt;2% 或竞价异常放量 → 放弃。</div>
+    ${lines || '<div style="color:var(--muted)">可做的票会在分析后写出竞价条件。</div>'}`;
+}
+
+function renderLhbQuickPicks(pack) {
+  if (!els.lhbQuickPicks) return;
   const picks = (pack?.picks || []).map((p) => ({
     ...p,
     changePct: livePctOf(p.code, p.changePct),
   }));
   if (!picks.length) {
-    els.lhbAiPicks.innerHTML =
+    els.lhbQuickPicks.innerHTML =
       '<p class="text-[12px]" style="color:var(--muted)">暂无建议。等榜单出来后再看。</p>';
     return;
   }
-  els.lhbAiPicks.innerHTML = picks
+  els.lhbQuickPicks.innerHTML = picks
     .map((p, i) => {
       const tags = (p.buyerTags || [])
         .map((t) => `<span class="lhb-tag lhb-tag-${escAttr(t)}">${esc(t)}</span>`)
         .join('');
-      return `<button type="button" class="lhb-ai-pick" data-lhb-pick="${i}">
+      return `<button type="button" class="lhb-ai-pick" data-lhb-quick="${i}">
         <div class="lhb-ai-pick-top">
           <span class="lhb-ai-rank">${i + 1}</span>
           <span class="lhb-ai-name">${esc(p.name)}</span>
@@ -2018,50 +2228,778 @@ function renderLhbAdvice(pack) {
     .join('');
 }
 
-async function refreshLhbAdvice(pack, force = false) {
+function renderLhbAdvice(pack) {
   if (!els.lhbAiPicks) return;
+  const picks = (pack?.picks || []).map((p) => ({
+    ...p,
+    changePct: livePctOf(p.code, p.changePct),
+  }));
+  paintLhbSkipBanner(pack?.boardDate || lhbBoardCache?.date);
+  paintLhbAuctionHint(pack);
+  if (!picks.length) {
+    els.lhbAiPicks.innerHTML =
+      '<p class="text-[12px] leading-relaxed" style="color:var(--muted)">上面是快捷三只；这里是一日游深分析。点右上「分析」给出买入概率、真买/诱多与次日买/第三天卖计划。</p>';
+    return;
+  }
+  const isDaytrip = picks.some((p) => Number.isFinite(Number(p.buyProb)));
+  const ordered = [...picks].sort((a, b) => Number(isLhbAbandonPick(a)) - Number(isLhbAbandonPick(b)) || Number(b.buyProb || 0) - Number(a.buyProb || 0));
+  els.lhbAiPicks.innerHTML = ordered
+    .map((p, i) => {
+      const abandon = isLhbAbandonPick(p);
+      const tags = (p.buyerTags || [])
+        .map((t) => `<span class="lhb-tag lhb-tag-${escAttr(t)}">${esc(t)}</span>`)
+        .join('');
+      const prob = Number(p.buyProb);
+      const probHtml = Number.isFinite(prob)
+        ? `<span class="lhb-ai-prob ${lhbProbClass(prob)}" title="次日低吸后、第三天兑现的主观概率"><b>${Math.round(prob)}</b><span>%</span></span>`
+        : '';
+      const force = String(p.force || '').trim();
+      const position = String(p.position || '').trim();
+      const boardH = Number(p.boardHeight);
+      const badges = [
+        abandon ? `<span class="lhb-ai-badge lhb-ai-badge-放弃">放弃</span>` : '',
+        force ? `<span class="lhb-ai-badge lhb-ai-badge-${escAttr(force)}">${esc(force)}</span>` : '',
+        position ? `<span class="lhb-ai-badge lhb-ai-badge-${escAttr(position)}">位置${esc(position)}</span>` : '',
+        Number.isFinite(boardH) && boardH > 0
+          ? `<span class="lhb-ai-badge">${boardH}板</span>`
+          : Number.isFinite(boardH)
+            ? `<span class="lhb-ai-badge">未连板</span>`
+            : '',
+      ].join('');
+      const plans =
+        isDaytrip && (p.buyPlan || p.sellPlan || p.auction || p.risk)
+          ? `<div class="lhb-ai-plans">
+              ${p.buyPlan ? `<div><b>次日买</b> ${esc(p.buyPlan)}</div>` : ''}
+              ${p.sellPlan ? `<div><b>第三天卖</b> ${esc(p.sellPlan)}</div>` : ''}
+              ${p.auction ? `<div><b>竞价</b> ${esc(p.auction)}</div>` : ''}
+              ${p.risk ? `<div><b>风险</b> ${esc(p.risk)}</div>` : ''}
+            </div>`
+          : '';
+      const idx = picks.indexOf(p);
+      return `<button type="button" class="lhb-ai-pick${abandon ? ' is-abandon' : ''}" data-lhb-pick="${idx}">
+        <div class="lhb-ai-pick-top">
+          <span class="lhb-ai-rank">${i + 1}</span>
+          <span class="lhb-ai-name">${esc(p.name)}</span>
+          <span class="tabular-nums" style="color:var(--muted)">${esc(p.code)}</span>
+          <span class="tabular-nums ${tone(p.changePct)}">${fmtPct(p.changePct)}</span>
+        </div>
+        <div class="lhb-ai-pick-meta">${probHtml}${badges}<span class="lhb-ai-pick-tags">${tags}</span></div>
+        <p class="lhb-ai-reason">${esc(p.reason)}${abandon ? '（默认不做）' : ''}</p>
+        ${plans}
+      </button>`;
+    })
+    .join('');
+}
+
+const LHB_HISTORY_DAYS = 10; // 近两周约 10 个交易日
+const LHB_GAIN_DAYS = 7;
+let lhbHistoryTask = null;
+let lhbGainTask = null;
+let lhbGainCache = { key: '', days: [], byCode: {} };
+
+function slimLhbPicks(picks, boardRows) {
+  const byCode = new Map((boardRows || []).map((r) => [String(r.code), r]));
+  return (picks || []).slice(0, 3).map((p) => {
+    const code = String(p.code || '').replace(/\D/g, '').slice(-6);
+    const board = byCode.get(code);
+    // 历史表要「上榜那天」的涨幅和净买，不用实时涨跌
+    const dayPct = Number(board?.changePct);
+    const pickPct = Number(p.changePct);
+    const net = Number(board?.netYi ?? p.netYi);
+    const buyProb = Number(p.buyProb);
+    return {
+      code,
+      name: String(board?.name || p.name || '').trim(),
+      reason: String(p.reason || '').slice(0, 100),
+      buyerTags: Array.isArray(p.buyerTags)
+        ? p.buyerTags.slice(0, 4)
+        : Array.isArray(board?.buyerTags)
+          ? board.buyerTags.slice(0, 4)
+          : [],
+      changePct: Number.isFinite(dayPct) ? dayPct : Number.isFinite(pickPct) ? pickPct : null,
+      netYi: Number.isFinite(net) ? net : null,
+      buyProb: Number.isFinite(buyProb) ? Math.round(buyProb) : null,
+      force: String(p.force || '').slice(0, 8) || null,
+      position: String(p.position || '').slice(0, 8) || null,
+      boardHeight: Number.isFinite(Number(p.boardHeight)) ? Number(p.boardHeight) : null,
+      buyPlan: String(p.buyPlan || '').slice(0, 80) || null,
+      sellPlan: String(p.sellPlan || '').slice(0, 80) || null,
+      auction: String(p.auction || '').slice(0, 80) || null,
+      risk: String(p.risk || '').slice(0, 80) || null,
+    };
+  });
+}
+
+function lhbAiHistoryList() {
+  return Array.isArray(state.settings?.lhbAiHistory) ? state.settings.lhbAiHistory : [];
+}
+
+function lhbAiReportsList() {
+  return Array.isArray(state.settings?.lhbAiReports) ? state.settings.lhbAiReports : [];
+}
+
+function latestLhbDaytripReport(boardDate) {
+  const day = String(boardDate || '').slice(0, 10);
+  const list = lhbAiReportsList().filter(
+    (r) => r?.kind === 'lhb-daytrip' || r?.picks?.some((p) => Number.isFinite(Number(p?.buyProb))),
+  );
+  if (day && /^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    return list.find((r) => String(r.boardDate || r.date || '').slice(0, 10) === day) || null;
+  }
+  return list[0] || null;
+}
+
+async function rememberLhbDaytripReport(pack) {
+  if (!pack?.picks?.length) return pack;
+  const row = {
+    id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    kind: 'lhb-daytrip',
+    boardDate: String(pack.boardDate || pack.date || '').slice(0, 10),
+    generatedAt: pack.generatedAt || Date.now(),
+    source: pack.source || '',
+    note: String(pack.note || '').slice(0, 220),
+    picks: slimLhbPicks(pack.picks, lhbBoardCache?.rows || []),
+  };
+  const next = [row, ...lhbAiReportsList().filter((r) => r?.id !== row.id)].slice(0, 30);
+  state.settings = await saveSettings({ lhbAiReports: next });
+  return { ...pack, id: row.id };
+}
+
+function lhbHistoryNeedsEnrich(row) {
+  return (row?.picks || []).some(
+    (p) => !Number.isFinite(Number(p?.netYi)) || !Number.isFinite(Number(p?.changePct)),
+  );
+}
+
+async function rememberLhbAdviceDay(date, pack, boardRows) {
+  const day = String(date || '').slice(0, 10);
+  const rows =
+    boardRows ||
+    (lhbBoardCache?.date === day ? lhbBoardCache.rows : null) ||
+    [];
+  const picks = slimLhbPicks(pack?.picks, rows);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || picks.length < 1) return;
+  const cur = lhbAiHistoryList().filter((row) => row?.date !== day);
+  const next = [
+    {
+      date: day,
+      picks,
+      source: pack?.source || 'local',
+      note: String(pack?.note || '').slice(0, 160),
+      generatedAt: pack?.generatedAt || Date.now(),
+    },
+    ...cur,
+  ]
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+    .slice(0, 20);
+  const same =
+    next.length === lhbAiHistoryList().length &&
+    next.every((row, i) => {
+      const old = lhbAiHistoryList()[i];
+      return (
+        old?.date === row.date &&
+        old?.source === row.source &&
+        JSON.stringify(
+          old?.picks?.map((p) => [p.code, p.changePct, p.netYi, p.buyProb, p.force]),
+        ) === JSON.stringify(row.picks.map((p) => [p.code, p.changePct, p.netYi, p.buyProb, p.force]))
+      );
+    });
+  if (same) return;
+  state.settings = await saveSettings({ lhbAiHistory: next });
+}
+
+function renderLhbWeekTable(rows) {
+  if (!els.lhbAiWeekTable) return;
+  const list = (rows || [])
+    .filter((r) => r?.date && r?.picks?.length)
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+    .slice(0, LHB_HISTORY_DAYS);
+  if (!list.length) {
+    els.lhbAiWeekTable.innerHTML =
+      '<p class="px-2 py-2 text-[11px]" style="color:var(--muted)">正在补近两周建议…</p>';
+    return;
+  }
+  els.lhbAiWeekTable.innerHTML = `<table class="lhb-ai-hist">
+    <thead><tr><th>日期</th><th>第1只</th><th>第2只</th><th>第3只</th></tr></thead>
+    <tbody>
+      ${list
+        .map((row) => {
+          const cells = [0, 1, 2]
+            .map((i) => {
+              const p = row.picks[i];
+              if (!p?.code) return '<td style="color:var(--muted)">—</td>';
+              const pct = Number(p.changePct);
+              const net = Number(p.netYi);
+              const prob = Number(p.buyProb);
+              const probBit = Number.isFinite(prob)
+                ? `<span class="tabular-nums font-semibold">买 ${Math.round(prob)}%</span>`
+                : '';
+              return `<td><button type="button" class="lhb-ai-cell" data-lhb-hist-code="${escAttr(p.code)}">
+                <span class="lhb-ai-cell-name">${esc(p.name || p.code)}</span>
+                <span class="lhb-ai-cell-code">${esc(p.code)}</span>
+                <span class="lhb-ai-cell-stats">
+                  ${probBit}
+                  <span class="tabular-nums ${tone(pct)}">${esc(fmtPct(pct))}</span>
+                  <span class="tabular-nums ${tone(net)}">净买 ${esc(fmtYiBoard(net))}亿</span>
+                </span>
+              </button></td>`;
+            })
+            .join('');
+          const short = `${String(row.date).slice(5)}${lhbWeekday(row.date) ? ` ${lhbWeekday(row.date)}` : ''}`;
+          return `<tr><td class="lhb-ai-date">${esc(short)}</td>${cells}</tr>`;
+        })
+        .join('')}
+    </tbody>
+  </table>`;
+}
+
+function renderLhbGainTable(days, stocks, byCode) {
+  if (!els.lhbAiGainTable) return;
+  const dates = (days || []).slice(0, LHB_GAIN_DAYS);
+  const rows = stocks || [];
+  if (!dates.length || !rows.length) {
+    els.lhbAiGainTable.innerHTML =
+      '<p class="px-2 py-2 text-[11px]" style="color:var(--muted)">等上面选出股票后再拉近 7 日涨幅。</p>';
+    return;
+  }
+  els.lhbAiGainTable.innerHTML = `<table class="lhb-ai-hist">
+    <thead><tr><th>股票</th>${dates
+      .map((d) => `<th class="tabular-nums">${esc(String(d).slice(5))}</th>`)
+      .join('')}</tr></thead>
+    <tbody>
+      ${rows
+        .map((s) => {
+          const series = byCode?.[s.code] || {};
+          const cells = dates
+            .map((d) => {
+              const pct = series[d];
+              return `<td class="lhb-ai-pct ${tone(pct)}">${esc(fmtPct(pct))}</td>`;
+            })
+            .join('');
+          return `<tr>
+            <td><button type="button" class="lhb-ai-cell" data-lhb-hist-code="${escAttr(s.code)}">
+              <span class="lhb-ai-cell-name">${esc(s.name || s.code)}</span>
+              <span class="lhb-ai-cell-code">${esc(s.code)}</span>
+            </button></td>${cells}
+          </tr>`;
+        })
+        .join('')}
+    </tbody>
+  </table>`;
+}
+
+function stocksFromLhbHistory(history) {
+  const seen = new Set();
+  const out = [];
+  for (const day of history || []) {
+    for (const p of day.picks || []) {
+      const code = String(p.code || '').replace(/\D/g, '').slice(-6);
+      if (!/^\d{6}$/.test(code) || seen.has(code)) continue;
+      seen.add(code);
+      out.push({ code, name: p.name || code });
+      if (out.length >= 9) return out;
+    }
+  }
+  return out;
+}
+
+async function loadLhbGainTable(history) {
+  const stocks = stocksFromLhbHistory(history);
+  if (!els.lhbAiGainTable || !stocks.length) {
+    renderLhbGainTable([], [], {});
+    return;
+  }
+  const key = stocks.map((s) => s.code).join(',');
+  if (lhbGainCache.key === key && lhbGainCache.days?.length) {
+    renderLhbGainTable(lhbGainCache.days, stocks, lhbGainCache.byCode);
+    return;
+  }
+  if (lhbGainTask) return lhbGainTask;
+  els.lhbAiGainTable.innerHTML =
+    '<p class="px-2 py-2 text-[11px]" style="color:var(--muted)">正在拉近 7 日涨幅…</p>';
+  lhbGainTask = (async () => {
+    const byCode = {};
+    const daySet = new Set();
+    await Promise.all(
+      stocks.map(async (s) => {
+        const market = marketOfCode(s.code);
+        const secid = toSecid(market, s.code);
+        const k = await fetchKline(secid, 101, 12).catch(() => null);
+        const points = (k?.points || []).filter((p) => p?.date && Number.isFinite(Number(p.changePct)));
+        const last = points.slice(-LHB_GAIN_DAYS).reverse();
+        const map = {};
+        for (const p of last) {
+          const d = String(p.date).slice(0, 10);
+          map[d] = Number(p.changePct);
+          daySet.add(d);
+        }
+        byCode[s.code] = map;
+      }),
+    );
+    const days = [...daySet].sort((a, b) => b.localeCompare(a)).slice(0, LHB_GAIN_DAYS);
+    lhbGainCache = { key, days, byCode };
+    renderLhbGainTable(days, stocks, byCode);
+  })()
+    .catch((e) => {
+      console.warn('lhb gain table', e);
+      if (els.lhbAiGainTable) {
+        els.lhbAiGainTable.innerHTML =
+          '<p class="px-2 py-2 text-[11px]" style="color:var(--muted)">近 7 日涨幅暂时拉不到。</p>';
+      }
+    })
+    .finally(() => {
+      lhbGainTask = null;
+    });
+  return lhbGainTask;
+}
+
+function paintLhbHistoryFromSettings() {
+  const want = shTradeDates(LHB_HISTORY_DAYS);
+  const history = lhbAiHistoryList()
+    .filter((r) => want.includes(r.date))
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  renderLhbWeekTable(history);
+  void loadLhbGainTable(history);
+  return history;
+}
+
+async function ensureLhbAiHistoryTables(preferDate) {
+  if (!els.lhbAiWeekTable) return;
+  paintLhbHistoryFromSettings();
+  if (lhbHistoryTask) return lhbHistoryTask;
+  lhbHistoryTask = (async () => {
+    const want = shTradeDates(LHB_HISTORY_DAYS);
+    const byDate = new Map(lhbAiHistoryList().map((r) => [r.date, r]));
+    // 缺日，或已有记录但缺涨幅/净买 → 重新拉榜补齐
+    const todo = want.filter((day) => {
+      const row = byDate.get(day);
+      return !row?.picks?.length || lhbHistoryNeedsEnrich(row);
+    });
+    const chunk = 3;
+    for (let i = 0; i < todo.length; i += chunk) {
+      const batch = todo.slice(i, i + chunk);
+      await Promise.all(
+        batch.map(async (day) => {
+          if (preferDate === day && lhbQuickCache?.picks?.length) {
+            await rememberLhbAdviceDay(
+              day,
+              lhbQuickCache,
+              lhbBoardCache?.date === day ? lhbBoardCache.rows : null,
+            );
+            return;
+          }
+          const pack = await fetchDailyBillboardOn(day, 40).catch(() => null);
+          if (!pack?.rows?.length) return;
+          const existing = byDate.get(day);
+          // 已有选股：只按榜单补当天涨幅/净买；没有则启发式重选
+          const picks = existing?.picks?.length ? existing.picks : pickLhbThree(pack.rows);
+          if (!picks.length) return;
+          await rememberLhbAdviceDay(
+            day,
+            {
+              picks,
+              source: existing?.source || 'local',
+              note: existing?.note || '',
+              generatedAt: existing?.generatedAt || Date.now(),
+            },
+            pack.rows,
+          );
+        }),
+      );
+      paintLhbHistoryFromSettings();
+    }
+    paintLhbHistoryFromSettings();
+  })()
+    .catch((e) => console.warn('lhb history tables', e))
+    .finally(() => {
+      lhbHistoryTask = null;
+    });
+  return lhbHistoryTask;
+}
+
+function paintLhbAdviceMeta(pack, date) {
+  if (!els.lhbAiMeta) return;
+  if (!pack?.picks?.length) {
+    els.lhbAiMeta.textContent = date
+      ? `榜单 ${date} 已就绪 · 点「分析」锁主力一日游`
+      : '等榜单出来后点「分析」';
+    return;
+  }
+  const when = formatAiTime(pack.generatedAt);
+  const src = pack.source && pack.source !== 'local' ? ` · ${pack.source}` : '';
+  const note = String(pack.note || '').trim();
+  els.lhbAiMeta.textContent = [
+    when ? `分析时间 ${when}` : '',
+    date ? `榜 ${date}` : '',
+    note || '主力一日游建议',
+  ]
+    .filter(Boolean)
+    .join(' · ') + src;
+}
+
+function syncLhbAnalyzeBtn() {
+  if (!els.lhbAiAnalyzeBtn) return;
+  els.lhbAiAnalyzeBtn.disabled = !!lhbAdviceLoading;
+  els.lhbAiAnalyzeBtn.textContent = lhbAdviceLoading ? '分析中…' : lhbAdviceCache?.picks?.length ? '重新分析' : '分析';
+}
+
+function syncLhbAiModelSelect() {
+  if (!els.lhbAiModel) return;
+  const cur = state.settings?.aiModel === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash';
+  els.lhbAiModel.value = cur;
+}
+
+/** 上方快捷三只：先席位排序，有密钥再用 AI 补强；并刷新下方一日游缓存展示 */
+async function refreshLhbAdvice(pack, force = false) {
   const date = pack?.date || '';
-  const heuristic = { picks: pickLhbThree(pack?.rows || []), note: '', source: 'local', generatedAt: Date.now() };
-  if (!force && lhbAdviceCache?.picks?.length && lhbAdviceForDate === date) {
-    renderLhbAdvice(lhbAdviceCache);
+  refreshLhbDaytripView(date);
+
+  if (!els.lhbQuickPicks) return;
+  const heuristic = {
+    picks: pickLhbThree(pack?.rows || []),
+    note: '',
+    source: 'local',
+    generatedAt: Date.now(),
+  };
+  if (!force && lhbQuickCache?.picks?.length && lhbQuickForDate === date) {
+    renderLhbQuickPicks(lhbQuickCache);
+    if (els.lhbQuickMeta) {
+      els.lhbQuickMeta.textContent =
+        lhbQuickCache.source && lhbQuickCache.source !== 'local'
+          ? `建议买这三只 · ${date} · ${lhbQuickCache.source}`
+          : `建议买这三只 · ${date}`;
+    }
+    void rememberLhbAdviceDay(date, lhbQuickCache).then(() => {
+      paintLhbHistoryFromSettings();
+      void ensureLhbAiHistoryTables(date);
+    });
+    return;
+  }
+  lhbQuickCache = heuristic;
+  lhbQuickForDate = date;
+  renderLhbQuickPicks(heuristic);
+  if (els.lhbQuickMeta) els.lhbQuickMeta.textContent = date ? `建议买这三只 · ${date}` : '建议买这三只';
+  void rememberLhbAdviceDay(date, heuristic).then(() => {
+    paintLhbHistoryFromSettings();
+    void ensureLhbAiHistoryTables(date);
+  });
+  const apiKey = String(state.settings?.deepseekApiKey || '').trim();
+  if (!apiKey || lhbQuickLoading || !pack?.rows?.length) return;
+  const quickRows = (pack.rows || []).filter((r) => hasMainForceBuyer(r)).slice(0, 40);
+  if (!quickRows.length) return;
+  lhbQuickLoading = true;
+  if (els.lhbQuickMeta) els.lhbQuickMeta.textContent = `正在用 AI 从 ${quickRows.length} 只主力票里挑三只…`;
+  try {
+    const clock = marketClock();
+    const ai = await askLhbQuick3(
+      apiKey,
+      { date, rows: quickRows, clock: clock.line },
+      state.settings?.aiModel === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash',
+    );
+    if (ai.picks?.length >= 1) {
+      lhbQuickCache = ai;
+      lhbQuickForDate = date;
+      renderLhbQuickPicks(ai);
+      if (els.lhbQuickMeta) {
+        els.lhbQuickMeta.textContent = `${ai.note || '建议买这三只'} · ${date}`;
+      }
+      void rememberLhbAdviceDay(date, ai).then(() => {
+        paintLhbHistoryFromSettings();
+        void ensureLhbAiHistoryTables(date);
+      });
+    } else if (els.lhbQuickMeta) {
+      els.lhbQuickMeta.textContent = `建议买这三只 · ${date}`;
+    }
+  } catch (e) {
+    console.warn('lhb quick ai', e);
+    if (els.lhbQuickMeta) {
+      els.lhbQuickMeta.textContent = `建议买这三只 · ${date}（AI 未连上，先按席位排序）`;
+    }
+  } finally {
+    lhbQuickLoading = false;
+  }
+}
+
+/** 下方一日游：只展示已保存结果，不自动调用 */
+function refreshLhbDaytripView(date) {
+  if (!els.lhbAiPicks) return;
+  const day = date || '';
+  const cached =
+    lhbAdviceCache?.picks?.length && lhbAdviceForDate === day
+      ? lhbAdviceCache
+      : latestLhbDaytripReport(day);
+  if (cached?.picks?.length) {
+    lhbAdviceCache = cached;
+    lhbAdviceForDate = day || String(cached.boardDate || '').slice(0, 10);
+    renderLhbAdvice(cached);
+    paintLhbAdviceMeta(cached, day);
+  } else {
+    lhbAdviceCache = null;
+    lhbAdviceForDate = day;
+    renderLhbAdvice(null);
+    paintLhbAdviceMeta(null, day);
+  }
+  syncLhbAnalyzeBtn();
+  void loadLhbDaytripBacktest();
+}
+
+let lhbBacktestTask = null;
+let lhbBacktestCache = { key: '', html: '' };
+
+/** 用历史日K粗算：次日最低买 → 第三天收盘/最高卖 */
+async function loadLhbDaytripBacktest() {
+  if (!els.lhbAiBacktest) return;
+  const reports = lhbAiReportsList().slice(0, 12);
+  const samples = [];
+  for (const rep of reports) {
+    const boardDate = String(rep.boardDate || rep.date || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(boardDate)) continue;
+    for (const p of rep.picks || []) {
+      if (!p?.code || isLhbAbandonPick(p)) continue;
+      samples.push({
+        code: String(p.code).replace(/\D/g, '').slice(-6),
+        name: p.name || p.code,
+        boardDate,
+        buyProb: Number(p.buyProb),
+      });
+    }
+  }
+  if (!samples.length) {
+    els.lhbAiBacktest.classList.add('hidden');
+    els.lhbAiBacktest.innerHTML = '';
+    return;
+  }
+  const key = samples.map((s) => `${s.boardDate}:${s.code}`).join('|');
+  if (lhbBacktestCache.key === key && lhbBacktestCache.html) {
+    els.lhbAiBacktest.classList.remove('hidden');
+    els.lhbAiBacktest.innerHTML = lhbBacktestCache.html;
+    return;
+  }
+  if (lhbBacktestTask) return lhbBacktestTask;
+  els.lhbAiBacktest.classList.remove('hidden');
+  els.lhbAiBacktest.innerHTML = '<div class="text-[11px]" style="color:var(--muted)">正在回测历史一日游兑现…</div>';
+  lhbBacktestTask = (async () => {
+    const uniq = [];
+    const seen = new Set();
+    for (const s of samples) {
+      const k = `${s.boardDate}:${s.code}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      uniq.push(s);
+      if (uniq.length >= 18) break;
+    }
+    const rows = [];
+    await Promise.all(
+      uniq.map(async (s) => {
+        const market = marketOfCode(s.code);
+        const k = await fetchKline(toSecid(market, s.code), 101, 40).catch(() => null);
+        const pts = (k?.points || []).filter((p) => p?.date);
+        const buyDay = lhbTradeDayAfter(s.boardDate, 1);
+        const sellDay = lhbTradeDayAfter(s.boardDate, 2);
+        const buyBar = pts.find((p) => String(p.date).slice(0, 10) === buyDay);
+        const sellBar = pts.find((p) => String(p.date).slice(0, 10) === sellDay);
+        const buyPx = Number(buyBar?.low);
+        const sellClose = Number(sellBar?.close);
+        const sellHigh = Number(sellBar?.high);
+        if (!(buyPx > 0) || !(sellClose > 0)) return;
+        const pnlClose = ((sellClose - buyPx) / buyPx) * 100;
+        const pnlHigh = sellHigh > 0 ? ((sellHigh - buyPx) / buyPx) * 100 : null;
+        rows.push({
+          ...s,
+          buyDay,
+          sellDay,
+          pnlClose,
+          pnlHigh,
+          win: pnlClose > 0,
+        });
+      }),
+    );
+    if (!rows.length) {
+      els.lhbAiBacktest.innerHTML =
+        '<div class="text-[11px]" style="color:var(--muted)">历史样本还不够（要等第三天收盘后才有兑现数据）。</div>';
+      lhbBacktestCache = { key, html: els.lhbAiBacktest.innerHTML };
+      return;
+    }
+    const wins = rows.filter((r) => r.win).length;
+    const avg = rows.reduce((s, r) => s + r.pnlClose, 0) / rows.length;
+    const highProb = rows.filter((r) => Number(r.buyProb) >= 60);
+    const highWin = highProb.length
+      ? Math.round((highProb.filter((r) => r.win).length / highProb.length) * 100)
+      : null;
+    const detail = rows
+      .slice(0, 6)
+      .map((r) => {
+        const prob = Number.isFinite(r.buyProb) ? `${Math.round(r.buyProb)}%` : '—';
+        return `<span class="lhb-ai-bt-chip"><b>${esc(r.name)}</b> 预${esc(prob)} → 收${esc(fmtPct(r.pnlClose))}${Number.isFinite(r.pnlHigh) ? ` / 高${esc(fmtPct(r.pnlHigh))}` : ''}</span>`;
+      })
+      .join('');
+    const html = `<div class="lhb-ai-backtest-title">兑现回测 · 次日低点买 → 第三天收盘卖</div>
+      <div class="lhb-ai-backtest-sum">样本 ${rows.length} · 胜率 <b class="${wins / rows.length >= 0.5 ? 'text-up' : 'text-down'}">${Math.round((wins / rows.length) * 100)}%</b> · 均收益 <b class="${tone(avg)}">${esc(fmtPct(avg))}</b>${highProb.length ? ` · ≥60% 胜率 <b>${highWin}%</b>（${highProb.length}只）` : ''}</div>
+      <div class="lhb-ai-backtest-chips">${detail}</div>
+      <div class="text-[10px] mt-1" style="color:var(--muted)">粗算仅供对照概率，不构成收益承诺。</div>`;
+    els.lhbAiBacktest.innerHTML = html;
+    lhbBacktestCache = { key, html };
+  })()
+    .catch((e) => {
+      console.warn('lhb backtest', e);
+      if (els.lhbAiBacktest) {
+        els.lhbAiBacktest.innerHTML =
+          '<div class="text-[11px]" style="color:var(--muted)">回测暂时拉不到。</div>';
+      }
+    })
+    .finally(() => {
+      lhbBacktestTask = null;
+    });
+  return lhbBacktestTask;
+}
+
+/** 手动：拉日K位置 + DeepSeek 一日游分析。同日榜默认复用，避免每次结果乱跳。 */
+async function runLhbDaytripAnalyze(force = false) {
+  if (lhbAdviceLoading) return;
+  if (!lhbBoardCache?.rows?.length) {
+    if (els.lhbAiMeta) els.lhbAiMeta.textContent = '先刷新龙虎榜，再点分析。';
+    return;
+  }
+  const date = lhbBoardCache.date || '';
+  const existing =
+    (lhbAdviceCache?.picks?.length && lhbAdviceForDate === date && lhbAdviceCache) ||
+    latestLhbDaytripReport(date);
+  if (existing?.picks?.length && !force) {
+    lhbAdviceCache = existing;
+    lhbAdviceForDate = date;
+    renderLhbAdvice(existing);
+    paintLhbAdviceMeta(existing, date);
+    syncLhbAnalyzeBtn();
     if (els.lhbAiMeta) {
-      els.lhbAiMeta.textContent = lhbAdviceCache.source && lhbAdviceCache.source !== 'local'
-        ? `建议买这三只 · ${date} · ${lhbAdviceCache.source}`
-        : `建议买这三只 · ${date}`;
+      const when = formatAiTime(existing.generatedAt);
+      els.lhbAiMeta.textContent = `${when ? `已有分析 ${when}` : '已有分析'} · 榜 ${date} · 点「重新分析」才会再调 AI`;
     }
     return;
   }
-  lhbAdviceCache = heuristic;
-  lhbAdviceForDate = date;
-  renderLhbAdvice(heuristic);
-  if (els.lhbAiMeta) els.lhbAiMeta.textContent = date ? `建议买这三只 · ${date}` : '建议买这三只';
-  const apiKey = String(state.settings?.deepseekApiKey || '').trim();
-  if (!apiKey || lhbAdviceLoading || !pack?.rows?.length) return;
+  if (existing?.picks?.length && force) {
+    const ok = await confirmDialog(
+      '重新分析',
+      '同一天榜单再分析，结果可能和上次不完全一样。确定要重新调用 DeepSeek 吗？',
+    );
+    if (!ok) return;
+  }
+  const apiKey = await ensureDeepseekKey();
+  if (!apiKey) return;
+  const baseRows = [...visibleLhbRows()]
+    .filter((r) => hasMainForceBuyer(r))
+    .sort((a, b) => scoreLhbPick(b) - scoreLhbPick(a) || String(a.code).localeCompare(String(b.code)))
+    .slice(0, 24);
+  if (!baseRows.length) {
+    if (els.lhbAiMeta) {
+      els.lhbAiMeta.textContent = '当前没有主力/北向/机构票（已排除游资散户）。换筛选或刷新后再分析。';
+    }
+    return;
+  }
   lhbAdviceLoading = true;
-  if (els.lhbAiMeta) els.lhbAiMeta.textContent = `正在用 AI 从 ${pack.rows.length} 只里挑三只…`;
+  syncLhbAnalyzeBtn();
+  const modelPref =
+    els.lhbAiModel?.value === 'deepseek-v4-pro' || state.settings?.aiModel === 'deepseek-v4-pro'
+      ? 'deepseek-v4-pro'
+      : 'deepseek-flash';
+  if (els.lhbAiMeta) {
+    els.lhbAiMeta.textContent = `正在补日K位置，并用 ${modelPref === 'deepseek-v4-pro' ? 'Pro' : 'Flash'} 从 ${baseRows.length} 只主力票里分析…`;
+  }
   try {
+    const rows = await enrichLhbAiPos(baseRows.map((r) => ({ ...r })), 24);
     const clock = marketClock();
+    const tape = judgeTape(state.center);
+    const panic = tape?.label === '宜等';
     const ai = await askLhbPick3(
       apiKey,
-      { date, rows: pack.rows.slice(0, 40), clock: clock.line },
-      state.settings?.aiModel,
+      {
+        date,
+        rows,
+        clock: clock.line,
+        tape: tape
+          ? `${tape.label}${tape.detail ? ` · ${tape.detail}` : ''}${panic ? '（急杀/宜等，整体降权）' : ''}`
+          : '',
+        marketBits: lhbDaytripMarketBits(),
+      },
+      modelPref,
     );
-    if (ai.picks?.length === 3) {
-      lhbAdviceCache = ai;
-      lhbAdviceForDate = date;
-      renderLhbAdvice(ai);
-      if (els.lhbAiMeta) {
-        els.lhbAiMeta.textContent = `${ai.note || '建议买这三只'} · ${date}`;
-      }
-    } else if (els.lhbAiMeta) {
-      els.lhbAiMeta.textContent = `建议买这三只 · ${date}`;
+    if (!ai.picks?.length) {
+      if (els.lhbAiMeta) els.lhbAiMeta.textContent = `分析完成，但没有合一日游条件的票 · ${date}`;
+      return;
     }
+    if (panic) {
+      ai.picks = ai.picks.map((p) => ({
+        ...p,
+        buyProb: Math.min(Number(p.buyProb) || 0, 52),
+      }));
+      if (!/宜等|急杀|不做/.test(String(ai.note || ''))) {
+        ai.note = `大盘偏弱宜等。${ai.note || ''}`.slice(0, 220);
+      }
+    }
+    const saved = await rememberLhbDaytripReport(ai);
+    lhbAdviceCache = saved;
+    lhbAdviceForDate = date;
+    renderLhbAdvice(saved);
+    paintLhbAdviceMeta(saved, date);
+    await rememberLhbAdviceDay(date, saved, lhbBoardCache.rows);
+    paintLhbHistoryFromSettings();
+    void ensureLhbAiHistoryTables(date);
+    void loadLhbDaytripBacktest();
   } catch (e) {
-    console.warn('lhb ai pick', e);
-    if (els.lhbAiMeta) els.lhbAiMeta.textContent = `建议买这三只 · ${date}（AI 未连上，先按席位排序）`;
+    console.warn('lhb daytrip ai', e);
+    const msg = String(e?.message || e || '分析失败');
+    if (els.lhbAiMeta) els.lhbAiMeta.textContent = `分析失败：${msg}`;
+    if (/401|invalid|api key|密钥/i.test(msg)) {
+      state.settings = await saveSettings({ deepseekApiKey: '' });
+    }
   } finally {
     lhbAdviceLoading = false;
+    syncLhbAnalyzeBtn();
   }
+}
+
+function closeLhbHistModal() {
+  if (!els.lhbHistRoot) return;
+  els.lhbHistRoot.classList.add('hidden');
+  els.lhbHistRoot.classList.remove('flex');
+}
+
+function openLhbHistModal() {
+  if (!els.lhbHistRoot || !els.lhbHistBody) return;
+  const list = lhbAiReportsList();
+  if (!list.length) {
+    els.lhbHistBody.innerHTML =
+      '<p class="text-[12px] leading-relaxed" style="color:var(--muted)">还没有分析纪录。同一天榜单默认只分析一次；只有点「重新分析」才会再留一条。</p>';
+  } else {
+    els.lhbHistBody.innerHTML = list
+      .map((row, idx) => {
+        const when = formatAiTime(row.generatedAt) || '—';
+        const day = row.boardDate || row.date || '';
+        const picks = (row.picks || [])
+          .map((p) => {
+            const prob = Number(p.buyProb);
+            const probBit = Number.isFinite(prob) ? `<span class="tabular-nums font-semibold ${lhbProbClass(prob) === 'is-low' ? 'text-down' : 'text-up'}">${Math.round(prob)}%</span>` : '';
+            return `<div class="lhb-hist-card-pick">
+              <span class="font-semibold">${esc(p.name || p.code)}</span>
+              <span class="tabular-nums" style="color:var(--muted)">${esc(p.code)}</span>
+              ${probBit}
+              ${p.force ? `<span class="lhb-ai-badge lhb-ai-badge-${escAttr(p.force)}">${esc(p.force)}</span>` : ''}
+              ${p.position ? `<span class="lhb-ai-badge lhb-ai-badge-${escAttr(p.position)}">${esc(p.position)}</span>` : ''}
+            </div>`;
+          })
+          .join('');
+        return `<button type="button" class="lhb-hist-card" data-lhb-hist-idx="${idx}">
+          <div class="lhb-hist-card-top">
+            <span class="text-[12px] font-semibold">分析时间 ${esc(when)}</span>
+            <span class="text-[11px]" style="color:var(--muted)">${day ? `榜 ${esc(day)}` : ''}${row.source ? ` · ${esc(row.source)}` : ''}</span>
+          </div>
+          ${row.note ? `<p class="mb-2 text-[11px] leading-relaxed" style="color:var(--muted)">${esc(row.note)}</p>` : ''}
+          <div class="lhb-hist-card-picks">${picks}</div>
+        </button>`;
+      })
+      .join('');
+  }
+  els.lhbHistRoot.classList.remove('hidden');
+  els.lhbHistRoot.classList.add('flex');
 }
 
 function openLhbDetail(code) {
@@ -3169,75 +4107,12 @@ async function runDeepseekForItem(item, opts = {}) {
     }
     if (/401|invalid|api key|密钥/i.test(msg)) {
       state.settings = await saveSettings({ deepseekApiKey: '' });
-      state.scanStop = true;
     }
   } finally {
     const next = { ...state.aiRunning };
     delete next[keyId];
     state.aiRunning = next;
     // 无论 quiet 与否都刷新列表，保证概率与弹窗一致
-    renderList();
-  }
-}
-
-async function scanAllStocks() {
-  if (state.scanRunning) return;
-  const stocks = state.list.filter((x) => x.kind === 'stock');
-  if (!stocks.length) return;
-  const calls = Math.ceil(stocks.length / 12);
-  const ok = await confirmDialog(
-    '分析全部',
-    `给 ${stocks.length} 只股票打买入、继续等、不买的概率，大约 ${calls} 次调用。确定开始？`,
-  );
-  if (!ok) return;
-  const apiKey = await ensureDeepseekKey();
-  if (!apiKey) return;
-  state.scanRunning = true;
-  state.scanStop = false;
-  const chunks = [];
-  for (let i = 0; i < stocks.length; i += 12) chunks.push(stocks.slice(i, i + 12));
-  state.scanProgress = { done: 0, total: stocks.length };
-  renderList();
-  const tape = judgeTape(state.center)?.label || '';
-  try {
-    for (const chunk of chunks) {
-      if (state.scanStop) break;
-      const rows = [];
-      let cursor = 0;
-      const worker = async () => {
-        while (cursor < chunk.length) {
-          const item = chunk[cursor];
-          cursor += 1;
-          const secid = item.secid || toSecid(item.market, item.code, item.marketNo);
-          const dayK = await fetchKline(secid, 101, 30).catch(() => null);
-          rows.push({ item, quote: state.quotes[quoteKey(item)] || {}, dayK });
-        }
-      };
-      await Promise.all(Array.from({ length: Math.min(4, chunk.length) }, () => worker()));
-      const scored = await askScanBatch(apiKey, buildScanFacts(rows, tape ? `今天环境：${tape}` : ''));
-      const known = new Map(chunk.map((item) => [String(item.code).replace(/\D/g, '').slice(-6), item]));
-      const aiScan = { ...(state.settings?.aiScan || {}) };
-      const now = Date.now();
-      for (const row of scored) {
-        const item = known.get(row.code);
-        if (!item) continue;
-        aiScan[itemKey(item)] = { ...row, generatedAt: now };
-      }
-      state.settings = await saveSettings({ aiScan });
-      state.scanProgress = {
-        ...state.scanProgress,
-        done: Math.min(stocks.length, (state.scanProgress?.done || 0) + chunk.length),
-      };
-      renderList();
-    }
-  } catch (e) {
-    console.error(e);
-    const msg = String(e?.message || e);
-    if (/401|invalid|api key|密钥/i.test(msg)) {
-      state.settings = await saveSettings({ deepseekApiKey: '' });
-    }
-  } finally {
-    state.scanRunning = false;
     renderList();
   }
 }
@@ -3400,6 +4275,33 @@ function isForeignDetail(item) {
   );
 }
 
+/** 详情分时轴市场：美股过夜 / 韩日白天 / 港股 / A 股 */
+function chartSessionOf(item) {
+  if (!isForeignDetail(item)) return 'ashare';
+  const code = String(item?.code || '').toUpperCase();
+  const name = String(item?.name || '');
+  const market = String(item?.market || '').toUpperCase();
+  if (
+    market === 'US' ||
+    /^(NDX|NDX100|IXIC|DJIA|DJI|SPX)$/.test(code) ||
+    /纳斯达克|道琼斯|标普/.test(name)
+  ) {
+    return 'us';
+  }
+  if (
+    market === 'KR' ||
+    market === 'JP' ||
+    /^(KS11|KQ11|N225)$/.test(code) ||
+    /韩国|KOSPI|日经/.test(name)
+  ) {
+    return 'asia';
+  }
+  if (market === 'HK' || /^(HSI|HSTECH|HSCEI)$/.test(code) || /恒生|港股/.test(name)) {
+    return 'hk';
+  }
+  return 'raw';
+}
+
 function syncPeriodTabs() {
   document.querySelectorAll('.period-btn').forEach((btn) => {
     const on = btn.dataset.period === state.period;
@@ -3407,18 +4309,24 @@ function syncPeriodTabs() {
     btn.classList.toggle('text-white', on);
     btn.style.color = on ? '#fff' : 'var(--muted)';
   });
-  const foreign = isForeignDetail(state.detail);
+  // 海外指数也支持全部/已走（按其开盘时段轴）
   const axisWrap = document.querySelector('#stock-chart-wrap .detail-axis-btn')?.parentElement;
-  if (axisWrap) axisWrap.classList.toggle('hidden', foreign);
+  if (axisWrap) axisWrap.classList.remove('hidden');
 }
+
+/** 详情图刷新代数：避免并发刷新互相清空画布 */
+let detailChartGen = 0;
 
 async function refreshDetailCharts() {
   const item = state.detail;
   if (!item || item.kind === 'fund') return;
+  const gen = ++detailChartGen;
+  const stillHere = () => gen === detailChartGen && state.detail === item;
   const secid = item.secid || toSecid(item.market, item.code, item.marketNo);
   try {
     const period = state.period;
     const foreign = isForeignDetail(item);
+    const session = chartSessionOf(item);
     // A 股五日：近 5 根日 K；海外五日：优先 5 日分钟分时（与日K区分开）
     const minute = period === 'intraday' || (foreign && period === 'fiveday');
     const kltMap = { fiveday: 101, day: 101, week: 102, month: 103 };
@@ -3434,18 +4342,22 @@ async function refreshDetailCharts() {
       }
       return intra;
     };
-    const [mainRes, flowRes] = await Promise.allSettled([
-      mainFetch(),
-      foreign ? Promise.resolve(null) : fetchStockMoneyFlow(secid),
-    ]);
-    let mainData = mainRes.status === 'fulfilled' ? mainRes.value : null;
-    const flow = flowRes.status === 'fulfilled' ? flowRes.value : null;
-    if (mainRes.status === 'rejected') console.error(mainRes.reason);
-    if (flowRes.status === 'rejected') console.error(flowRes.reason);
-    const useMinute =
-      minute && mainData?._chart !== 'kline' && Array.isArray(mainData?.points) && mainData.points[0]?.price != null;
 
-    const axisMode = foreign ? 'live' : chartAxisMode();
+    // 分时先出图：不跟资金流 Promise.all，避免开盘被资金多源拖慢
+    let mainData = null;
+    try {
+      mainData = await mainFetch();
+    } catch (e) {
+      console.error(e);
+    }
+    if (!stillHere()) return;
+    const useMinute =
+      minute &&
+      mainData?._chart !== 'kline' &&
+      Array.isArray(mainData?.points) &&
+      mainData.points.some((p) => p?.price != null && Number(p.price) > 0);
+
+    const axisMode = chartAxisMode();
     syncPeriodTabs();
     const prices = mainData?.points?.map((p) => p.price ?? p.high) || [];
     const intraHi = prices.reduce((m, v) => (Number(v) > m ? Number(v) : m), -Infinity);
@@ -3465,13 +4377,13 @@ async function refreshDetailCharts() {
       supportName: useMinute ? `最低涨幅 ${pctOf(intraLo)}` : '支撑',
     });
 
-    // 清空占位后再渲染，保证容器已有尺寸
     els.chartMain.innerHTML = '';
     await waitFrames(1);
+    if (!stillHere()) return;
 
-    if (useMinute) {
-      const intra = mainData;
-      if (intra?.points?.length) {
+    if (minute) {
+      if (useMinute && mainData?.points?.length) {
+        const intra = mainData;
         renderIntradayChart(
           els.chartMain,
           {
@@ -3482,9 +4394,9 @@ async function refreshDetailCharts() {
             preClose: intra.preClose,
             markLine: markLine,
           },
-          { axisMode },
+          { axisMode, session },
         );
-        const last = intra.points[intra.points.length - 1];
+        const last = [...intra.points].reverse().find((p) => p?.price != null) || intra.points.at(-1);
         if (last?.price != null) {
           $('detail-price').textContent = fmtPrice(last.price, item.market);
           const pct = intra.preClose
@@ -3496,7 +4408,7 @@ async function refreshDetailCharts() {
         }
       } else {
         els.chartMain.innerHTML =
-          `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>暂无分时（闭盘也会显示当日走势）</span><span class="text-[11px]">可切换日K，或稍后重试</span></div>`;
+          `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>暂无分时</span><span class="text-[11px]">可切换日K，或稍后重试</span></div>`;
       }
     } else if (mainData?.points?.length) {
       const title =
@@ -3520,12 +4432,35 @@ async function refreshDetailCharts() {
       els.chartMain.innerHTML =
         `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>暂无${esc(label)}（闭盘也应显示历史K线）</span><span class="text-[11px]">请稍后重试，或切回分时再切回来</span></div>`;
     }
+    resizeAllCharts();
 
+    // 资金流后补，失败不影响分时；先清旧 tip，避免串到上一只票
+    if (!stillHere()) return;
+    $('detail-flow-tip').textContent = '亿元';
+    els.detailFlowCards.innerHTML = '';
+    els.chartStockFlow.innerHTML =
+      '<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">加载中…</div>';
+    let flow = null;
+    if (!foreign) {
+      try {
+        flow = await fetchStockMoneyFlow(secid);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    if (!stillHere()) return;
     els.chartStockFlow.innerHTML = '';
     await waitFrames(1);
-    if (flow?.times?.length) {
-      const s = flow.summary;
-      $('detail-flow-tip').textContent = `主力 ${fmtYi(s.main)} 亿`;
+    const flowSummary = flow?.summary;
+    const hasFlowSeries = !!flow?.times?.length;
+    const hasFlowSummary =
+      flowSummary &&
+      [flowSummary.main, flowSummary.huge, flowSummary.large, flowSummary.mid, flowSummary.small].some(
+        (v) => Number.isFinite(Number(v)),
+      );
+    if (hasFlowSeries || hasFlowSummary) {
+      const s = flowSummary || {};
+      $('detail-flow-tip').textContent = `主力 ${fmtYi(s.main)} 亿${s.note ? ` · ${s.note}` : ''}`;
       els.detailFlowCards.innerHTML = [
         ['主力', s.main],
         ['超大', s.huge],
@@ -3540,11 +4475,19 @@ async function refreshDetailCharts() {
           </div>`,
         )
         .join('');
-      renderFlowChart(els.chartStockFlow, flow, {
-        axisMode,
-        legendNames: flowLegendNames(),
-      });
+      if (hasFlowSeries) {
+        renderFlowChart(els.chartStockFlow, flow, {
+          axisMode,
+          legendNames: flowLegendNames(),
+        });
+      } else {
+        const closedNote = flow?.source === 'day' || s.note?.includes('盘后') || s.note?.includes('日资金');
+        els.chartStockFlow.innerHTML = closedNote
+          ? `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>盘后分时暂不可用，已显示今日资金摘要</span><span class="text-[11px]">主力 ${esc(fmtYi(s.main))} 亿${s.asOf ? ` · ${esc(s.asOf)}` : ''}</span></div>`
+          : `<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">资金分时加载中，请稍后重试</div>`;
+      }
     } else {
+      $('detail-flow-tip').textContent = '亿元';
       els.detailFlowCards.innerHTML = '';
       els.chartStockFlow.innerHTML =
         '<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">暂无资金流</div>';
@@ -5307,21 +6250,49 @@ els.lhbFilters?.addEventListener('click', (e) => {
   if (!tag) return;
   if (lhbFilterOn.has(tag)) lhbFilterOn.delete(tag);
   else lhbFilterOn.add(tag);
-  if (!lhbFilterOn.size) LHB_FILTERS.forEach((t) => lhbFilterOn.add(t));
+  if (!lhbFilterOn.size) LHB_FILTER_DEFAULT.forEach((t) => lhbFilterOn.add(t));
   syncLhbFilterButtons();
   if (!lhbBoardCache) return;
   renderLhbBoard(lhbBoardCache);
   if (els.lhbMeta) els.lhbMeta.textContent = lhbMetaText(lhbBoardCache, true);
+  // 筛选后重算上方快捷三只；不覆盖下方一日游结果
   const heuristic = {
     picks: pickLhbThree(visibleLhbRows()),
     note: '',
     source: 'local',
     generatedAt: Date.now(),
   };
-  lhbAdviceCache = heuristic;
-  lhbAdviceForDate = `${lhbBoardCache.date || ''}:${[...lhbFilterOn].sort().join(',')}`;
-  renderLhbAdvice(heuristic);
-  if (els.lhbAiMeta) els.lhbAiMeta.textContent = `建议买这三只 · ${lhbBoardCache.date || ''}`;
+  lhbQuickCache = heuristic;
+  lhbQuickForDate = `${lhbBoardCache.date || ''}:${[...lhbFilterOn].sort().join(',')}`;
+  renderLhbQuickPicks(heuristic);
+  if (els.lhbQuickMeta) els.lhbQuickMeta.textContent = `建议买这三只 · ${lhbBoardCache.date || ''}`;
+});
+els.lhbAiAnalyzeBtn?.addEventListener('click', () => {
+  const date = lhbBoardCache?.date || '';
+  const has =
+    (lhbAdviceCache?.picks?.length && lhbAdviceForDate === date) ||
+    !!latestLhbDaytripReport(date)?.picks?.length;
+  void runLhbDaytripAnalyze(!!has);
+});
+els.lhbAiModel?.addEventListener('change', async () => {
+  const model = els.lhbAiModel.value === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash';
+  state.settings = await saveSettings({ aiModel: model });
+});
+els.lhbAiHistoryBtn?.addEventListener('click', () => openLhbHistModal());
+els.lhbAiSkipBtn?.addEventListener('click', () => void toggleLhbDaytripSkip());
+els.lhbHistClose?.addEventListener('click', () => closeLhbHistModal());
+els.lhbHistMask?.addEventListener('click', () => closeLhbHistModal());
+els.lhbHistBody?.addEventListener('click', (e) => {
+  const btn = e.target.closest?.('[data-lhb-hist-idx]');
+  if (!btn || !els.lhbHistBody.contains(btn)) return;
+  const row = lhbAiReportsList()[Number(btn.getAttribute('data-lhb-hist-idx'))];
+  if (!row?.picks?.length) return;
+  lhbAdviceCache = row;
+  lhbAdviceForDate = String(row.boardDate || row.date || lhbBoardCache?.date || '').slice(0, 10);
+  renderLhbAdvice(row);
+  paintLhbAdviceMeta(row, lhbAdviceForDate);
+  syncLhbAnalyzeBtn();
+  closeLhbHistModal();
 });
 els.lhbBoard?.addEventListener('click', (e) => {
   const sortBtn = e.target.closest?.('[data-lhb-sort]');
@@ -5342,6 +6313,15 @@ els.lhbBoard?.addEventListener('keydown', (e) => {
   e.preventDefault();
   openLhbDetail(row.getAttribute('data-lhb-open'));
 });
+els.lhbQuickPicks?.addEventListener('click', (e) => {
+  const btn = e.target.closest?.('[data-lhb-quick]');
+  if (!btn || !els.lhbQuickPicks.contains(btn)) return;
+  const pick = lhbQuickCache?.picks?.[Number(btn.getAttribute('data-lhb-quick'))];
+  if (!pick) return;
+  const row = lhbBoardCache?.rows?.find((r) => r.code === pick.code) || pick;
+  const item = lhbRowToItem(row);
+  if (item) void openDetail(item);
+});
 els.lhbAiPicks?.addEventListener('click', (e) => {
   const btn = e.target.closest?.('[data-lhb-pick]');
   if (!btn || !els.lhbAiPicks.contains(btn)) return;
@@ -5350,6 +6330,37 @@ els.lhbAiPicks?.addEventListener('click', (e) => {
   const row = lhbBoardCache?.rows?.find((r) => r.code === pick.code) || pick;
   const item = lhbRowToItem(row);
   if (item) void openDetail(item);
+});
+
+function openLhbHistCode(code) {
+  const c = String(code || '').replace(/\D/g, '').slice(-6);
+  if (!/^\d{6}$/.test(c)) return;
+  const fromBoard = lhbBoardCache?.rows?.find((r) => r.code === c);
+  if (fromBoard) {
+    openLhbDetail(c);
+    return;
+  }
+  const fromHist = lhbAiHistoryList()
+    .flatMap((d) => d.picks || [])
+    .find((p) => p.code === c);
+  const item = lhbRowToItem({
+    code: c,
+    name: fromHist?.name || c,
+    market: marketOfCode(c),
+    changePct: fromHist?.changePct,
+  });
+  if (item) void openDetail(item);
+}
+
+els.lhbAiWeekTable?.addEventListener('click', (e) => {
+  const btn = e.target.closest?.('[data-lhb-hist-code]');
+  if (!btn || !els.lhbAiWeekTable.contains(btn)) return;
+  openLhbHistCode(btn.getAttribute('data-lhb-hist-code'));
+});
+els.lhbAiGainTable?.addEventListener('click', (e) => {
+  const btn = e.target.closest?.('[data-lhb-hist-code]');
+  if (!btn || !els.lhbAiGainTable.contains(btn)) return;
+  openLhbHistCode(btn.getAttribute('data-lhb-hist-code'));
 });
 
 els.strategyDesk?.addEventListener('click', (e) => {

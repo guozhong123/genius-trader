@@ -633,18 +633,19 @@ export async function askLhbReport(apiKey, facts, modelPref) {
   };
 }
 
-const LHB_PICK_SYSTEM = [
+const LHB_QUICK_SYSTEM = [
   FACTS_GROUNDING,
   '你是个人A股短线参谋。用户给你当天龙虎榜去重后的个股（净买入、涨跌、谁在买）。',
   '只从名单里挑 3 只更值得短线关注买入的股票，必须恰好 3 只，禁止名单外的代码。',
-  '优先：北向或机构净买、净买入靠前、不是纯游资一日游打板。涨停且只有营业部/游资的票要降权。',
-  'reason 写一句人话，必须点明买家类型（北向/机构/游资/营业部）。',
+  '只选北向/机构/主力净买的票；纯游资、散户营业部禁止入选（避免次日砸盘）。',
+  '优先：北向或机构或主力净买、净买入靠前。',
+  'reason 写一句人话，必须点明买家类型（北向/机构/主力）。',
   '输出严格 JSON：',
   '{"picks":[{"code":"600000","name":"浦发银行","reason":"北向净买，资金比游资干净"}],"note":"一句总判断"}',
 ].join('');
 
-/** 从本机龙虎榜名单里挑 3 只建议买的票 */
-export async function askLhbPick3(apiKey, { date, rows, clock }, modelPref) {
+/** 龙虎榜快捷三只（榜单刷新后自动/补强用） */
+export async function askLhbQuick3(apiKey, { date, rows, clock }, modelPref) {
   const key = String(apiKey || '').trim();
   if (!key) throw new Error('缺少 DeepSeek 密钥');
   const lines = (rows || []).map(
@@ -661,7 +662,7 @@ export async function askLhbPick3(apiKey, { date, rows, clock }, modelPref) {
     .filter(Boolean)
     .join('\n');
   const messages = [
-    { role: 'system', content: LHB_PICK_SYSTEM },
+    { role: 'system', content: LHB_QUICK_SYSTEM },
     { role: 'user', content: facts },
   ];
   const preferred = modelPref === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash';
@@ -683,7 +684,8 @@ export async function askLhbPick3(apiKey, { date, rows, clock }, modelPref) {
     try {
       json = await postDeepseek(key, {
         model: attempt.model,
-        temperature: 0.2,
+        temperature: 0,
+        top_p: 1,
         response_format: { type: 'json_object' },
         messages,
         ...(attempt.thinking ? { thinking: attempt.thinking } : {}),
@@ -698,11 +700,15 @@ export async function askLhbPick3(apiKey, { date, rows, clock }, modelPref) {
   if (!json) throw lastErr || new Error('DeepSeek 分析失败');
   const report = JSON.parse(json?.choices?.[0]?.message?.content || '{}');
   const byCode = new Map((rows || []).map((r) => [String(r.code), r]));
+  const hasForceBuyer = (row) => {
+    const tags = row?.buyerTags || [];
+    return tags.includes('北向') || tags.includes('机构') || tags.includes('主力');
+  };
   const picks = (Array.isArray(report.picks) ? report.picks : [])
     .map((p) => {
       const code = String(p?.code || '').replace(/\D/g, '').slice(-6);
       const row = byCode.get(code);
-      if (!row) return null;
+      if (!row || !hasForceBuyer(row)) return null;
       return {
         code: row.code,
         name: row.name,
@@ -714,11 +720,235 @@ export async function askLhbPick3(apiKey, { date, rows, clock }, modelPref) {
     })
     .filter(Boolean)
     .slice(0, 3);
+  // 模型若掺了游资/散户被滤掉，用名单里主力票补足 3 只
+  if (picks.length < 3) {
+    const have = new Set(picks.map((p) => p.code));
+    const fillers = [...(rows || [])]
+      .filter((r) => Number(r.netYi) > 0 && hasForceBuyer(r) && !have.has(r.code))
+      .sort((a, b) => (Number(b.netYi) || 0) - (Number(a.netYi) || 0));
+    for (const r of fillers) {
+      if (picks.length >= 3) break;
+      picks.push({
+        code: r.code,
+        name: r.name,
+        reason: clip(
+          (r.buyerTags || []).includes('北向')
+            ? '北向净买靠前'
+            : (r.buyerTags || []).includes('机构')
+              ? '机构净买靠前'
+              : '主力净买靠前',
+          80,
+        ),
+        buyerTags: r.buyerTags || [],
+        netYi: r.netYi,
+        changePct: r.changePct,
+      });
+    }
+  }
   return {
+    kind: 'lhb-quick',
     picks,
     note: clip(report.note, 160),
     generatedAt: Date.now(),
     source: used,
+  };
+}
+
+const LHB_DAYTRIP_SYSTEM = [
+  FACTS_GROUNDING,
+  '你是个人A股「主力一日游 / 打板接力」超短参谋。用户玩法固定：',
+  '当晚龙虎榜出来后分析锁票 → 次日低开或盘中低点买入 → 第三天卖出兑现（A股T+1）。',
+  '只从给出的龙虎榜名单里挑 2～3 只，禁止名单外代码。必须恰好按买入概率从高到低排序。',
+  '稳定性要求：同一份候选名单（代码、净买、买家类型、连板）必须给出相同股票代码与相近 buyProb；禁止随机换票、禁止为了「新鲜感」换结论。',
+  '排序硬规则（从高到低）：①北向/机构真买且位置不高 ②主力净买靠前且非高位板 ③其余。诱多、追高、3板及以上一律排后或 buyProb≤45。',
+  '只选北向/机构/主力；纯游资、散户营业部禁止入选（游资容易次日砸盘）。',
+  '核心逻辑：顺势跟主力真买；位置已高、诱多要大幅降权。',
+  '连板高度：首板可优先；2板谨慎；3板及以上默认大幅降权（buyProb 通常 ≤48），除非机构/北向真买且未追高。',
+  '大盘若标注「宜等/急杀」，note 必须写清今日不宜开新仓，各票 buyProb 整体下压。',
+  'force 只能是：真买 / 诱多 / 分歧 / 不明。',
+  'position 只能是：不高 / 偏高 / 追高。',
+  'buyProb 是「次日按计划低吸后、第三天能兑现」的主观概率 0～100，整数。诱多或追高一般 ≤45；真买且位置不高可到 55～78；禁止给 90 以上。',
+  'buyPlan 写次日怎么买；sellPlan 写第三天怎么卖；auction 写一句次日竞价复核（如：低开1%内可买，高开超2%放弃）。',
+  'reason 一句人话，点明买家类型与真买/诱多判断。risk 一句主要风险。',
+  '禁止承诺收益。输出严格 JSON：',
+  '{"note":"两句总判断（适不适合做一日游）",',
+  '"picks":[{"code":"600000","name":"浦发银行","buyProb":62,"force":"真买","position":"不高",',
+  '"reason":"机构净买且位置不高","buyPlan":"次日低开1%内或回踩分时均线买",',
+  '"sellPlan":"第三天冲高减仓，弱转强才拿到尾盘","auction":"竞价低开或平开可看，高开>2%放弃","risk":"大盘若低开扩散则放弃"}]}',
+].join('');
+
+function daytripSeed(date, rows) {
+  const key = [
+    String(date || ''),
+    ...(rows || []).map(
+      (r) =>
+        `${r.code}:${Number(r.netYi) || 0}:${Number(r.changePct) || 0}:${(r.buyerTags || []).join('/')}:${r.aiPos?.boardHeight ?? ''}`,
+    ),
+  ].join('|');
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i += 1) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return Math.abs(h) % 2147483647;
+}
+
+function clampBuyProb(n) {
+  const x = Math.round(Number(n));
+  if (!Number.isFinite(x)) return 0;
+  return Math.max(0, Math.min(100, x));
+}
+
+/** 龙虎榜一日游分析：买入概率 + 真买/诱多 + 次日买/第三天卖计划 */
+export async function askLhbPick3(apiKey, { date, rows, clock, tape, marketBits }, modelPref) {
+  const key = String(apiKey || '').trim();
+  if (!key) throw new Error('缺少 DeepSeek 密钥');
+  // 候选按净买+买家类型稳定排序，避免每次送进模型的顺序不同
+  const ranked = [...(rows || [])].sort((a, b) => {
+    const tagScore = (r) => {
+      const tags = r.buyerTags || [];
+      let s = Number(r.netYi) || 0;
+      if (tags.includes('北向')) s += 2.4;
+      if (tags.includes('机构')) s += 2.0;
+      if (tags.includes('主力')) s += 1.6;
+      if (tags.includes('游资')) s += 1.6; // 默认不过滤游资，短线权重与主力同级
+      const h = Number(r.aiPos?.boardHeight);
+      if (Number.isFinite(h) && h >= 3) s -= 4;
+      else if (Number.isFinite(h) && h >= 2) s -= 1.5;
+      return s;
+    };
+    const d = tagScore(b) - tagScore(a);
+    if (d !== 0) return d;
+    return String(a.code).localeCompare(String(b.code));
+  });
+  const lines = ranked.map((row, i) => {
+    const seats =
+      (row.buyers || [])
+        .map((b) => `${b.short || b.seat} ${signed(b.netYi)}亿`)
+        .join('、') || row.seats || '未提供';
+    const pos = row.aiPos;
+    const boardH = Number(pos?.boardHeight);
+    const posBit = pos
+      ? ` 近5日合计${signed(pos.sum5)}% 距20日高${signed(pos.distHigh)}% 连板${Number.isFinite(boardH) ? boardH : 0}板`
+      : '';
+    return `${i + 1}. ${row.code} ${row.name} 上榜涨跌${signed(row.changePct)}% 净买${signed(row.netYi)}亿 买家:${(row.buyerTags || []).join('/') || '未标注'} 席位:${seats}${posBit}`;
+  });
+  const facts = [
+    '以下来自东财龙虎榜与本机日K，不是模型记忆。同一份名单请输出稳定结论。',
+    date ? `龙虎榜交易日 ${date}（收盘后披露）。用户打算次日买、第三天卖。` : '龙虎榜日期未提供。',
+    tape ? `大盘情绪：${tape}` : '',
+    marketBits || '',
+    '候选名单（已按主力一日游优先级排好，请优先从前排选）：',
+    lines.join('\n') || '没有龙虎榜。不要编造。',
+    '请按一日游/打板接力逻辑给出 2～3 只；写清买入概率、真买/诱多、连板高度考量与次日竞价复核。',
+  ]
+    .filter(Boolean)
+    .join('\n');
+  const messages = [
+    { role: 'system', content: LHB_DAYTRIP_SYSTEM },
+    { role: 'user', content: facts },
+  ];
+  const preferred = modelPref === 'deepseek-v4-pro' ? 'deepseek-v4-pro' : 'deepseek-flash';
+  const seed = daytripSeed(date, ranked);
+  const attempts =
+    preferred === 'deepseek-v4-pro'
+      ? [
+          { model: 'deepseek-v4-pro', thinking: { type: 'disabled' } },
+          { model: 'deepseek-flash', thinking: { type: 'disabled' } },
+          { model: 'deepseek-chat' },
+        ]
+      : [
+          { model: 'deepseek-flash', thinking: { type: 'disabled' } },
+          { model: 'deepseek-chat' },
+        ];
+  let json = null;
+  let used = 'deepseek-flash';
+  let lastErr = null;
+  for (const attempt of attempts) {
+    try {
+      json = await postDeepseek(key, {
+        model: attempt.model,
+        temperature: 0,
+        top_p: 1,
+        seed,
+        response_format: { type: 'json_object' },
+        messages,
+        ...(attempt.thinking ? { thinking: attempt.thinking } : {}),
+      });
+      used = attempt.model;
+      break;
+    } catch (e) {
+      lastErr = e;
+      if (/401|invalid|api key|密钥/i.test(String(e?.message || ''))) throw e;
+      // 个别接口不认 seed：去掉后再试同一模型
+      if (/seed|unknown|unsupported|invalid/i.test(String(e?.message || ''))) {
+        try {
+          json = await postDeepseek(key, {
+            model: attempt.model,
+            temperature: 0,
+            top_p: 1,
+            response_format: { type: 'json_object' },
+            messages,
+            ...(attempt.thinking ? { thinking: attempt.thinking } : {}),
+          });
+          used = attempt.model;
+          break;
+        } catch (e2) {
+          lastErr = e2;
+          if (/401|invalid|api key|密钥/i.test(String(e2?.message || ''))) throw e2;
+        }
+      }
+    }
+  }
+  if (!json) throw lastErr || new Error('DeepSeek 分析失败');
+  const report = JSON.parse(json?.choices?.[0]?.message?.content || '{}');
+  const byCode = new Map((rows || []).map((r) => [String(r.code), r]));
+  const forceOk = new Set(['真买', '诱多', '分歧', '不明']);
+  const posOk = new Set(['不高', '偏高', '追高']);
+  const hasForceBuyer = (row) => {
+    const tags = row?.buyerTags || [];
+    return tags.includes('北向') || tags.includes('机构') || tags.includes('主力');
+  };
+  const picks = (Array.isArray(report.picks) ? report.picks : [])
+    .map((p) => {
+      const code = String(p?.code || '').replace(/\D/g, '').slice(-6);
+      const row = byCode.get(code);
+      if (!row || !hasForceBuyer(row)) return null;
+      const force = forceOk.has(String(p.force || '').trim()) ? String(p.force).trim() : '不明';
+      const position = posOk.has(String(p.position || '').trim()) ? String(p.position).trim() : '不明';
+      const boardHeight = Number(row.aiPos?.boardHeight);
+      let buyProb = clampBuyProb(p.buyProb);
+      // 本地硬规则：诱多/追高/高位板再砍一刀，避免模型偏乐观
+      if (force === '诱多' || position === '追高') buyProb = Math.min(buyProb, 45);
+      if (Number.isFinite(boardHeight) && boardHeight >= 3) buyProb = Math.min(buyProb, 48);
+      if (Number.isFinite(boardHeight) && boardHeight >= 2 && force !== '真买') buyProb = Math.min(buyProb, 52);
+      return {
+        code: row.code,
+        name: row.name,
+        buyProb,
+        force,
+        position,
+        boardHeight: Number.isFinite(boardHeight) ? boardHeight : null,
+        reason: clip(p.reason || '', 100),
+        buyPlan: clip(p.buyPlan || '', 80),
+        sellPlan: clip(p.sellPlan || '', 80),
+        auction: clip(p.auction || '', 80),
+        risk: clip(p.risk || '', 80),
+        buyerTags: row.buyerTags || [],
+        netYi: row.netYi,
+        changePct: row.changePct,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.buyProb - a.buyProb)
+    .slice(0, 3);
+  return {
+    kind: 'lhb-daytrip',
+    picks,
+    note: clip(report.note, 220),
+    generatedAt: Date.now(),
+    source: used,
+    boardDate: date || '',
   };
 }
 

@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0f766e" />
     <meta name="mobile-web-app-capable" content="yes" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <title>天才交易员</title>
   </head>
   <body>
@@ -195,7 +198,7 @@
                   <span id="lhb-asof" class="lhb-asof">正在确认这份榜是哪一天的…</span>
                 </div>
                 <p class="mt-0.5 text-[11px] leading-relaxed" style="color: var(--muted)">
-                  今日涨跌是当天行情，前一日涨跌是上一个交易日，两列不是同一个数。点列头可排序。可用北向 / 机构 / 主力 / 游资筛选，默认全开。点击一行看详情。
+                  今日涨跌是当天行情，前一日涨跌是上一个交易日，两列不是同一个数。点列头可排序。可用北向 / 机构 / 主力 / 游资筛选，默认关掉游资。点击一行看详情。
                 </p>
               </div>
               <button type="button" id="lhb-refresh-btn" class="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white shrink-0">刷新榜单</button>
@@ -204,14 +207,55 @@
               <button type="button" class="lhb-filter-btn on" data-lhb-filter="北向">北向</button>
               <button type="button" class="lhb-filter-btn on" data-lhb-filter="机构">机构</button>
               <button type="button" class="lhb-filter-btn on" data-lhb-filter="主力">主力</button>
-              <button type="button" class="lhb-filter-btn on" data-lhb-filter="游资">游资</button>
+              <button type="button" class="lhb-filter-btn" data-lhb-filter="游资">游资</button>
             </div>
             <p id="lhb-meta" class="mt-2 text-[11px]" style="color: var(--muted)">正在加载龙虎榜…</p>
             <div id="lhb-board" class="lhb-board mt-2 overflow-auto"></div>
             <div class="lhb-ai mt-3">
               <div class="text-sm font-semibold">AI 建议 · 买这三只</div>
-              <p id="lhb-ai-meta" class="mt-0.5 text-[11px]" style="color: var(--muted)">榜单出来后自动给三只</p>
-              <div id="lhb-ai-picks" class="lhb-ai-picks mt-2"></div>
+              <p id="lhb-quick-meta" class="mt-0.5 text-[11px]" style="color: var(--muted)">榜单出来后自动给三只</p>
+              <div id="lhb-quick-picks" class="lhb-ai-picks mt-2"></div>
+
+              <div class="lhb-ai-daytrip mt-4 pt-3" style="border-top: 1px solid color-mix(in oklab, var(--line) 80%, transparent)">
+                <div class="flex flex-wrap items-start justify-between gap-2">
+                  <div class="min-w-0">
+                    <div class="text-sm font-semibold">AI · 主力一日游</div>
+                    <p id="lhb-ai-meta" class="mt-0.5 text-[11px] leading-relaxed" style="color: var(--muted)">单独分析：点「分析」才调用；刷新不会自动跑</p>
+                  </div>
+                  <div class="flex shrink-0 flex-wrap items-center gap-1.5">
+                    <select id="lhb-ai-model" class="rounded-lg px-2 py-1.5 text-[11px] font-semibold outline-none ring-soft" style="background:var(--panel);border:1px solid var(--line);color:var(--ink)" title="分析模型，默认 Flash">
+                      <option value="deepseek-flash">Flash</option>
+                      <option value="deepseek-v4-pro">Pro</option>
+                    </select>
+                    <button type="button" id="lhb-ai-skip-btn" class="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold ring-soft" style="color: var(--down)" title="大盘急杀或不想做时，标记次日不做">今日不做</button>
+                    <button type="button" id="lhb-ai-history-btn" class="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold ring-soft" style="color: var(--muted)" title="查看每次分析纪录">历史</button>
+                    <button type="button" id="lhb-ai-analyze-btn" class="rounded-lg bg-accent px-3 py-1.5 text-[11px] font-semibold text-white" title="用 DeepSeek 做主力一日游分析">分析</button>
+                  </div>
+                </div>
+                <div id="lhb-ai-skip-banner" class="lhb-ai-skip-banner mt-2 hidden" role="status"></div>
+                <div id="lhb-ai-picks" class="lhb-ai-picks mt-2"></div>
+                <div id="lhb-ai-auction" class="lhb-ai-auction mt-2 hidden" role="note"></div>
+                <div id="lhb-ai-backtest" class="lhb-ai-backtest mt-2 hidden" role="status"></div>
+                <div class="lhb-ai-rules mt-3" role="note">
+                  <div class="lhb-ai-rules-title">主力一日游 · 规矩</div>
+                  <ol class="lhb-ai-rules-list">
+                    <li><span class="lhb-ai-step lhb-ai-step-pick">① 当晚</span>榜出后点分析，<b>只锁主力/北向/机构</b>，不要游资散户；诱多 / 追高 / &lt;50% 自动标放弃。</li>
+                    <li><span class="lhb-ai-step lhb-ai-step-buy">② 次日</span><b>竞价复核</b>后再买：低开/平开可看，高开&gt;2%放弃；盘中低点更好。</li>
+                    <li><span class="lhb-ai-step lhb-ai-step-sell">③ 第三天</span><b>卖出兑现</b>，不恋战；大盘急杀可点「今日不做」。</li>
+                  </ol>
+                </div>
+              </div>
+
+              <div id="lhb-ai-tables" class="lhb-ai-tables mt-3 space-y-3">
+                <div>
+                  <div class="text-[12px] font-semibold">近两周每日三只 <span class="font-medium" style="color: var(--muted)">最新在前</span></div>
+                  <div id="lhb-ai-week-table" class="lhb-ai-table-wrap mt-1.5 overflow-auto"></div>
+                </div>
+                <div>
+                  <div class="text-[12px] font-semibold">近 7 日涨幅 <span class="font-medium" style="color: var(--muted)">最新在前</span></div>
+                  <div id="lhb-ai-gain-table" class="lhb-ai-table-wrap mt-1.5 overflow-auto"></div>
+                </div>
+              </div>
             </div>
           </div>
         </section>
@@ -329,6 +373,23 @@
       </div>
       <div id="report-drawer-body" class="report-drawer-body"></div>
     </aside>
+
+    <div id="lhb-hist-root" class="modal-wrap fixed inset-0 z-[65] hidden items-center justify-center p-3 sm:p-6">
+      <div id="lhb-hist-mask" class="absolute inset-0" style="background: var(--mask)"></div>
+      <div class="modal-panel relative z-10 flex h-[min(720px,90vh)] w-[min(640px,96vw)] flex-col overflow-hidden rounded-2xl shadow-2xl"
+        style="background: var(--panel-solid); border: 1px solid var(--line)">
+        <div class="flex shrink-0 items-center gap-2 border-b px-4 py-3" style="border-color: var(--line)">
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-semibold">一日游 · 分析纪录</div>
+            <p class="mt-0.5 text-[11px]" style="color: var(--muted)">每次点「分析」都会留下一条；最新已在页面上展示</p>
+          </div>
+          <button type="button" id="lhb-hist-close" class="rounded-lg p-1.5" style="color: var(--muted)" aria-label="关闭">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
+        </div>
+        <div id="lhb-hist-body" class="min-h-0 flex-1 overflow-auto p-3 sm:p-4"></div>
+      </div>
+    </div>
 
     <div id="dialog-root" class="modal-wrap fixed inset-0 z-[70] hidden items-center justify-center p-4">
       <div id="dialog-mask" class="absolute inset-0" style="background: var(--mask)"></div>

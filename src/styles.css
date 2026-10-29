@@ -2787,6 +2787,379 @@ button.pick-card {
   color: var(--muted);
 }
 
+.lhb-ai-pick-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.lhb-ai-prob {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  border-radius: 8px;
+  padding: 2px 8px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  background: color-mix(in oklab, var(--up) 14%, transparent);
+  color: var(--up);
+  border: 1px solid color-mix(in oklab, var(--up) 30%, var(--line));
+}
+
+.lhb-ai-prob.is-low {
+  background: color-mix(in oklab, var(--down) 12%, transparent);
+  color: var(--down);
+  border-color: color-mix(in oklab, var(--down) 28%, var(--line));
+}
+
+.lhb-ai-prob.is-mid {
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent) 30%, var(--line));
+}
+
+.lhb-ai-prob b {
+  font-size: 15px;
+  line-height: 1;
+}
+
+.lhb-ai-prob span {
+  font-size: 10px;
+  font-weight: 700;
+  opacity: 0.85;
+}
+
+.lhb-ai-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.5;
+  border: 1px solid color-mix(in oklab, var(--line) 80%, transparent);
+  color: var(--muted);
+}
+
+.lhb-ai-badge-真买 {
+  color: var(--up);
+  border-color: color-mix(in oklab, var(--up) 35%, var(--line));
+  background: color-mix(in oklab, var(--up) 10%, transparent);
+}
+
+.lhb-ai-badge-诱多 {
+  color: var(--down);
+  border-color: color-mix(in oklab, var(--down) 35%, var(--line));
+  background: color-mix(in oklab, var(--down) 10%, transparent);
+}
+
+.lhb-ai-badge-分歧,
+.lhb-ai-badge-不明 {
+  color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent) 30%, var(--line));
+  background: color-mix(in oklab, var(--accent) 8%, transparent);
+}
+
+.lhb-ai-badge-追高,
+.lhb-ai-badge-偏高 {
+  color: var(--down);
+  border-color: color-mix(in oklab, var(--down) 28%, var(--line));
+  background: color-mix(in oklab, var(--down) 8%, transparent);
+}
+
+.lhb-ai-badge-不高 {
+  color: var(--up);
+  border-color: color-mix(in oklab, var(--up) 28%, var(--line));
+  background: color-mix(in oklab, var(--up) 8%, transparent);
+}
+
+.lhb-ai-badge-放弃 {
+  color: #fff;
+  border-color: color-mix(in oklab, var(--down) 50%, var(--line));
+  background: color-mix(in oklab, var(--down) 82%, #0f172a);
+}
+
+.lhb-ai-pick.is-abandon {
+  opacity: 0.55;
+  background: color-mix(in oklab, var(--muted) 6%, var(--panel-solid));
+  border-style: dashed;
+}
+
+.lhb-ai-pick.is-abandon .lhb-ai-prob {
+  filter: grayscale(0.35);
+}
+
+.lhb-ai-skip-banner {
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--down);
+  border: 1px solid color-mix(in oklab, var(--down) 35%, var(--line));
+  background: color-mix(in oklab, var(--down) 10%, var(--panel-solid));
+}
+
+.lhb-ai-skip-banner b {
+  font-weight: 800;
+}
+
+.lhb-ai-auction,
+.lhb-ai-backtest {
+  border-radius: 10px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in oklab, var(--line) 80%, transparent);
+  background: color-mix(in oklab, var(--accent) 5%, var(--panel-solid));
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.lhb-ai-auction-title,
+.lhb-ai-backtest-title {
+  font-size: 12px;
+  font-weight: 800;
+  margin-bottom: 4px;
+  color: var(--accent);
+}
+
+.lhb-ai-auction-base {
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.lhb-ai-backtest-sum {
+  margin-bottom: 6px;
+  color: var(--ink);
+}
+
+.lhb-ai-backtest-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.lhb-ai-bt-chip {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: baseline;
+  border-radius: 8px;
+  padding: 3px 8px;
+  background: color-mix(in oklab, var(--panel-solid) 88%, var(--accent));
+  border: 1px solid color-mix(in oklab, var(--line) 75%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+
+.lhb-ai-plans {
+  margin-top: 6px;
+  display: grid;
+  gap: 3px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.lhb-ai-plans b {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.lhb-hist-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid color-mix(in oklab, var(--line) 80%, transparent);
+  background: color-mix(in oklab, var(--accent) 4%, var(--panel-solid));
+  color: inherit;
+  cursor: pointer;
+}
+
+.lhb-hist-card:hover {
+  border-color: color-mix(in oklab, var(--accent) 40%, var(--line));
+}
+
+.lhb-hist-card-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.lhb-hist-card-picks {
+  display: grid;
+  gap: 4px;
+}
+
+.lhb-hist-card-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 8px;
+  font-size: 12px;
+}
+
+.lhb-ai-rules {
+  border-radius: 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in oklab, var(--accent) 35%, var(--line));
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in oklab, var(--accent) 14%, transparent),
+      color-mix(in oklab, var(--up) 8%, transparent) 55%,
+      color-mix(in oklab, var(--panel-solid) 88%, transparent)
+    );
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 12%, transparent);
+}
+
+.lhb-ai-rules-title {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+
+.lhb-ai-rules-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 7px;
+}
+
+.lhb-ai-rules-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink);
+}
+
+.lhb-ai-rules-list li b {
+  font-weight: 800;
+}
+
+.lhb-ai-step {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.lhb-ai-step-pick {
+  color: #fff;
+  background: var(--accent);
+}
+
+.lhb-ai-step-buy {
+  color: #fff;
+  background: var(--up);
+}
+
+.lhb-ai-step-sell {
+  color: #fff;
+  background: color-mix(in oklab, var(--down) 88%, #0f172a);
+}
+
+.lhb-ai-table-wrap {
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--line) 80%, transparent);
+  background: var(--panel-solid);
+}
+
+.lhb-ai-hist {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.lhb-ai-hist th,
+.lhb-ai-hist td {
+  padding: 6px 8px;
+  border-bottom: 1px solid color-mix(in oklab, var(--line) 70%, transparent);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.lhb-ai-hist th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: color-mix(in oklab, var(--panel-solid) 92%, var(--accent));
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.lhb-ai-hist tr:last-child td {
+  border-bottom: 0;
+}
+
+.lhb-ai-hist .lhb-ai-date {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  min-width: 4.5rem;
+}
+
+.lhb-ai-hist button.lhb-ai-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  max-width: 9.5rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.lhb-ai-hist button.lhb-ai-cell:hover .lhb-ai-cell-name {
+  color: var(--accent);
+}
+
+.lhb-ai-cell-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 7rem;
+}
+
+.lhb-ai-cell-code {
+  font-size: 10px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.lhb-ai-cell-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.lhb-ai-hist .lhb-ai-pct {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
 @media (max-width: 640px) {
   .lhb-board {
     max-height: 36vh;
