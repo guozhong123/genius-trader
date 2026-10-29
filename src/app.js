@@ -4314,9 +4314,14 @@ function syncPeriodTabs() {
   if (axisWrap) axisWrap.classList.remove('hidden');
 }
 
+/** 详情图刷新代数：避免并发刷新互相清空画布 */
+let detailChartGen = 0;
+
 async function refreshDetailCharts() {
   const item = state.detail;
   if (!item || item.kind === 'fund') return;
+  const gen = ++detailChartGen;
+  const stillHere = () => gen === detailChartGen && state.detail === item;
   const secid = item.secid || toSecid(item.market, item.code, item.marketNo);
   try {
     const period = state.period;
@@ -4345,6 +4350,7 @@ async function refreshDetailCharts() {
     } catch (e) {
       console.error(e);
     }
+    if (!stillHere()) return;
     const useMinute =
       minute &&
       mainData?._chart !== 'kline' &&
@@ -4373,6 +4379,7 @@ async function refreshDetailCharts() {
 
     els.chartMain.innerHTML = '';
     await waitFrames(1);
+    if (!stillHere()) return;
 
     if (minute) {
       if (useMinute && mainData?.points?.length) {
@@ -4428,6 +4435,7 @@ async function refreshDetailCharts() {
     resizeAllCharts();
 
     // 资金流后补，失败不影响分时；先清旧 tip，避免串到上一只票
+    if (!stillHere()) return;
     $('detail-flow-tip').textContent = '亿元';
     els.detailFlowCards.innerHTML = '';
     els.chartStockFlow.innerHTML =
@@ -4440,7 +4448,7 @@ async function refreshDetailCharts() {
         console.error(e);
       }
     }
-    if (state.detail !== item) return;
+    if (!stillHere()) return;
     els.chartStockFlow.innerHTML = '';
     await waitFrames(1);
     const flowSummary = flow?.summary;
