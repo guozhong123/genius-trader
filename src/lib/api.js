@@ -2045,16 +2045,20 @@ function readCachedStockFlow(secid) {
 
 /**
  * 个股主力资金分时。
- * 开盘：东财 push2/his 轻量顺序，不拖慢分时；闭盘才多源/日摘要兜底。
+ * 开盘：东财同接口竞速；只复用带分时点的缓存，不用盘后日摘要。
+ * 闭盘才多源/日摘要兜底。
  */
 export async function fetchStockMoneyFlow(secid) {
   if (!secid || isForeignSecid(secid)) return parseFlowKlines([]);
   const q = `lmt=0&klt=1&secid=${encodeURIComponent(secid)}&${FLOW_FIELDS}`;
 
   if (isAshareLiveSession()) {
-    const live = await fetchEastFlowSimple(q, { timeoutMs: 3500 });
+    const live = await fetchEastFlowSimple(q, { timeoutMs: 4000 });
     if (live?.times?.length) return rememberStockFlow(secid, live);
-    return readCachedStockFlow(secid) || parseFlowKlines([]);
+    const cached = readCachedStockFlow(secid);
+    // 开盘只用有分钟序列的缓存，避免把「日摘要」当成盘后文案刷出来
+    if (cached?.times?.length) return cached;
+    return parseFlowKlines([]);
   }
 
   for (let attempt = 0; attempt < 2; attempt += 1) {

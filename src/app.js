@@ -4473,7 +4473,10 @@ async function refreshDetailCharts() {
           legendNames: flowLegendNames(),
         });
       } else {
-        els.chartStockFlow.innerHTML = `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>盘后分时暂不可用，已显示今日资金摘要</span><span class="text-[11px]">主力 ${esc(fmtYi(s.main))} 亿${s.asOf ? ` · ${esc(s.asOf)}` : ''}</span></div>`;
+        const closedNote = flow?.source === 'day' || s.note?.includes('盘后') || s.note?.includes('日资金');
+        els.chartStockFlow.innerHTML = closedNote
+          ? `<div class="flex h-full flex-col items-center justify-center gap-1 text-sm" style="color:var(--muted)"><span>盘后分时暂不可用，已显示今日资金摘要</span><span class="text-[11px]">主力 ${esc(fmtYi(s.main))} 亿${s.asOf ? ` · ${esc(s.asOf)}` : ''}</span></div>`
+          : `<div class="flex h-full items-center justify-center text-sm" style="color:var(--muted)">资金分时加载中，请稍后重试</div>`;
       }
     } else {
       $('detail-flow-tip').textContent = '亿元';
